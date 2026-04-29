@@ -1106,20 +1106,27 @@ export function DevicePanel({
   hosts,
   onClose,
   defaultTab = "info",
+  onTabChange,
 }: {
-  device:      Device;
-  hostInfo?:   HostStats;
-  hosts?:      HostStats[];
-  onClose:     () => void;
-  defaultTab?: TabId;
+  device:       Device;
+  hostInfo?:    HostStats;
+  hosts?:       HostStats[];
+  onClose:      () => void;
+  defaultTab?:  TabId;
+  onTabChange?: (tab: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>(defaultTab);
+
+  function handleTabChange(tab: TabId) {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  }
   // Načítáme discovery logy vždy — ne jen když je tab aktivní
   const { data: discoveryLogs = [], isLoading: logsLoading } = useDiscoveryLogs(device.id);
 
   return (
     <div className="border-l-4 border-primary bg-background" onClick={(e) => e.stopPropagation()}>
-      <TabBar active={activeTab} onChange={setActiveTab} />
+      <TabBar active={activeTab} onChange={handleTabChange} />
       {activeTab === "info" && (
         <BasicInfoTab device={device} hostInfo={hostInfo} onClose={onClose} />
       )}

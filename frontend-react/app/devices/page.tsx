@@ -22,6 +22,7 @@ export default function DevicesPage() {
   const [typeFilter,     setTypeFilter]     = useState("");
   const [statusFilter,   setStatusFilter]   = useState("");
   const [vendorFilter,   setVendorFilter]   = useState("");
+  const [activeTabs, setActiveTabs] = useState<Record<number, string>>({});
   const [expandedRowId,  setExpandedRowId]  = useState<number | null>(null);
 
   // Host mapa pro rychlý lookup
@@ -68,11 +69,13 @@ export default function DevicesPage() {
       const fresh = rows.find((r) => r.id === id) ?? row.original;
       return (
         <DevicePanel
-          key={`panel-${id}-${fresh.updated_at ?? fresh.created_at}`}
+          key={`panel-${id}`}
           device={fresh as unknown as Device}
           hostInfo={fresh.hostInfo}
           hosts={hosts}
           onClose={() => setExpandedRowId(null)}
+          defaultTab={(activeTabs[id] ?? "info") as any}
+          onTabChange={(tab: string) => setActiveTabs(prev => ({ ...prev, [id]: tab }))}
         />
       );
     },
