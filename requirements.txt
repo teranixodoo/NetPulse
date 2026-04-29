@@ -1,0 +1,28 @@
+# requirements.txt — NetPulse Python závislosti
+
+# Backend (FastAPI)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+asyncpg>=0.29.0
+icmplib>=3.0.3
+apscheduler>=3.10.4
+pyjwt>=2.8.0
+passlib==1.7.4
+bcrypt==4.0.1
+python-multipart>=0.0.9
+pydantic>=2.6.0
+
+# Frontend (Streamlit)
+streamlit>=1.33.0
+requests>=2.31.0
+pandas>=2.2.0
+plotly>=5.20.0
+
+cryptography>=42.0.0
+
+# Sdílené
+python-dotenv>=1.0.0
+toml>=0.10.2
+
+# MikroTik RouterOS API
+RouterOS-api>=0.15.0

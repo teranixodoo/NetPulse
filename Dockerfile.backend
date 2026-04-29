@@ -1,0 +1,102 @@
+# Dockerfile.backend — NetPulse FastAPI backend
+# Multi-stage build: builder (pip) → runtime (slim)
+
+# ─── Stage 1: builder ────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Systémové závislosti potřebné pro kompilaci některých wheels (bcrypt, asyncpg)
+RUN apt-get update -o Acquire::Check-Valid-Until=false \
+        -o Acquire::AllowInsecureRepositories=true \
+        -o APT::Get::AllowUnauthenticated=true \
+ && apt-get install -y --no-install-recommends --allow-unauthenticated \
+        gcc \
+        libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Zkopíruj requirements a nainstaluj do izolovaného adresáře
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install \
+        fastapi>=0.110.0 \
+        "uvicorn[standard]>=0.29.0" \
+        asyncpg>=0.29.0 \
+        icmplib>=3.0.3 \
+        apscheduler>=3.10.4 \
+        pyjwt>=2.8.0 \
+        "passlib==1.7.4" \
+        "bcrypt==4.0.1" \
+        python-multipart>=0.0.9 \
+        "pydantic>=2.6.0" \
+        python-dotenv>=1.0.0 \
+        toml>=0.10.2 \
+        cryptography>=42.0.0 \
+        RouterOS-api \
+        asyncssh \
+        pysnmp
+
+
+# ─── Stage 2: runtime ────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+# Systémové balíčky pro runtime:
+#   iputils-ping  — fallback ping příkaz (debug)
+#   libpq5        — PostgreSQL klientská knihovna (asyncpg)
+#   curl          — health check
+RUN apt-get update -o Acquire::Check-Valid-Until=false \
+        -o Acquire::AllowInsecureRepositories=true \
+        -o APT::Get::AllowUnauthenticated=true \
+ && apt-get install -y --no-install-recommends --allow-unauthenticated \
+        iputils-ping \
+        fping \
+        libpq5 \
+        curl \
+        iproute2 \
+        libcap2-bin \
+ && rm -rf /var/lib/apt/lists/*
+
+# Zkopíruj nainstalované balíčky z builderu
+COPY --from=builder /install /usr/local
+
+# ─── Vytvoř neprivilegovaného uživatele ──────────────────────────────────────
+# ICMP raw socket vyžaduje CAP_NET_RAW — ta se nastavuje v docker-compose.yml
+# (cap_add: NET_RAW), takže nepotřebujeme spouštět jako root.
+RUN groupadd --gid 1001 netpulse \
+ && useradd  --uid 1001 --gid netpulse --no-create-home --shell /sbin/nologin netpulse
+
+# ─── Aplikace ────────────────────────────────────────────────────────────────
+WORKDIR /app
+
+# Zkopíruj pouze backend zdrojové soubory
+COPY backend/ .
+
+# Vlastnictví souborů
+RUN chown -R netpulse:netpulse /app
+
+# Nastavíme CAP_NET_RAW na python binary — umožní icmplib raw ICMP sockets
+# bez nutnosti spouštět celý proces jako root
+RUN setcap cap_net_raw+eip $(readlink -f $(which python3))
+
+# Přepni na neprivilegovaného uživatele
+USER netpulse
+
+# ─── Konfigurace ─────────────────────────────────────────────────────────────
+# Výchozí hodnoty — přepisují se přes environment nebo docker-compose.yml
+ENV DATABASE_URL="postgresql://netpulse:netpulse_secret@db/netpulse" \
+    DB_ENCRYPTION_KEY="Bfo7vpyswMPI8F-4tV3t8FwvONJmGJP5VxaaTKzZp2s=" \
+    NETPULSE_DB_URL="postgresql://netpulse:netpulse_secret@db/netpulse" \
+    PORT="8000" \
+    PYTHONUNBUFFERED="1" \
+    PYTHONDONTWRITEBYTECODE="1"
+
+EXPOSE 8000
+
+# ─── Health check ────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# ─── Spuštění ────────────────────────────────────────────────────────────────
+# Uvicorn přímo (bez reload) — 1 worker kvůli sdílenému scan_state v paměti
+CMD ["sh", "-c", \
+     "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1 --no-access-log"]
+

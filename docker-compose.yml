@@ -1,0 +1,77 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       netpulse
+      POSTGRES_USER:     netpulse
+      POSTGRES_PASSWORD: netpulse_secret
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./shared/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL:      postgresql://netpulse:netpulse_secret@db/netpulse
+      NETPULSE_DB_URL:   postgresql://netpulse:netpulse_secret@db/netpulse
+      DB_ENCRYPTION_KEY: "Bfo7vpyswMPI8F-4tV3t8FwvONJmGJP5VxaaTKzZp2s="
+      PORT:              8000
+      JWT_SECRET:        "6c1a7104e096922cdd3155e16f1574875d52a033c289235352850f6997494325"
+    ports:
+      - "8000:8000"
+    user: "0"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Starý Streamlit frontend (souběžně během přechodu)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      - NETPULSE_API_URL=http://backend:8000
+      - STREAMLIT_SERVER_COOKIE_SECRET=nejake_nahodne_dlouhe_heslo_123
+    ports:
+      - "8501:8501"
+
+  # Nový React/Next.js frontend
+  frontend-react:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend-react
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pg_data:
