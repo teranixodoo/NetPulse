@@ -1114,8 +1114,7 @@ function BackupTab({ device }: { device: Device }) {
   const deleteBackup = useDeleteBackup();
 
   const [runResult, setRunResult] = React.useState<null | {
-    binary: { success: boolean; filename: string; file_size_human: string; error: string | null };
-    export: { success: boolean; filename: string; file_size_human: string; error: string | null };
+    success: boolean; filename: string; file_size_human: string; error: string | null;
   }>(null);
   const [deleting, setDeleting] = React.useState<number | null>(null);
 
@@ -1123,7 +1122,7 @@ function BackupTab({ device }: { device: Device }) {
     setRunResult(null);
     try {
       const r = await runBackup.mutateAsync(device.id);
-      setRunResult({ binary: r.binary, export: r.export });
+      setRunResult({ success: r.success, filename: r.filename, file_size_human: r.file_size_human, error: r.error });
       refetch();
     } catch (e: unknown) {
       // chyba se zobrazí přes runBackup.error
@@ -1198,26 +1197,19 @@ function BackupTab({ device }: { device: Device }) {
 
         {/* Výsledek posledního spuštění */}
         {runResult && (
-          <div className="space-y-1.5 pt-1">
-            {(["binary", "export"] as const).map((t) => {
-              const r = runResult[t];
-              return (
-                <div key={t} className={cn(
-                  "flex items-center gap-2 text-xs rounded-md px-3 py-2",
-                  r.success
-                    ? "bg-green-50 dark:bg-green-950/20"
-                    : "bg-red-50 dark:bg-red-950/20"
-                )}>
-                  {r.success
-                    ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400 shrink-0" />
-                    : <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
-                  <span className="font-medium">{typeLabel[t]}</span>
-                  {r.success
-                    ? <><span className="text-muted-foreground">{r.filename}</span><span className="ml-auto">{r.file_size_human}</span></>
-                    : <span className="text-red-600 dark:text-red-400 truncate">{r.error}</span>}
-                </div>
-              );
-            })}
+          <div className={cn(
+            "flex items-center gap-2 text-xs rounded-md px-3 py-2 mt-1",
+            runResult.success
+              ? "bg-green-50 dark:bg-green-950/20"
+              : "bg-red-50 dark:bg-red-950/20"
+          )}>
+            {runResult.success
+              ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400 shrink-0" />
+              : <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+            <span className="font-medium">.rsc</span>
+            {runResult.success
+              ? <><span className="text-muted-foreground truncate">{runResult.filename}</span><span className="ml-auto">{runResult.file_size_human}</span></>
+              : <span className="text-red-600 dark:text-red-400 truncate">{runResult.error}</span>}
           </div>
         )}
 

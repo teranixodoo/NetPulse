@@ -282,26 +282,14 @@ export interface BackupStats {
 }
 
 export interface BackupRunResult {
-  device_id: number;
-  hostname:  string;
-  binary: {
-    backup_id:        number;
-    success:          boolean;
-    filename:         string;
-    file_size_bytes:  number | null;
-    file_size_human:  string;
-    mikrotik_version: string | null;
-    duration_ms:      number | null;
-    error:            string | null;
-  };
-  export: {
-    backup_id:        number;
-    success:          boolean;
-    filename:         string;
-    file_size_bytes:  number | null;
-    file_size_human:  string;
-    mikrotik_version: string | null;
-    duration_ms:      number | null;
-    error:            string | null;
-  };
+  backup_id:        number;
+  device_id:        number;
+  hostname:         string;
+  success:          boolean;
+  filename:         string;
+  file_size_bytes:  number | null;
+  file_size_human:  string;
+  mikrotik_version: string | null;
+  duration_ms:      number | null;
+  error:            string | null;
 }

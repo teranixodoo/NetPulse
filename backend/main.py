@@ -870,27 +870,21 @@ async def run_device_backup(
     pool       = Depends(get_db),
 ):
     """
-    Spustí zálohu MikroTik zařízení — vždy oba typy (binary + export) paralelně.
-    Zařízení musí mít last_polled_at (proběhl poll) a API nebo SSH credentials.
+    Spustí export zálohu (.rsc) MikroTik zařízení.
+    Zařízení musí mít last_polled_at a API nebo SSH credentials.
     """
-    # Načteme zařízení s credentials
     devices = await db.get_devices_with_credentials(pool)
     device  = next((d for d in devices if d["id"] == device_id), None)
     if not device:
         raise HTTPException(status_code=404, detail="Zařízení nenalezeno")
 
-    # Podmínka: musí proběhnout poll
     if not device.get("last_polled_at"):
         raise HTTPException(
             status_code=400,
-            detail="Záloha není dostupná — zařízení nebylo ještě polled (last_polled_at je NULL)"
+            detail="Záloha není dostupná — zařízení nebylo ještě polled"
         )
 
-    # Podmínka: musí mít API nebo SSH credentials
-    usable_creds = [
-        c for c in device["credentials"]
-        if c.get("auth_type") in ("api", "ssh")
-    ]
+    usable_creds = [c for c in device["credentials"] if c.get("auth_type") in ("api", "ssh")]
     if not usable_creds:
         raise HTTPException(
             status_code=400,
@@ -901,35 +895,26 @@ async def run_device_backup(
     hostname    = device.get("hostname") or device.get("alias") or ip_str
     device_uuid = device["device_uuid"]
 
-    log.info(
-        f"Backup zahájen: device_id={device_id} ip={ip_str} "
-        f"hostname={hostname} user={user.username}"
-    )
+    log.info(f"Backup zahájen: device_id={device_id} ip={ip_str} user={user.username}")
 
-    # Dešifrujeme hesla v credentials (hlavní cipher je globální)
+    # Načteme credentials včetně šifrovaných hesel
     creds_with_pass = []
     for c in usable_creds:
         raw = await db.get_credential_raw(pool, c["id"])
         if raw:
             creds_with_pass.append(raw)
 
-    # Vytvoříme placeholdery v DB (stav 'running')
-    binary_db_id = await db.create_backup_record(
-        pool, device_id, "binary",
-        filename=f"pending_binary_{device_uuid}",
-        filepath=f"/backups/{device_uuid}/pending_binary",
-        triggered_by=user.username,
-    )
-    export_db_id = await db.create_backup_record(
+    # Záznam v DB — stav running
+    backup_db_id = await db.create_backup_record(
         pool, device_id, "export",
-        filename=f"pending_export_{device_uuid}",
-        filepath=f"/backups/{device_uuid}/pending_export",
-        triggered_by=user.username,
+        filename     = f"pending_{device_uuid}",
+        filepath     = f"/backups/{device_uuid}/pending",
+        triggered_by = user.username,
     )
 
     # Spustíme zálohu
     try:
-        binary_r, export_r = await bkp.backup_mikrotik(
+        result = await bkp.backup_mikrotik(
             ip          = ip_str,
             creds       = creds_with_pass,
             cipher      = cipher,
@@ -940,71 +925,40 @@ async def run_device_backup(
         )
     except Exception as e:
         err_str = str(e)[:400]
-        await db.finish_backup_record(pool, binary_db_id, False, error_msg=err_str)
-        await db.finish_backup_record(pool, export_db_id, False, error_msg=err_str)
+        await db.finish_backup_record(pool, backup_db_id, False, error_msg=err_str)
         raise HTTPException(status_code=500, detail=f"Záloha selhala: {err_str}")
 
-    # Uložíme výsledky do DB
+    # Uložíme výsledek
     await db.finish_backup_record(
-        pool, binary_db_id,
-        success          = binary_r.success,
-        file_size_bytes  = binary_r.file_size_bytes,
-        mikrotik_version = binary_r.mikrotik_version,
-        duration_ms      = binary_r.duration_ms,
-        error_msg        = binary_r.error if not binary_r.success else None,
-    )
-    await db.finish_backup_record(
-        pool, export_db_id,
-        success          = export_r.success,
-        file_size_bytes  = export_r.file_size_bytes,
-        mikrotik_version = export_r.mikrotik_version,
-        duration_ms      = export_r.duration_ms,
-        error_msg        = export_r.error if not export_r.success else None,
+        pool, backup_db_id,
+        success          = result.success,
+        file_size_bytes  = result.file_size_bytes,
+        mikrotik_version = result.mikrotik_version,
+        duration_ms      = result.duration_ms,
+        error_msg        = result.error if not result.success else None,
     )
 
-    # Aktualizujeme filepath/filename v DB na skutečné hodnoty
-    if binary_r.success and binary_r.filepath:
+    # Aktualizujeme filepath/filename na skutečné hodnoty
+    if result.success and result.filepath:
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE device_backups SET filename=$2, filepath=$3 WHERE id=$1",
-                binary_db_id, binary_r.filename, str(binary_r.filepath),
-            )
-    if export_r.success and export_r.filepath:
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE device_backups SET filename=$2, filepath=$3 WHERE id=$1",
-                export_db_id, export_r.filename, str(export_r.filepath),
+                backup_db_id, result.filename, str(result.filepath),
             )
 
-    log.info(
-        f"Backup dokončen device_id={device_id}: "
-        f"binary={'OK' if binary_r.success else 'FAIL'} "
-        f"export={'OK' if export_r.success else 'FAIL'}"
-    )
+    log.info(f"Backup dokončen device_id={device_id}: {'OK' if result.success else 'FAIL'}")
 
     return {
-        "device_id": device_id,
-        "hostname":  hostname,
-        "binary": {
-            "backup_id":        binary_db_id,
-            "success":          binary_r.success,
-            "filename":         binary_r.filename,
-            "file_size_bytes":  binary_r.file_size_bytes,
-            "file_size_human":  bkp.format_file_size(binary_r.file_size_bytes),
-            "mikrotik_version": binary_r.mikrotik_version,
-            "duration_ms":      binary_r.duration_ms,
-            "error":            binary_r.error,
-        },
-        "export": {
-            "backup_id":        export_db_id,
-            "success":          export_r.success,
-            "filename":         export_r.filename,
-            "file_size_bytes":  export_r.file_size_bytes,
-            "file_size_human":  bkp.format_file_size(export_r.file_size_bytes),
-            "mikrotik_version": export_r.mikrotik_version,
-            "duration_ms":      export_r.duration_ms,
-            "error":            export_r.error,
-        },
+        "backup_id":        backup_db_id,
+        "device_id":        device_id,
+        "hostname":         hostname,
+        "success":          result.success,
+        "filename":         result.filename,
+        "file_size_bytes":  result.file_size_bytes,
+        "file_size_human":  bkp.format_file_size(result.file_size_bytes),
+        "mikrotik_version": result.mikrotik_version,
+        "duration_ms":      result.duration_ms,
+        "error":            result.error,
     }
 
 
