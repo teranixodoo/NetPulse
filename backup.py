@@ -301,30 +301,39 @@ async def _backup_via_ssh(
                     f"/system backup save name={backup_name} dont-encrypt=yes",
                     timeout=30
                 )
-                # 2. Chvíli počkáme než ROS soubor dokončí
+                # 2. Počkáme než RouterOS dokončí zápis souboru na flash
+                # MikroTik SSH zavře spojení po vykonání příkazu — conn je nyní mrtvý.
                 await asyncio.sleep(3)
 
-                # 3. Stáhneme přes SCP
+                # 3. Otevřeme NOVÉ spojení jen pro SFTP stažení
+                # MikroTik ukončuje SSH session po každém příkazu, takže původní
+                # conn nelze reuse. Musíme se připojit znovu.
                 backup_dir = _ensure_backup_dir(device_uuid)
                 filename   = _make_filename(hostname, "binary")
                 filepath   = backup_dir / filename
 
-                await asyncssh.scp(
-                    (conn, f"{backup_name}.backup"),
-                    str(filepath),
-                    recurse=False
-                )
+                async with asyncssh.connect(**ssh_opts) as sftp_conn:
+                    async with sftp_conn.start_sftp_client() as sftp:
+                        await sftp.get(
+                            f"{backup_name}.backup",
+                            str(filepath),
+                        )
+                    # Smažeme zálohu ze zařízení na stejném spojení
+                    try:
+                        await sftp_conn.run(
+                            f"/file remove [find name={backup_name}.backup]",
+                            timeout=10
+                        )
+                    except Exception:
+                        pass  # nevadí pokud smazání selže
 
-                # 4. Smažeme zálohu ze zařízení (šetříme místo na flash)
-                try:
-                    await conn.run(f"/file remove {backup_name}.backup", timeout=10)
-                except Exception:
-                    pass  # nevadí pokud smazání selže
+                if not filepath.exists() or filepath.stat().st_size == 0:
+                    raise RuntimeError("SFTP přenos selhal — soubor je prázdný nebo neexistuje")
 
                 result.success         = True
                 result.filepath        = filepath
                 result.filename        = filename
-                result.file_size_bytes = filepath.stat().st_size if filepath.exists() else None
+                result.file_size_bytes = filepath.stat().st_size
 
         result.duration_ms = int((time.monotonic() - t0) * 1000)
 
