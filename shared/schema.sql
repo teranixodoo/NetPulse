@@ -163,6 +163,7 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS firmware      TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS model         TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_uptime_s INTEGER;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_poll_method TEXT;
 
 
 -- ---------------------------------------------------------------------------
@@ -211,3 +212,7 @@ CREATE TABLE IF NOT EXISTS device_poll_results (
 
 CREATE INDEX IF NOT EXISTS idx_poll_results_device
     ON device_poll_results (device_id, polled_at DESC);
+
+-- Migrace: přidání textového uptime (originální string ze zařízení)
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_uptime_str VARCHAR(40);
+ALTER TABLE device_poll_results ADD COLUMN IF NOT EXISTS uptime_str VARCHAR(40);

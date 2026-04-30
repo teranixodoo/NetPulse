@@ -396,7 +396,7 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d.id, d.device_uuid, d.ip::text, d.hostname, d.mac::text,
                 d.device_type, d.description, d.alias,
                 d.vendor, d.serial_number,
-                d.firmware, d.model, d.last_uptime_s, d.last_polled_at, d.last_poll_method,
+                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method,
                 d.created_at, d.updated_at,
                 COALESCE(
                     json_agg(
@@ -753,6 +753,7 @@ async def save_poll_result(
     firmware:   str = None,
     serial:     str = None,
     uptime_s:   int = None,
+    uptime_str: str = None,   # originální textový uptime ze zařízení (např. "3w4d1h30m")
     interfaces: list = None,
     ports:      list = None,
     system_info:dict = None,
@@ -776,12 +777,12 @@ async def save_poll_result(
             """
             INSERT INTO device_poll_results
                 (device_id, ip, method, success, hostname, model, vendor,
-                 firmware, uptime_s, interfaces, ports, system_info, error, polled_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+                 firmware, uptime_s, uptime_str, interfaces, ports, system_info, error, polled_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
             RETURNING id
             """,
             device_id, ip, method, success,
-            hostname, model, vendor, firmware, uptime_s,
+            hostname, model, vendor, firmware, uptime_s, uptime_str,
             _json.dumps(interfaces or []),
             _json.dumps(ports or []),
             _json.dumps(system_info or {}),
@@ -791,13 +792,14 @@ async def save_poll_result(
         # Pozn: přepisujeme jen pole která poll vrátil (not None)
         # Zapíšeme všechna dostupná data z pollingu do zařízení
         updates = {}
-        if hostname:  updates["hostname"]       = hostname
-        if vendor:    updates["vendor"]         = vendor
-        if model:     updates["device_type"]    = model
-        if serial:    updates["serial_number"]  = serial
-        if firmware:  updates["firmware"]       = firmware
-        if model:     updates["model"]          = model
-        if uptime_s:  updates["last_uptime_s"]    = uptime_s
+        if hostname:   updates["hostname"]       = hostname
+        if vendor:     updates["vendor"]         = vendor
+        if model:      updates["device_type"]    = model
+        if serial:     updates["serial_number"]  = serial
+        if firmware:   updates["firmware"]       = firmware
+        if model:      updates["model"]          = model
+        if uptime_s:   updates["last_uptime_s"]   = uptime_s
+        if uptime_str: updates["last_uptime_str"] = uptime_str[:40]  # originální string ze zařízení
         if method and success and method != "failed":
             updates["last_poll_method"] = method
         updates["last_polled_at"] = "NOW()"

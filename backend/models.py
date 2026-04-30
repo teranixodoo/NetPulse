@@ -209,6 +209,7 @@ class DeviceWithCredentials(BaseModel):
     firmware:        Optional[str] = None
     model:           Optional[str] = None
     last_uptime_s:   Optional[int] = None
+    last_uptime_str: Optional[str] = None  # originální textový uptime ze zařízení
     last_polled_at:  Optional[datetime] = None
     last_poll_method: Optional[str] = None
     created_at:      Optional[datetime] = None

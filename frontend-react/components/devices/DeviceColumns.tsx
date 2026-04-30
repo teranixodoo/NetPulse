@@ -186,14 +186,24 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
     },
     {
       id: "fw_uptime",
-      header: "Uptime",
-      accessorFn: (row) => (row as any).last_uptime_s,
-      cell: ({ getValue }) => {
-        const s = getValue() as number | null;
+      header: "Uptime zař.",
+      // Řadíme podle sekund (přesné), zobrazujeme originální string ze zařízení
+      accessorFn: (row) => (row as any).last_uptime_s ?? -1,
+      cell: ({ row }) => {
+        const r = row.original as any;
+        // Preferujeme originální string ze zařízení (přesný, včetně minut)
+        if (r.last_uptime_str) {
+          return <span className="text-xs font-mono tabular-nums">{r.last_uptime_str}</span>;
+        }
+        // Fallback: výpočet ze sekund pokud string není k dispozici
+        const s = r.last_uptime_s as number | null;
         if (!s) return <span className="text-muted-foreground text-xs">—</span>;
-        const w = Math.floor(s/604800), d = Math.floor((s%604800)/86400);
-        const h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60);
-        return <span className="text-xs font-mono">{w ? `${w}t ${d}d` : d ? `${d}d ${h}h` : `${h}h ${m}m`}</span>;
+        const w = Math.floor(s / 604800);
+        const d = Math.floor((s % 604800) / 86400);
+        const h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const text = w ? `${w}t ${d}d ${h}h` : d ? `${d}d ${h}h` : `${h}h ${m}m`;
+        return <span className="text-xs font-mono tabular-nums text-muted-foreground" title="Vypočteno ze sekund">{text}</span>;
       },
     },
     {

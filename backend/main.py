@@ -797,6 +797,7 @@ async def poll_device_data(
         vendor      = result.vendor,
         firmware    = result.firmware,
         uptime_s    = result.uptime_s,
+        uptime_str  = result.uptime,   # originální textový uptime ze zařízení
         interfaces  = result.interfaces,
         ports       = getattr(result, "ports", []),
         serial      = getattr(result, "serial", None),

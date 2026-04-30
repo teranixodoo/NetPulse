@@ -128,6 +128,7 @@ export interface Device {
   firmware: string | null;
   model: string | null;
   last_uptime_s: number | null;
+  last_uptime_str: string | null;   // originální textový uptime ze zařízení
   last_polled_at: string | null;
   last_poll_method: string | null;
   created_at: string;
