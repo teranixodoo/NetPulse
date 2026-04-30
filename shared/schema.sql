@@ -213,3 +213,33 @@ CREATE TABLE IF NOT EXISTS device_poll_results (
 
 CREATE INDEX IF NOT EXISTS idx_poll_results_device
     ON device_poll_results (device_id, polled_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Evidence záloh zařízení (device_backups)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS device_backups (
+    id                SERIAL PRIMARY KEY,
+    device_id         INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    backup_type       TEXT    NOT NULL,                -- 'binary' | 'export'
+    filename          TEXT    NOT NULL,                -- název souboru na disku
+    filepath          TEXT    NOT NULL,                -- absolutní cesta v containeru
+    file_size_bytes   BIGINT,                          -- velikost souboru v bajtech
+    status            TEXT    NOT NULL DEFAULT 'running', -- 'running'|'ok'|'failed'
+    error_msg         TEXT,                            -- chybová zpráva (pokud failed)
+    triggered_by      TEXT    NOT NULL DEFAULT 'manual', -- 'manual'|'scheduler'
+    mikrotik_version  TEXT,                            -- verze RouterOS v době zálohy
+    duration_ms       INTEGER,                         -- délka zálohy v ms
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_backups_device
+    ON device_backups (device_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_device_backups_status
+    ON device_backups (status, created_at DESC);
+
+-- Konfigurace backup scheduleru
+INSERT INTO app_config (key, value, description) VALUES
+    ('backup_enabled',    'false', 'Automatický backup scheduler zapnutý'),
+    ('backup_interval_s', '86400', 'Interval automatického backupu v sekundách (výchozí 24h)')
+ON CONFLICT (key) DO NOTHING;

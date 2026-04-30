@@ -3,15 +3,15 @@
 import React, { useState } from "react";
 import {
   Loader2, Save, Trash2, Search, RefreshCw,
-  Link, Unlink, ChevronDown,
+  Link, Unlink, ChevronDown, Download, HardDrive, AlertCircle, CheckCircle2,
 } from "lucide-react";
 import {
   useUpdateDevice, useDeleteDevice,
   useLinkCredential, useUnlinkCredential,
   useRunDiscovery, useDiscoveryLogs,
-  useCredentials, getErrorMessage,
+  useCredentials, useDeviceBackups, useRunBackup, useDeleteBackup, getErrorMessage,
 } from "@/hooks/useNetPulse";
-import type { Device, HostStats, DiscoveryLayer } from "@/lib/types";
+import type { Device, HostStats, DiscoveryLayer, DeviceBackup } from "@/lib/types";
 import { Button, FormField, Input, Spinner } from "@/components/ui";
 import { formatDateTime, cn } from "@/lib/utils";
 
@@ -24,7 +24,7 @@ const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","
 // ---------------------------------------------------------------------------
 // Tab navigace
 // ---------------------------------------------------------------------------
-type TabId = "info" | "ip" | "credentials" | "discovery" | "poll";
+type TabId = "info" | "ip" | "credentials" | "discovery" | "poll" | "backup";
 
 function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   const tabs: { id: TabId; label: string }[] = [
@@ -33,6 +33,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
     { id: "credentials", label: "🔐 Profily" },
     { id: "discovery",   label: "🔍 Discovery" },
     { id: "poll",        label: "📡 Sběr dat" },
+    { id: "backup",      label: "💾 Zálohy" },
   ];
   return (
     <div className="flex border-b border-border bg-background">
@@ -1100,6 +1101,224 @@ function PollTab({ device }: { device: Device }) {
 }
 
 
+// ---------------------------------------------------------------------------
+// Tab: Zálohy
+// ---------------------------------------------------------------------------
+function BackupTab({ device }: { device: Device }) {
+  const canBackup =
+    !!device.last_polled_at &&
+    device.credentials.some((c) => c.auth_type === "api" || c.auth_type === "ssh");
+
+  const { data: backups = [], isLoading, refetch } = useDeviceBackups(device.id);
+  const runBackup   = useRunBackup();
+  const deleteBackup = useDeleteBackup();
+
+  const [runResult, setRunResult] = React.useState<null | {
+    binary: { success: boolean; filename: string; file_size_human: string; error: string | null };
+    export: { success: boolean; filename: string; file_size_human: string; error: string | null };
+  }>(null);
+  const [deleting, setDeleting] = React.useState<number | null>(null);
+
+  async function handleRunBackup() {
+    setRunResult(null);
+    try {
+      const r = await runBackup.mutateAsync(device.id);
+      setRunResult({ binary: r.binary, export: r.export });
+      refetch();
+    } catch (e: unknown) {
+      // chyba se zobrazí přes runBackup.error
+    }
+  }
+
+  async function handleDelete(backupId: number) {
+    if (!confirm("Opravdu smazat tuto zálohu?")) return;
+    setDeleting(backupId);
+    try {
+      await deleteBackup.mutateAsync(backupId);
+      refetch();
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  function handleDownload(backupId: number, filename: string) {
+    // Stažení přes Next.js proxy — token je v cookie, backend ho přečte
+    window.open(`/api/backend/backups/${backupId}/download`, "_blank");
+  }
+
+  const typeLabel: Record<string, string> = { binary: ".backup", export: ".rsc" };
+  const typeBg:    Record<string, string> = {
+    binary: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+    export: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  };
+  const statusBg: Record<string, string> = {
+    ok:      "text-green-600 dark:text-green-400",
+    failed:  "text-red-500",
+    running: "text-muted-foreground animate-pulse",
+  };
+
+  return (
+    <div className="p-4 space-y-4">
+
+      {/* Spustit zálohu */}
+      <div className="rounded-lg border border-border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Záloha MikroTik</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Vždy oba typy: binary (.backup) + export (.rsc)
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={handleRunBackup}
+            disabled={!canBackup || runBackup.isPending}
+          >
+            {runBackup.isPending ? (
+              <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />Zálohuji…</>
+            ) : (
+              <><HardDrive className="h-3.5 w-3.5 mr-1.5" />Zálohovat nyní</>
+            )}
+          </Button>
+        </div>
+
+        {/* Podmínky dostupnosti */}
+        {!device.last_polled_at && (
+          <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 rounded-md px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            Záloha vyžaduje alespoň jeden úspěšný poll
+          </div>
+        )}
+        {device.last_polled_at && !canBackup && (
+          <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 rounded-md px-3 py-2">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            Záloha vyžaduje API nebo SSH přihlašovací profil
+          </div>
+        )}
+
+        {/* Výsledek posledního spuštění */}
+        {runResult && (
+          <div className="space-y-1.5 pt-1">
+            {(["binary", "export"] as const).map((t) => {
+              const r = runResult[t];
+              return (
+                <div key={t} className={cn(
+                  "flex items-center gap-2 text-xs rounded-md px-3 py-2",
+                  r.success
+                    ? "bg-green-50 dark:bg-green-950/20"
+                    : "bg-red-50 dark:bg-red-950/20"
+                )}>
+                  {r.success
+                    ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400 shrink-0" />
+                    : <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+                  <span className="font-medium">{typeLabel[t]}</span>
+                  {r.success
+                    ? <><span className="text-muted-foreground">{r.filename}</span><span className="ml-auto">{r.file_size_human}</span></>
+                    : <span className="text-red-600 dark:text-red-400 truncate">{r.error}</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {runBackup.isError && (
+          <p className="text-xs text-destructive">{getErrorMessage(runBackup.error)}</p>
+        )}
+      </div>
+
+      {/* Historie záloh */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Historie záloh ({backups.length})
+          </p>
+          <Button size="sm" variant="ghost" onClick={() => refetch()} disabled={isLoading}>
+            <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
+          </Button>
+        </div>
+
+        {isLoading && (
+          <div className="flex items-center gap-2 py-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Načítám…</span>
+          </div>
+        )}
+        {!isLoading && backups.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center">
+            <HardDrive className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+            <p className="text-xs text-muted-foreground">Zatím žádné zálohy</p>
+          </div>
+        )}
+
+        {backups.map((b: DeviceBackup) => (
+          <div key={b.id} className="rounded-lg border border-border flex items-center gap-2 px-3 py-2.5 text-xs">
+            {/* Typ zálohy */}
+            <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0", typeBg[b.backup_type])}>
+              {typeLabel[b.backup_type] ?? b.backup_type}
+            </span>
+
+            {/* Datum */}
+            <span className="text-muted-foreground font-mono shrink-0">
+              {new Date(b.created_at).toLocaleString("cs-CZ", {
+                day: "2-digit", month: "2-digit", year: "numeric",
+                hour: "2-digit", minute: "2-digit",
+              })}
+            </span>
+
+            {/* Stav */}
+            <span className={cn("shrink-0", statusBg[b.status])}>
+              {b.status === "ok" ? "✓ OK" : b.status === "running" ? "…" : "✗ selhalo"}
+            </span>
+
+            {/* Velikost */}
+            {b.file_size_human && b.status === "ok" && (
+              <span className="text-muted-foreground shrink-0">{b.file_size_human}</span>
+            )}
+
+            {/* Verze ROS */}
+            {b.mikrotik_version && (
+              <span className="text-muted-foreground font-mono text-[10px] shrink-0">
+                ROS {b.mikrotik_version}
+              </span>
+            )}
+
+            {/* Chyba */}
+            {b.status === "failed" && b.error_msg && (
+              <span className="text-red-500 truncate flex-1" title={b.error_msg}>
+                {b.error_msg.slice(0, 60)}
+              </span>
+            )}
+
+            <div className="flex-1" />
+
+            {/* Akce */}
+            {b.status === "ok" && (
+              <button
+                onClick={() => handleDownload(b.id, b.filename)}
+                className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+                title="Stáhnout zálohu"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              onClick={() => handleDelete(b.id)}
+              disabled={deleting === b.id}
+              className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+              title="Smazat zálohu"
+            >
+              {deleting === b.id
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Trash2 className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 export function DevicePanel({
   device,
   hostInfo,
@@ -1141,6 +1360,9 @@ export function DevicePanel({
       )}
       {activeTab === "discovery" && (
         <DiscoveryTab device={device} hostInfo={hostInfo} logs={discoveryLogs} isLoadingLogs={logsLoading} />
+      )}
+      {activeTab === "backup" && (
+        <BackupTab device={device} />
       )}
     </div>
   );

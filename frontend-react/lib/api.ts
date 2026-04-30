@@ -8,7 +8,7 @@ import type {
   HostStats, RttTrendResponse, PingResult, OutageEvent,
   IpRange, Credential, CredentialCreate,
   Device, DeviceCreate, DiscoveryResult, DiscoveryLog,
-  AppConfig,
+  AppConfig, DeviceBackup, BackupStats, BackupRunResult,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -254,6 +254,50 @@ export const healthApi = {
     }
   },
 };
+
+// ---------------------------------------------------------------------------
+// Backup
+// ---------------------------------------------------------------------------
+export const backupApi = {
+  async runBackup(deviceId: number): Promise<BackupRunResult> {
+    const { data } = await api.post<BackupRunResult>(
+      `/devices/${deviceId}/backup`,
+      {},
+      { timeout: 120_000 }  // záloha může trvat déle
+    );
+    return data;
+  },
+
+  async getDeviceBackups(deviceId: number, limit = 50): Promise<DeviceBackup[]> {
+    const { data } = await api.get<DeviceBackup[]>(
+      `/devices/${deviceId}/backups`,
+      { params: { limit } }
+    );
+    return data;
+  },
+
+  async getAllBackups(limit = 200, status?: string): Promise<DeviceBackup[]> {
+    const params: Record<string, unknown> = { limit };
+    if (status) params.status = status;
+    const { data } = await api.get<DeviceBackup[]>("/backups", { params });
+    return data;
+  },
+
+  async getStats(): Promise<BackupStats> {
+    const { data } = await api.get<BackupStats>("/backups/stats");
+    return data;
+  },
+
+  getDownloadUrl(backupId: number): string {
+    // Stahování přes proxy — token se přidá automaticky interceptorem
+    return `/api/backend/backups/${backupId}/download`;
+  },
+
+  async deleteBackup(backupId: number): Promise<void> {
+    await api.delete(`/backups/${backupId}`);
+  },
+};
+
 
 export { getErrorMessage };
 export default api;

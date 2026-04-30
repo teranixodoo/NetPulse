@@ -245,3 +245,63 @@ export interface ScanJobStats {
   max_duration_s: number | null;
   last_scan_at:   string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Zálohy zařízení
+// ---------------------------------------------------------------------------
+export interface DeviceBackup {
+  id:               number;
+  device_id:        number;
+  backup_type:      "binary" | "export";
+  filename:         string;
+  filepath:         string;
+  file_size_bytes:  number | null;
+  file_size_human:  string;
+  status:           "running" | "ok" | "failed";
+  error_msg:        string | null;
+  triggered_by:     string;
+  mikrotik_version: string | null;
+  duration_ms:      number | null;
+  created_at:       string;
+  // z JOIN s devices (v /backups přehledu)
+  hostname?:        string;
+  alias?:           string | null;
+  ip?:              string;
+  vendor?:          string | null;
+}
+
+export interface BackupStats {
+  total:           number;
+  ok_count:        number;
+  failed_count:    number;
+  running_count:   number;
+  device_count:    number;
+  total_bytes:     number;
+  total_size_human: string;
+  last_backup_at:  string | null;
+}
+
+export interface BackupRunResult {
+  device_id: number;
+  hostname:  string;
+  binary: {
+    backup_id:        number;
+    success:          boolean;
+    filename:         string;
+    file_size_bytes:  number | null;
+    file_size_human:  string;
+    mikrotik_version: string | null;
+    duration_ms:      number | null;
+    error:            string | null;
+  };
+  export: {
+    backup_id:        number;
+    success:          boolean;
+    filename:         string;
+    file_size_bytes:  number | null;
+    file_size_human:  string;
+    mikrotik_version: string | null;
+    duration_ms:      number | null;
+    error:            string | null;
+  };
+}

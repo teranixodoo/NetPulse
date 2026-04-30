@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
-  devicesApi, configApi, healthApi, getErrorMessage,
+  devicesApi, configApi, healthApi, backupApi, getErrorMessage,
 } from "@/lib/api";
 import type { DeviceCreate, CredentialCreate, IpRange, ScanJob, ScanJobStats,
 } from "@/lib/types";
@@ -12,6 +12,8 @@ import type { DeviceCreate, CredentialCreate, IpRange, ScanJob, ScanJobStats,
 // Keys
 // ---------------------------------------------------------------------------
 export const QK = {
+  backups:       ["backups"] as const,
+  backupStats:   ["backup-stats"] as const,
   health:        ["health"]           as const,
   scanStatus:    ["scan-status"]      as const,
   hosts:         (rid?: number) => ["hosts", rid] as const,
@@ -286,5 +288,59 @@ export function useUpdateCredential() {
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.credentials }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Backup hooks
+// ---------------------------------------------------------------------------
+
+export function useDeviceBackups(deviceId: number, limit = 50) {
+  return useQuery({
+    queryKey: [...QK.backups, deviceId],
+    queryFn:  () => backupApi.getDeviceBackups(deviceId, limit),
+    enabled:  !!deviceId,
+    refetchInterval: false,
+  });
+}
+
+export function useAllBackups(status?: string) {
+  return useQuery({
+    queryKey: [...QK.backups, "all", status],
+    queryFn:  () => backupApi.getAllBackups(200, status),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useBackupStats() {
+  return useQuery({
+    queryKey: QK.backupStats,
+    queryFn:  () => backupApi.getStats(),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useRunBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (deviceId: number) => backupApi.runBackup(deviceId),
+    onSuccess: async (_data, deviceId) => {
+      // Invalidujeme zálohy tohoto zařízení i celkový přehled
+      await qc.invalidateQueries({ queryKey: [...QK.backups, deviceId] });
+      await qc.invalidateQueries({ queryKey: [...QK.backups, "all"] });
+      await qc.invalidateQueries({ queryKey: QK.backupStats });
+    },
+  });
+}
+
+export function useDeleteBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (backupId: number) => backupApi.deleteBackup(backupId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.backups });
+      await qc.invalidateQueries({ queryKey: QK.backupStats });
+    },
+  });
+}
+
 
 export { getErrorMessage };

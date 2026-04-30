@@ -32,6 +32,8 @@ services:
       DB_ENCRYPTION_KEY: "Bfo7vpyswMPI8F-4tV3t8FwvONJmGJP5VxaaTKzZp2s="
       PORT:              8000
       JWT_SECRET:        "6c1a7104e096922cdd3155e16f1574875d52a033c289235352850f6997494325"
+    volumes:
+      - backup_data:/backups   # persistentní úložiště záloh zařízení
     ports:
       - "8000:8000"
     user: "0"
@@ -75,3 +77,4 @@ services:
 
 volumes:
   pg_data:
+  backup_data:  # zálohy zařízení

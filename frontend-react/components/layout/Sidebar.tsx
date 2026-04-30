@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Monitor, Network, KeyRound,
   ScrollText, Settings, Radio, Users, List, History, BarChart2,
-} from "lucide-react";
+  HardDrive } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ScanStatusWidget } from "./ScanStatusWidget";
 
@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { href: "/credentials", label: "Přihl. profily", icon: KeyRound },
   { href: "/logs",        label: "Log výpadků", icon: ScrollText },
   { href: "/scans",      label: "Historie scanů", icon: History },
+  { href: "/backups",    label: "Zálohy",         icon: HardDrive },
   { href: "/users",       label: "Uživatelé",   icon: Users },
   { href: "/settings",    label: "Nastavení",   icon: Settings },
 ];

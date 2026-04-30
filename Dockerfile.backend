@@ -71,7 +71,8 @@ WORKDIR /app
 COPY backend/ .
 
 # Vlastnictví souborů
-RUN chown -R netpulse:netpulse /app
+# Vytvoříme adresář pro zálohy s právy netpulse
+RUN mkdir -p /backups && chown -R netpulse:netpulse /app /backups
 
 # Nastavíme CAP_NET_RAW na python binary — umožní icmplib raw ICMP sockets
 # bez nutnosti spouštět celý proces jako root
