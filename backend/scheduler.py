@@ -196,6 +196,21 @@ async def run_discovery_scan(
             discovery_state["running"] = False
             return
 
+        # Přeskočíme zařízení u kterých někdy proběhl poll (last_polled_at IS NOT NULL).
+        # Zařízení s pollem má aktivní sběr dat — discovery není potřeba.
+        skip_polled = str(config.get("discovery_skip_polled", "true")).lower() == "true"
+        if skip_polled:
+            before_filter = len(targets)
+            targets = [d for d in targets if d.get("last_polled_at") is None]
+            skipped = before_filter - len(targets)
+            if skipped:
+                log.info(f"Discovery: přeskočeno {skipped} zařízení s nastaveným pollem (last_polled_at IS NOT NULL)")
+
+        if not targets:
+            log.info("Discovery: všechna zařízení mají čerstvý poll, přeskakuji.")
+            discovery_state["running"] = False
+            return
+
         discovery_state["total_devices"] = len(targets)
 
         job_id = await db.scan_job_start(

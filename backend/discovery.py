@@ -68,13 +68,12 @@ class DiscoveryResult:
     http_status:     Optional[int] = None
 
     def to_device_patch(self) -> dict:
+        """Vrátí jen pole která se mají přepsat v devices tabulce.
+        Hostname se záměrně nepřepisuje — uživatel ho zadal ručně."""
         patch = {}
-        hostname = (
-            self.mdns_name or self.netbios_name or
-            self.snmp_sysname or self.hostname
-        )
-        if hostname and hostname != "unknown":
-            patch["hostname"] = hostname
+        # Hostname nepřepisujeme — discovery zjišťuje rDNS/NetBIOS/SNMP sysname,
+        # ale ty jsou pouze informativní a neměly by přepisovat uživatelský název.
+        # Hodnoty jsou viditelné v discovery logu (layers).
         if self.mac:
             patch["mac"] = self.mac
         if self.vendor:

@@ -69,7 +69,8 @@ ON CONFLICT (key) DO NOTHING;
 INSERT INTO app_config (key, value, description) VALUES
     ('discovery_enabled',   'false', 'Automatický discovery scheduler zapnutý'),
     ('discovery_interval_s','3600',  'Interval discovery scanu v sekundách'),
-    ('discovery_only_online','true', 'Testovat jen online zařízení')
+    ('discovery_only_online','true', 'Testovat jen online zařízení'),
+('discovery_skip_polled','true', 'Přeskočit zařízení s čerstvým pollem (< discovery_interval_s)')
 ON CONFLICT (key) DO NOTHING;
 
 -- Statistický pohled — uptime za posledních 24h
@@ -212,7 +213,3 @@ CREATE TABLE IF NOT EXISTS device_poll_results (
 
 CREATE INDEX IF NOT EXISTS idx_poll_results_device
     ON device_poll_results (device_id, polled_at DESC);
-
--- Migrace: přidání textového uptime (originální string ze zařízení)
-ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_uptime_str VARCHAR(40);
-ALTER TABLE device_poll_results ADD COLUMN IF NOT EXISTS uptime_str VARCHAR(40);
