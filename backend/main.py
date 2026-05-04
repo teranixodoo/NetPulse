@@ -507,14 +507,19 @@ async def update_config(
         "alert_email", "alert_rtt_ms", "retention_days",
         # Discovery scheduler
         "discovery_enabled", "discovery_interval_s", "discovery_only_online",
+        "discovery_skip_polled",
+        # Backup scheduler
+        "backup_enabled", "backup_interval_s", "backup_only_online", "backup_only_successful",
     }
     for key in updates:
         if key not in allowed:
             raise HTTPException(status_code=400, detail=f"Neznámý klíč: {key}")
         await db.set_config_value(pool, key, str(updates[key]))
-    # Restartujeme scheduler při změně ping nebo discovery konfigurace
+    # Restartujeme scheduler při změně ping, discovery nebo backup konfigurace
     if any(k in updates for k in ("scan_interval_s", "discovery_enabled",
-                                   "discovery_interval_s", "discovery_only_online")):
+                                   "discovery_interval_s", "discovery_only_online",
+                                   "discovery_skip_polled", "backup_enabled",
+                                   "backup_interval_s")):
         cfg = await db.get_config_db(pool)
         scheduler.restart_scheduler(pool, cfg)
     return {"status": "ok", "updated": list(updates.keys())}
@@ -1057,7 +1062,7 @@ async def trigger_backup_scan(
     pool = Depends(get_db),
 ):
     """Spustí backup scheduler okamžitě pro všechna způsobilá zařízení."""
-    config = await db.get_config(pool)
+    config = await db.get_config_db(pool)
     await scheduler.trigger_backup_now(pool, config, triggered_by=user.username)
     return {"status": "started", "triggered_by": user.username}
 

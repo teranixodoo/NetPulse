@@ -423,6 +423,9 @@ def restart_scheduler(pool, config: dict) -> None:
         except Exception:
             pass
 
+    # Backup — přidat/odebrat dle nastavení
+    setup_backup_scheduler(pool, config)
+
 
 async def trigger_scan_now(pool, config: dict, triggered_by: str = "manual") -> None:
     asyncio.create_task(
@@ -479,15 +482,40 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
         log.error(f"Backup scheduler: chyba načítání zařízení: {e}")
         return
 
+    # Načteme aktuální online stav ze scan výsledků
+    try:
+        online_ips: set[str] = set()
+        async with pool.acquire() as _conn:
+            rows = await _conn.fetch(
+                """
+                SELECT DISTINCT ON (ip) ip::text, is_alive
+                FROM ping_results ORDER BY ip, scanned_at DESC
+                """
+            )
+            # online_ips obsahuje IP ve formátu "93.91.156.130/32" i "93.91.156.130"
+            online_ips = set()
+            for r in rows:
+                if r["is_alive"]:
+                    ip_str = str(r["ip"])
+                    online_ips.add(ip_str)              # s prefixem: 1.2.3.4/32
+                    online_ips.add(ip_str.split("/")[0]) # bez prefixu: 1.2.3.4
+    except Exception as _e:
+        log.warning(f"Backup scheduler: nelze načíst online stav: {_e}")
+        online_ips = set()
+
     # Filtrujeme zařízení
     targets = []
     for d in devices:
         # Individuální nastavení — přeskočit pokud backup_enabled = false
         if not d.get("backup_enabled", True):
             continue
-        # Pouze online
-        if only_online and not d.get("is_alive"):
-            continue
+        # Pouze online — kontrolujeme přes ping_results
+        if only_online:
+            raw_ip    = str(d.get("ip", "") or "")
+            device_ip = raw_ip.split("/")[0].strip()
+            log.info(f"Backup filter: {d.get('hostname')} ip={device_ip!r} in_online={device_ip in online_ips}")
+            if device_ip not in online_ips:
+                continue
         # Pouze s úspěšným pollem
         if only_successful and not d.get("last_polled_at"):
             continue
@@ -497,7 +525,10 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
             continue
         targets.append(d)
 
-    log.info(f"Backup scheduler: {len(targets)} zařízení ke zálohování")
+    log.info(
+        f"Backup scheduler: {len(targets)} zařízení ke zálohování "
+        f"(celkem {len(devices)}, online_ips={len(online_ips)})"
+    )
 
     # Spustíme zálohy sekvenčně (nechceme zahltit síť)
     for device in targets:
