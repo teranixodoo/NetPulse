@@ -476,10 +476,28 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
         f"only_successful={only_successful}"
     )
 
+    # Zaznamenáme start backup jobu do scan_jobs pro historii
+    job_id = None
+    try:
+        job_id = await _db.scan_job_start(
+            pool,
+            job_type     = "backup",
+            trigger_type = trigger_type,
+            triggered_by = trigger_type,
+            meta         = {"only_online": only_online, "only_successful": only_successful},
+        )
+    except Exception as _je:
+        log.warning(f"Backup scheduler: nelze zapsat job start: {_je}")
+
     try:
         devices = await _db.get_devices_with_credentials(pool)
     except Exception as e:
         log.error(f"Backup scheduler: chyba načítání zařízení: {e}")
+        if job_id:
+            try:
+                await _db.scan_job_finish(pool, job_id, status="error", error_msg=str(e))
+            except Exception:
+                pass
         return
 
     # Načteme aktuální online stav ze scan výsledků
@@ -530,6 +548,22 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
         f"(celkem {len(devices)}, online_ips={len(online_ips)})"
     )
 
+    # Pokud nejsou žádná zařízení — ukončíme job
+    if not targets and job_id:
+        try:
+            await _db.scan_job_finish(
+                pool, job_id, status="done",
+                ok_count=0, fail_count=0,
+                error_msg="Žádné způsobilé zařízení pro zálohu",
+            )
+        except Exception:
+            pass
+        return
+
+    # Počítadla výsledků
+    _ok_count   = 0
+    _fail_count = 0
+
     # Spustíme zálohy sekvenčně (nechceme zahltit síť)
     for device in targets:
         ip_str      = str(device["ip"]).split("/")[0]
@@ -547,11 +581,12 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
                 if raw:
                     creds_with_pass.append(raw)
 
-            # Záznam v DB
+            # Cipher — použijeme stejný klíč jako main.py
             from cryptography.fernet import Fernet
             import os
-            _key    = os.getenv("FERNET_KEY", "")
+            _key    = os.getenv("FERNET_KEY", "Bfo7vpyswMPI8F-4tV3t8FwvONJmGJP5VxaaTKzZp2s=")
             _cipher = Fernet(_key.encode()) if _key else None
+            log.info(f"Backup cipher: key_len={len(_key)} cipher={_cipher is not None}")
 
             backup_db_id = await _db.create_backup_record(
                 pool, device["id"], "export",
@@ -588,6 +623,10 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
                         backup_db_id, result.filename, str(result.filepath),
                     )
 
+            if result.success:
+                _ok_count += 1
+            else:
+                _fail_count += 1
             log.info(
                 f"Backup scheduler: {hostname} "
                 f"{'OK' if result.success else 'FAIL'} "
@@ -595,7 +634,21 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
             )
 
         except Exception as e:
+            _fail_count += 1
             log.error(f"Backup scheduler: chyba zálohy {hostname}: {e}")
+
+    # Zapíšeme výsledek backup jobu do scan_jobs
+    if job_id:
+        try:
+            await _db.scan_job_finish(
+                pool, job_id,
+                status     = "done",
+                ok_count   = _ok_count,
+                fail_count = _fail_count,
+                error_msg  = f"{_fail_count} záloh selhalo" if _fail_count > 0 else None,
+            )
+        except Exception as _fe:
+            log.warning(f"Backup scheduler: nelze zapsat job finish: {_fe}")
 
 
 def setup_backup_scheduler(pool, config: dict) -> None:

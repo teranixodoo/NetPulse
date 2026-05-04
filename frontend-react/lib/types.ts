@@ -240,6 +240,7 @@ export interface ScanJobStats {
   running:        number;
   ping_scans:     number;
   discoveries:    number;
+  backups:        number;
   avg_duration_s: number | null;
   min_duration_s: number | null;
   max_duration_s: number | null;

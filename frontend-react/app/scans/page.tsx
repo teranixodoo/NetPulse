@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import {
   Activity, CheckCircle, XCircle, Clock,
-  RefreshCw, Wifi, Search, Cpu, ChevronDown,
+  RefreshCw, Wifi, Search, Cpu, ChevronDown, HardDrive,
 } from "lucide-react";
 import { useScanJobs, useScanJobsStats, useTriggerScan } from "@/hooks/useNetPulse";
 import type { ScanJob, ScanJobStats } from "@/lib/types";
@@ -41,6 +41,12 @@ const JOB_META: Record<string, {
     color: "text-amber-600 dark:text-amber-400",
     bg:    "bg-amber-50 dark:bg-amber-950/40",
   },
+  backup:  {
+    label: "Backup",
+    icon:  HardDrive,
+    color: "text-green-600 dark:text-green-400",
+    bg:    "bg-green-50 dark:bg-green-950/40",
+  },
 };
 
 const STATUS_META = {
@@ -70,6 +76,8 @@ function StatsRow({ stats }: { stats: ScanJobStats }) {
         color="green" sub={`${stats.errors} chyb`} />
       <MetricCard label="Ping scanů"     value={stats.ping_scans} />
       <MetricCard label="Discovery"      value={stats.discoveries} />
+      <MetricCard label="Zálohy"         value={stats.backups ?? 0}
+        color="green" />
       <MetricCard label="Průměrná doba"
         value={formatDuration(stats.avg_duration_s)}
         sub={`min ${formatDuration(stats.min_duration_s)}`} />
@@ -91,10 +99,11 @@ function ActivityChart({ jobs }: { jobs: ScanJob[] }) {
     const hours  = Array.from({ length: 24 }, (_, i) => {
       const h = new Date(now - (23 - i) * 3600_000);
       return {
-        label:  `${h.getHours()}:00`,
-        ping:   0,
+        label:     `${h.getHours()}:00`,
+        ping:      0,
         discovery: 0,
-        error:  0,
+        backup:    0,
+        error:     0,
       };
     });
     jobs.forEach((job) => {
@@ -107,6 +116,8 @@ function ActivityChart({ jobs }: { jobs: ScanJob[] }) {
         bucket.error++;
       } else if (job.job_type === "discovery") {
         bucket.discovery++;
+      } else if (job.job_type === "backup") {
+        bucket.backup++;
       } else {
         bucket.ping++;
       }
@@ -131,6 +142,7 @@ function ActivityChart({ jobs }: { jobs: ScanJob[] }) {
         />
         <Bar dataKey="ping"      name="Ping scan"  stackId="a" fill="#3b82f6" radius={[0,0,0,0]} />
         <Bar dataKey="discovery" name="Discovery"  stackId="a" fill="#a855f7" radius={[0,0,0,0]} />
+        <Bar dataKey="backup"    name="Backup"     stackId="a" fill="#22c55e" radius={[0,0,0,0]} />
         <Bar dataKey="error"     name="Chyba"      stackId="a" fill="#ef4444" radius={[4,4,0,0]} />
       </BarChart>
     </ResponsiveContainer>
@@ -347,6 +359,9 @@ export default function ScansPage() {
             <span className="h-2 w-2 rounded-sm bg-purple-500" /> Discovery
           </span>
           <span className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-sm bg-green-500" /> Backup
+          </span>
+          <span className="flex items-center gap-1">
             <span className="h-2 w-2 rounded-sm bg-red-500" /> Chyba
           </span>
         </div>
@@ -359,6 +374,7 @@ export default function ScansPage() {
           <option value="ping_scan">Ping scan</option>
           <option value="discovery">Discovery</option>
           <option value="snmp_poll">SNMP poll</option>
+          <option value="backup">Backup</option>
         </Select>
         <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-40">
           <option value="">Vše — stav</option>

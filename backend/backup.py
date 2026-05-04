@@ -256,6 +256,11 @@ async def _export_via_ssh(
         username = cred.get("username") or "admin"
 
     password = _decrypt(cred.get("password_cipher", ""), cipher)
+    log.info(
+        f"SSH backup connect: {ip}:{port} user={username} "
+        f"pass_len={len(password)} cipher_ok={cipher is not None} "
+        f"has_password_cipher={bool(cred.get('password_cipher'))}"
+    )
 
     try:
         async with asyncssh.connect(
