@@ -42,7 +42,8 @@ class PollerResult:
     system_info:  dict         = field(default_factory=dict)
     raw_output:   Optional[str] = None
     error:        Optional[str] = None
-    credential_id: Optional[int] = None   # ID úspěšného credential profilu
+    credential_id:   Optional[int]  = None   # ID úspěšného credential profilu
+    successful_auth: Optional[dict] = None   # Kompletní parametry úspěšného přihlášení
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +171,7 @@ async def _poll_mikrotik_api(
                                   "ssl_verify_hostname": False, "ssl_context": None})
 
         api = None
+        successful_ssl_opt = None
         for ssl_opt in ssl_variants:
             try:
                 _conn = routeros_api.RouterOsApiPool(
@@ -182,6 +184,7 @@ async def _poll_mikrotik_api(
                 )
                 api = _conn.get_api()
                 conn = _conn
+                successful_ssl_opt = ssl_opt  # zapamatujeme variantu která fungovala
                 log.debug(f"MikroTik API {ip}:{port} SSL varianta OK: ssl={ssl_opt['use_ssl']} ctx={ssl_opt['ssl_context'] is not None}")
                 break
             except Exception as e:
@@ -340,10 +343,10 @@ async def _poll_mikrotik_api(
             except Exception:
                 pass
 
-        return data
+        return data, successful_ssl_opt
 
     try:
-        data = await asyncio.wait_for(
+        data, _ssl_opt = await asyncio.wait_for(
             loop.run_in_executor(None, _connect_and_fetch),
             timeout=timeout,
         )
@@ -368,6 +371,18 @@ async def _poll_mikrotik_api(
         if uptime_str:
             result.uptime   = uptime_str
             result.uptime_s = _parse_mikrotik_uptime(uptime_str)
+
+        # Uložíme snapshot úspěšného přihlášení pro backup engine
+        result.successful_auth = {
+            "auth_type":        "api",
+            "credential_id":    cred.get("id"),
+            "credential_name":  cred.get("name"),
+            "username":         username,
+            "port":             port,
+            "use_ssl":          _ssl_opt.get("use_ssl", False) if _ssl_opt else False,
+            "ssl_verify":       _ssl_opt.get("ssl_verify", False) if _ssl_opt else False,
+            "has_ssl_context":  _ssl_opt.get("ssl_context") is not None if _ssl_opt else False,
+        }
 
         result.success = True
         log.info(
@@ -717,6 +732,15 @@ async def _poll_ssh(ip: str, cred: dict, timeout: float = 15.0) -> PollerResult:
         # Úspěch jen pokud jsme získali aspoň hostname
         if result.hostname:
             result.success = True
+            # Snapshot úspěšného SSH přihlášení pro backup engine
+            result.successful_auth = {
+                "auth_type":       "ssh",
+                "credential_id":   cred.get("id"),
+                "credential_name": cred.get("name"),
+                "username":        cred.get("username", "admin"),
+                "port":            int(cred.get("port") or 22),
+                "use_ssl":         False,
+            }
         else:
             result.error = "SSH: přihlášení OK ale žádná data nezískána"
 

@@ -217,3 +217,8 @@ CREATE INDEX IF NOT EXISTS idx_poll_results_device
 -- Migrace: ID posledního úspěšného credential profilu (pro backup engine)
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_credential_id INTEGER
     REFERENCES credentials(id) ON DELETE SET NULL;
+
+-- Migrace: snapshot úspěšného přihlášení (pro backup engine)
+-- Ukládá kompletní parametry které vedly k úspěšnému pollu:
+-- credential_id, auth_type, username, port, use_ssl, ssl_context_type
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_auth JSONB;

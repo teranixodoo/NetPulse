@@ -1,9 +1,8 @@
 # backend/backup.py — MikroTik backup engine (export .rsc)
 #
-# Typ zálohy: export — /export přes RouterOS API nebo SSH
-# Výstup: čitelný .rsc skript, diffovatelný, přenositelný mezi verzemi ROS.
-#
-# Zálohy se ukládají do /backups/{device_uuid}/{timestamp}_{hostname}.rsc
+# Záloha probíhá jako /export přes RouterOS API nebo SSH.
+# Pokud je k dispozici last_successful_auth (snapshot z posledního pollu),
+# použijeme přesně ty parametry které vedly k úspěchu — bez zkoušení variant.
 
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ from typing import Optional
 
 log = logging.getLogger("netpulse.backup")
 
-# Kořenový adresář pro zálohy (docker volume /backups)
 BACKUP_ROOT = Path(os.getenv("BACKUP_DIR", "/backups"))
 
 
@@ -35,18 +33,15 @@ class BackupResult:
         self.duration_ms:      Optional[int]  = None
         self.error:            Optional[str]  = None
 
-    def __repr__(self):
-        return f"BackupResult(success={self.success}, size={self.file_size_bytes}, error={self.error})"
-
 
 # ---------------------------------------------------------------------------
 # Pomocné funkce
 # ---------------------------------------------------------------------------
 
 def _ensure_backup_dir(device_uuid: str) -> Path:
-    backup_dir = BACKUP_ROOT / device_uuid
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    return backup_dir
+    d = BACKUP_ROOT / device_uuid
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _make_filename(hostname: str) -> str:
@@ -64,49 +59,118 @@ def _decrypt(password_cipher: str, cipher_obj) -> str:
         return password_cipher
 
 
+def _save_export(export_text: str, hostname: str, device_uuid: str) -> tuple[Path, str]:
+    """Uloží export text na disk. Vrátí (filepath, filename)."""
+    backup_dir = _ensure_backup_dir(device_uuid)
+    filename   = _make_filename(hostname)
+    filepath   = backup_dir / filename
+    filepath.write_text(export_text, encoding="utf-8")
+    return filepath, filename
+
+
+def _extract_ros_version(export_text: str) -> Optional[str]:
+    """Extrahuje verzi ROS ze záhlaví exportu."""
+    import re
+    for line in export_text.splitlines()[:5]:
+        m = re.search(r"v(\d+\.\d+[\.\d]*)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
 # ---------------------------------------------------------------------------
-# Export přes RouterOS API
+# Export přes RouterOS API — s přesnými parametry z last_successful_auth
 # ---------------------------------------------------------------------------
 
-async def _export_via_api(ip, cred, cipher, hostname, device_uuid, timeout=60.0):
+async def _export_via_api(
+    ip: str, cred: dict, cipher,
+    hostname: str, device_uuid: str,
+    auth_snapshot: dict = None,  # snapshot z posledního úspěšného pollu
+    timeout: float = 60.0,
+) -> BackupResult:
     result = BackupResult()
     t0     = time.monotonic()
 
     try:
         import routeros_api
+        import ssl as _ssl
     except ImportError:
         result.error = "routeros_api není nainstalován"
         return result
 
     port     = int(cred.get("port") or 8728)
-    use_ssl  = port in (8729, 443)
     username = cred.get("username") or "admin"
     password = _decrypt(cred.get("password_cipher", ""), cipher)
 
     def _connect_and_export():
-        import ssl
-        ssl_variants = (
-            [{"use_ssl": True, "ssl_context": ssl.create_default_context()},
-             {"use_ssl": True, "ssl_context": None}]
-            if use_ssl else [{"use_ssl": False, "ssl_context": None}]
-        )
-        if use_ssl:
-            ssl_variants[0]["ssl_context"].check_hostname = False
-            ssl_variants[0]["ssl_context"].verify_mode    = ssl.CERT_NONE
+        # Pokud máme snapshot z posledního pollu — použijeme přesně ty parametry
+        if auth_snapshot:
+            use_ssl         = auth_snapshot.get("use_ssl", False)
+            has_ssl_context = auth_snapshot.get("has_ssl_context", False)
+            if use_ssl and has_ssl_context:
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode    = _ssl.CERT_NONE
+                ssl_variants = [{"use_ssl": True, "ssl_verify": False,
+                                 "ssl_verify_hostname": False, "ssl_context": ctx}]
+            elif use_ssl:
+                ssl_variants = [{"use_ssl": True, "ssl_verify": False,
+                                 "ssl_verify_hostname": False, "ssl_context": None}]
+            else:
+                ssl_variants = [{"use_ssl": False, "ssl_verify": False,
+                                 "ssl_verify_hostname": False, "ssl_context": None}]
+            log.info(
+                f"Backup API {ip}:{port} — použiji snapshot: "
+                f"use_ssl={use_ssl} has_ctx={has_ssl_context}"
+            )
+        else:
+            # Bez snapshotu — zkoušíme všechny varianty (stejná logika jako poller)
+            use_ssl = port in (8729, 443) or port >= 8700
+            ssl_variants = []
+            if use_ssl:
+                ssl_variants.append({"use_ssl": True, "ssl_verify": False,
+                                     "ssl_verify_hostname": False, "ssl_context": None})
+                try:
+                    ctx_adh = _ssl.create_default_context()
+                    ctx_adh.check_hostname = False
+                    ctx_adh.verify_mode    = _ssl.CERT_NONE
+                    ctx_adh.set_ciphers("ADH:@SECLEVEL=0")
+                    ssl_variants.append({"use_ssl": True, "ssl_verify": False,
+                                         "ssl_verify_hostname": False, "ssl_context": ctx_adh})
+                except Exception:
+                    pass
+                try:
+                    ctx_all = _ssl.create_default_context()
+                    ctx_all.check_hostname = False
+                    ctx_all.verify_mode    = _ssl.CERT_NONE
+                    ctx_all.set_ciphers("ALL:@SECLEVEL=0")
+                    ssl_variants.append({"use_ssl": True, "ssl_verify": False,
+                                         "ssl_verify_hostname": False, "ssl_context": ctx_all})
+                except Exception:
+                    pass
+            else:
+                ssl_variants.append({"use_ssl": False, "ssl_verify": False,
+                                     "ssl_verify_hostname": False, "ssl_context": None})
 
-        api = None
+        # Připojení
+        api            = None
+        last_err       = None
         for ssl_opt in ssl_variants:
             try:
                 api = routeros_api.RouterOsApiPool(
                     ip, username=username, password=password,
-                    port=port, plaintext_login=True, **ssl_opt
+                    port=port, plaintext_login=True, **ssl_opt,
                 ).get_api()
+                log.info(f"Backup API {ip}:{port} připojen (ssl={ssl_opt['use_ssl']})")
                 break
-            except Exception:
+            except Exception as e:
+                last_err = e
                 continue
 
         if api is None:
-            raise ConnectionError(f"Nelze se připojit k RouterOS API {ip}:{port}")
+            raise ConnectionError(
+                f"Nelze se připojit k RouterOS API {ip}:{port}: {last_err}"
+            )
 
         # Verze ROS
         version = None
@@ -116,7 +180,7 @@ async def _export_via_api(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
         except Exception:
             pass
 
-        # Export
+        # Export konfigurace
         try:
             lines = api.get_binary_resource("/").call("export", {"verbose": ""})
             parts = []
@@ -137,38 +201,42 @@ async def _export_via_api(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
     try:
         loop = asyncio.get_event_loop()
         export_text, version = await asyncio.wait_for(
-            loop.run_in_executor(None, _connect_and_export), timeout=timeout
+            loop.run_in_executor(None, _connect_and_export),
+            timeout=timeout
         )
 
         if not export_text.strip():
             result.error = "Export vrátil prázdný výstup"
             return result
 
-        backup_dir = _ensure_backup_dir(device_uuid)
-        filename   = _make_filename(hostname)
-        filepath   = backup_dir / filename
-        filepath.write_text(export_text, encoding="utf-8")
+        filepath, filename = _save_export(export_text, hostname, device_uuid)
 
         result.success          = True
         result.filepath         = filepath
         result.filename         = filename
         result.file_size_bytes  = filepath.stat().st_size
-        result.mikrotik_version = version
+        result.mikrotik_version = version or _extract_ros_version(export_text)
         result.duration_ms      = int((time.monotonic() - t0) * 1000)
 
     except asyncio.TimeoutError:
-        result.error = f"Timeout exportu přes API ({timeout}s)"
+        result.error = f"Timeout API exportu ({timeout}s)"
     except Exception as e:
         result.error = str(e)[:400]
+        log.warning(f"Backup API {ip} chyba: {result.error}")
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Export přes SSH
+# Export přes SSH — s přesnými parametry z last_successful_auth
 # ---------------------------------------------------------------------------
 
-async def _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout=60.0):
+async def _export_via_ssh(
+    ip: str, cred: dict, cipher,
+    hostname: str, device_uuid: str,
+    auth_snapshot: dict = None,
+    timeout: float = 60.0,
+) -> BackupResult:
     result = BackupResult()
     t0     = time.monotonic()
 
@@ -178,8 +246,15 @@ async def _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
         result.error = "asyncssh není nainstalován"
         return result
 
-    port     = int(cred.get("port") or 22)
-    username = cred.get("username") or "admin"
+    # Pokud máme snapshot — použijeme přesný port a username z něj
+    if auth_snapshot:
+        port     = int(auth_snapshot.get("port") or cred.get("port") or 22)
+        username = auth_snapshot.get("username") or cred.get("username") or "admin"
+        log.info(f"Backup SSH {ip}:{port} — použiji snapshot: user={username}")
+    else:
+        port     = int(cred.get("port") or 22)
+        username = cred.get("username") or "admin"
+
     password = _decrypt(cred.get("password_cipher", ""), cipher)
 
     try:
@@ -197,31 +272,20 @@ async def _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
             result.error = "SSH export vrátil prázdný výstup"
             return result
 
-        # Verze ROS ze záhlaví exportu
-        version = None
-        import re
-        for line in export_text.splitlines()[:5]:
-            m = re.search(r"v(\d+\.\d+[\.\d]*)", line)
-            if m:
-                version = m.group(1)
-                break
-
-        backup_dir = _ensure_backup_dir(device_uuid)
-        filename   = _make_filename(hostname)
-        filepath   = backup_dir / filename
-        filepath.write_text(export_text, encoding="utf-8")
+        filepath, filename = _save_export(export_text, hostname, device_uuid)
 
         result.success          = True
         result.filepath         = filepath
         result.filename         = filename
         result.file_size_bytes  = filepath.stat().st_size
-        result.mikrotik_version = version
+        result.mikrotik_version = _extract_ros_version(export_text)
         result.duration_ms      = int((time.monotonic() - t0) * 1000)
 
     except asyncio.TimeoutError:
-        result.error = f"Timeout exportu přes SSH ({timeout}s)"
+        result.error = f"Timeout SSH exportu ({timeout}s)"
     except Exception as e:
         result.error = str(e)[:400]
+        log.warning(f"Backup SSH {ip} chyba: {result.error}")
 
     return result
 
@@ -231,18 +295,19 @@ async def _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
 # ---------------------------------------------------------------------------
 
 async def backup_mikrotik(
-    ip:                       str,
-    creds:                    list,
+    ip:                      str,
+    creds:                   list,
     cipher,
-    device_uuid:              str,
-    hostname:                 str,
-    triggered_by:             str   = "manual",
-    timeout:                  float = 90.0,
-    last_successful_cred_id:  int   = None,
+    device_uuid:             str,
+    hostname:                str,
+    triggered_by:            str   = "manual",
+    timeout:                 float = 90.0,
+    last_successful_cred_id: int   = None,
+    last_successful_auth:    dict  = None,  # kompletní snapshot z posledního pollu
 ) -> BackupResult:
     """
     Export záloha (.rsc) MikroTik zařízení.
-    Pokud je known last_successful_cred_id, použijeme ho jako první.
+    Pokud je k dispozici last_successful_auth, použijeme přesně ty parametry.
     Fallback: všechny API credentials → všechny SSH credentials.
     """
     api_creds = [c for c in creds if c.get("auth_type") == "api"]
@@ -251,24 +316,37 @@ async def backup_mikrotik(
     log.info(
         f"Backup zahájen: ip={ip} host={hostname} "
         f"api={len(api_creds)} ssh={len(ssh_creds)} "
+        f"snapshot={'ano' if last_successful_auth else 'ne'} "
         f"preferred_cred_id={last_successful_cred_id}"
     )
 
-    # Seřadíme credentials — úspěšný při posledním pollu jde jako první
     def _sorted(cred_list: list) -> list:
+        """Úspěšný credential při posledním pollu jde první."""
         if not last_successful_cred_id:
             return cred_list
         return sorted(cred_list, key=lambda c: 0 if c.get("id") == last_successful_cred_id else 1)
 
+    def _snapshot_for(cred: dict) -> dict | None:
+        """Vrátí snapshot jen pokud patří tomuto credentialu."""
+        if last_successful_auth and last_successful_auth.get("credential_id") == cred.get("id"):
+            return last_successful_auth
+        return None
+
     for cred in _sorted(api_creds):
-        r = await _export_via_api(ip, cred, cipher, hostname, device_uuid, timeout)
+        r = await _export_via_api(
+            ip, cred, cipher, hostname, device_uuid,
+            auth_snapshot=_snapshot_for(cred), timeout=timeout
+        )
         if r.success:
             log.info(f"Backup OK (API/{cred.get('name','?')}): ip={ip} size={r.file_size_bytes}B")
             return r
         log.warning(f"API export selhal ({cred.get('name','?')}): {r.error}")
 
     for cred in _sorted(ssh_creds):
-        r = await _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout)
+        r = await _export_via_ssh(
+            ip, cred, cipher, hostname, device_uuid,
+            auth_snapshot=_snapshot_for(cred), timeout=timeout
+        )
         if r.success:
             log.info(f"Backup OK (SSH/{cred.get('name','?')}): ip={ip} size={r.file_size_bytes}B")
             return r

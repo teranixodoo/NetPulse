@@ -420,7 +420,18 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
     for r in rows:
         d = dict(r)
         import json as _json
-        d["credentials"] = _json.loads(d["credentials"]) if isinstance(d["credentials"], str) else d["credentials"]
+        d["credentials"]       = _json.loads(d["credentials"]) if isinstance(d["credentials"], str) else d["credentials"]
+        # Deserializujeme JSONB snapshot — asyncpg může vrátit string nebo dict
+        auth = d.get("last_successful_auth")
+        if isinstance(auth, str):
+            try:
+                # Dvojitě enkódovaný string (json uvnitř json) — rozbalíme
+                parsed = _json.loads(auth)
+                if isinstance(parsed, str):
+                    parsed = _json.loads(parsed)
+                d["last_successful_auth"] = parsed if isinstance(parsed, dict) else None
+            except Exception:
+                d["last_successful_auth"] = None
         result.append(d)
     return result
 
@@ -803,7 +814,7 @@ async def save_poll_result(
         if uptime_s:   updates["last_uptime_s"]   = uptime_s
         if uptime_str:             updates["last_uptime_str"]              = uptime_str[:40]
         if successful_credential_id: updates["last_successful_credential_id"] = successful_credential_id
-        if successful_auth:          updates["last_successful_auth"]          = _json.dumps(successful_auth)
+        if successful_auth:          updates["last_successful_auth"]          = successful_auth  # asyncpg zapíše dict přímo do JSONB
         if method and success and method != "failed":
             updates["last_poll_method"] = method
         updates["last_polled_at"] = "NOW()"
@@ -811,11 +822,17 @@ async def save_poll_result(
         if updates:
             # last_polled_at je funkce, ne parametr
             normal = {k: v for k, v in updates.items() if v != "NOW()"}
+            # JSONB sloupce: serializujeme dict → string a přidáme ::jsonb cast
+            _JSONB_COLS = {"last_successful_auth"}
             set_parts = []
             vals = [device_id]
             for i, (k, v) in enumerate(normal.items(), start=2):
-                set_parts.append(f"{k} = ${i}")
-                vals.append(v)
+                if k in _JSONB_COLS and isinstance(v, dict):
+                    set_parts.append(f"{k} = ${i}::jsonb")
+                    vals.append(_json.dumps(v))
+                else:
+                    set_parts.append(f"{k} = ${i}")
+                    vals.append(v)
             set_parts.append("last_polled_at = NOW()")
             set_parts.append("updated_at = NOW()")
             await conn.execute(

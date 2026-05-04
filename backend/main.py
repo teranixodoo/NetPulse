@@ -800,7 +800,8 @@ async def poll_device_data(
         firmware    = result.firmware,
         uptime_s                 = result.uptime_s,
         uptime_str               = result.uptime,   # originální textový uptime ze zařízení
-        successful_credential_id = result.credential_id,  # ID úspěšného profilu
+        successful_credential_id = result.credential_id,   # ID úspěšného profilu
+        successful_auth          = result.successful_auth,  # Kompletní snapshot přihlášení
         interfaces  = result.interfaces,
         ports       = getattr(result, "ports", []),
         serial      = getattr(result, "serial", None),
@@ -924,6 +925,7 @@ async def run_device_backup(
             triggered_by            = user.username,
             timeout                 = 90.0,
             last_successful_cred_id = device.get("last_successful_credential_id"),
+            last_successful_auth    = device.get("last_successful_auth"),  # snapshot přihlášení
         )
     except Exception as e:
         err_str = str(e)[:400]
