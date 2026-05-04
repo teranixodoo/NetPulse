@@ -42,6 +42,7 @@ class PollerResult:
     system_info:  dict         = field(default_factory=dict)
     raw_output:   Optional[str] = None
     error:        Optional[str] = None
+    credential_id: Optional[int] = None   # ID úspěšného credential profilu
 
 
 # ---------------------------------------------------------------------------
@@ -966,6 +967,8 @@ async def poll_device(
                         f"hostname={result.hostname} model={result.model} "
                         f"firmware={result.firmware}"
                     )
+                    # Uložíme ID úspěšného credential profilu pro backup engine
+                    result.credential_id = cred.get("id")
                     return result
                 else:
                     log.warning(

@@ -231,36 +231,48 @@ async def _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout=60.0)
 # ---------------------------------------------------------------------------
 
 async def backup_mikrotik(
-    ip:           str,
-    creds:        list,
+    ip:                       str,
+    creds:                    list,
     cipher,
-    device_uuid:  str,
-    hostname:     str,
-    triggered_by: str   = "manual",
-    timeout:      float = 90.0,
+    device_uuid:              str,
+    hostname:                 str,
+    triggered_by:             str   = "manual",
+    timeout:                  float = 90.0,
+    last_successful_cred_id:  int   = None,
 ) -> BackupResult:
     """
     Export záloha (.rsc) MikroTik zařízení.
-    Priorita: RouterOS API → SSH.
+    Pokud je known last_successful_cred_id, použijeme ho jako první.
+    Fallback: všechny API credentials → všechny SSH credentials.
     """
     api_creds = [c for c in creds if c.get("auth_type") == "api"]
     ssh_creds = [c for c in creds if c.get("auth_type") == "ssh"]
 
-    log.info(f"Backup zahájen: ip={ip} host={hostname} api={len(api_creds)} ssh={len(ssh_creds)}")
+    log.info(
+        f"Backup zahájen: ip={ip} host={hostname} "
+        f"api={len(api_creds)} ssh={len(ssh_creds)} "
+        f"preferred_cred_id={last_successful_cred_id}"
+    )
 
-    for cred in api_creds:
+    # Seřadíme credentials — úspěšný při posledním pollu jde jako první
+    def _sorted(cred_list: list) -> list:
+        if not last_successful_cred_id:
+            return cred_list
+        return sorted(cred_list, key=lambda c: 0 if c.get("id") == last_successful_cred_id else 1)
+
+    for cred in _sorted(api_creds):
         r = await _export_via_api(ip, cred, cipher, hostname, device_uuid, timeout)
         if r.success:
-            log.info(f"Backup OK (API): ip={ip} size={r.file_size_bytes}B")
+            log.info(f"Backup OK (API/{cred.get('name','?')}): ip={ip} size={r.file_size_bytes}B")
             return r
-        log.debug(f"API export selhal: {r.error}")
+        log.warning(f"API export selhal ({cred.get('name','?')}): {r.error}")
 
-    for cred in ssh_creds:
+    for cred in _sorted(ssh_creds):
         r = await _export_via_ssh(ip, cred, cipher, hostname, device_uuid, timeout)
         if r.success:
-            log.info(f"Backup OK (SSH): ip={ip} size={r.file_size_bytes}B")
+            log.info(f"Backup OK (SSH/{cred.get('name','?')}): ip={ip} size={r.file_size_bytes}B")
             return r
-        log.debug(f"SSH export selhal: {r.error}")
+        log.warning(f"SSH export selhal ({cred.get('name','?')}): {r.error}")
 
     result       = BackupResult()
     result.error = "Export selhal přes všechny dostupné profily"
