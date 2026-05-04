@@ -853,3 +853,153 @@ async def get_poll_results(
         result.append(d)
     return result
 
+
+# ---------------------------------------------------------------------------
+# Credentials — načtení včetně šifrovaného hesla (pro backup engine)
+# ---------------------------------------------------------------------------
+
+async def get_credential_raw(pool, credential_id: int) -> dict | None:
+    """Načte credential včetně password_cipher (pro backup engine)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, name, auth_type, username, password_cipher, port, extra_params
+            FROM credentials WHERE id = $1
+            """,
+            credential_id,
+        )
+    if not row:
+        return None
+    import json as _json
+    d = dict(row)
+    if isinstance(d.get("extra_params"), str):
+        d["extra_params"] = _json.loads(d["extra_params"] or "{}")
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Zálohy zařízení (device_backups)
+# ---------------------------------------------------------------------------
+
+async def create_backup_record(
+    pool, device_id: int, backup_type: str,
+    filename: str, filepath: str, triggered_by: str = "manual",
+) -> int:
+    """Vytvoří záznam zálohy se stavem 'running'. Vrátí ID."""
+    async with pool.acquire() as conn:
+        row_id = await conn.fetchval(
+            """
+            INSERT INTO device_backups
+                (device_id, backup_type, filename, filepath, status, triggered_by)
+            VALUES ($1, $2, $3, $4, 'running', $5)
+            RETURNING id
+            """,
+            device_id, backup_type, filename, filepath, triggered_by,
+        )
+    return row_id
+
+
+async def finish_backup_record(
+    pool, backup_id: int, success: bool,
+    file_size_bytes: int = None, mikrotik_version: str = None,
+    duration_ms: int = None, error_msg: str = None,
+) -> None:
+    """Aktualizuje záznam zálohy po dokončení."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE device_backups SET
+                status           = $2,
+                file_size_bytes  = $3,
+                mikrotik_version = $4,
+                duration_ms      = $5,
+                error_msg        = $6
+            WHERE id = $1
+            """,
+            backup_id, "ok" if success else "failed",
+            file_size_bytes, mikrotik_version, duration_ms, error_msg,
+        )
+
+
+async def get_device_backups(pool, device_id: int, limit: int = 50) -> list[dict]:
+    """Vrátí zálohy zařízení seřazené od nejnovější."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, device_id, backup_type, filename, filepath,
+                   file_size_bytes, status, error_msg, triggered_by,
+                   mikrotik_version, duration_ms, created_at
+            FROM device_backups
+            WHERE device_id = $1
+            ORDER BY created_at DESC LIMIT $2
+            """,
+            device_id, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_all_backups(pool, limit: int = 200, status_filter: str = None) -> list[dict]:
+    """Vrátí zálohy přes všechna zařízení."""
+    async with pool.acquire() as conn:
+        if status_filter:
+            rows = await conn.fetch(
+                """
+                SELECT b.*, d.hostname, d.alias, d.ip::text AS ip, d.vendor
+                FROM device_backups b JOIN devices d ON d.id = b.device_id
+                WHERE b.status = $1 ORDER BY b.created_at DESC LIMIT $2
+                """,
+                status_filter, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT b.*, d.hostname, d.alias, d.ip::text AS ip, d.vendor
+                FROM device_backups b JOIN devices d ON d.id = b.device_id
+                ORDER BY b.created_at DESC LIMIT $1
+                """,
+                limit,
+            )
+    return [dict(r) for r in rows]
+
+
+async def get_backup_by_id(pool, backup_id: int) -> dict | None:
+    """Vrátí jeden záznam zálohy."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT b.*, d.hostname, d.alias, d.ip::text AS ip
+            FROM device_backups b JOIN devices d ON d.id = b.device_id
+            WHERE b.id = $1
+            """,
+            backup_id,
+        )
+    return dict(row) if row else None
+
+
+async def delete_backup_record(pool, backup_id: int) -> str | None:
+    """Smaže záznam zálohy z DB. Vrátí filepath."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "DELETE FROM device_backups WHERE id = $1 RETURNING filepath",
+            backup_id,
+        )
+    return row["filepath"] if row else None
+
+
+async def get_backup_stats(pool) -> dict:
+    """Celkové statistiky záloh."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*)                                              AS total,
+                COUNT(*) FILTER (WHERE status = 'ok')                AS ok_count,
+                COUNT(*) FILTER (WHERE status = 'failed')            AS failed_count,
+                COUNT(*) FILTER (WHERE status = 'running')           AS running_count,
+                COUNT(DISTINCT device_id)                            AS device_count,
+                COALESCE(SUM(file_size_bytes) FILTER (WHERE status = 'ok'), 0) AS total_bytes,
+                MAX(created_at)                                      AS last_backup_at
+            FROM device_backups
+            """
+        )
+    return dict(row) if row else {}

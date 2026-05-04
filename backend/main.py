@@ -10,10 +10,12 @@ from typing import List, Optional
 
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Depends, HTTPException, Query, Body, status
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import auth
+import backup as bkp
 import db
 import discovery as disc
 import scanner as sc
@@ -856,3 +858,192 @@ async def get_device_discovery_logs(
     logs = await db.get_discovery_logs(pool, device_id, limit)
     return logs
 
+
+
+# ===========================================================================
+# BACKUP ENDPOINTY
+# ===========================================================================
+
+@app.post("/devices/{device_id}/backup", tags=["Backup"])
+async def run_device_backup(
+    device_id: int,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """
+    Spustí export zálohu (.rsc) MikroTik zařízení.
+    Zařízení musí mít last_polled_at a API nebo SSH credentials.
+    """
+    devices = await db.get_devices_with_credentials(pool)
+    device  = next((d for d in devices if d["id"] == device_id), None)
+    if not device:
+        raise HTTPException(status_code=404, detail="Zařízení nenalezeno")
+
+    if not device.get("last_polled_at"):
+        raise HTTPException(
+            status_code=400,
+            detail="Záloha není dostupná — zařízení nebylo ještě polled"
+        )
+
+    usable_creds = [c for c in device["credentials"] if c.get("auth_type") in ("api", "ssh")]
+    if not usable_creds:
+        raise HTTPException(
+            status_code=400,
+            detail="Záloha vyžaduje API nebo SSH přihlašovací profil"
+        )
+
+    ip_str      = str(device["ip"]).split("/")[0]
+    hostname    = device.get("hostname") or device.get("alias") or ip_str
+    device_uuid = device["device_uuid"]
+
+    log.info(f"Backup zahájen: device_id={device_id} ip={ip_str} user={user.username}")
+
+    # Načteme credentials včetně šifrovaných hesel
+    creds_with_pass = []
+    for c in usable_creds:
+        raw = await db.get_credential_raw(pool, c["id"])
+        if raw:
+            creds_with_pass.append(raw)
+
+    # Záznam v DB — stav running
+    backup_db_id = await db.create_backup_record(
+        pool, device_id, "export",
+        filename     = f"pending_{device_uuid}",
+        filepath     = f"/backups/{device_uuid}/pending",
+        triggered_by = user.username,
+    )
+
+    # Spustíme zálohu
+    try:
+        result = await bkp.backup_mikrotik(
+            ip                      = ip_str,
+            creds                   = creds_with_pass,
+            cipher                  = cipher,
+            device_uuid             = device_uuid,
+            hostname                = hostname,
+            triggered_by            = user.username,
+            timeout                 = 90.0,
+            last_successful_cred_id = device.get("last_successful_credential_id"),
+        )
+    except Exception as e:
+        err_str = str(e)[:400]
+        await db.finish_backup_record(pool, backup_db_id, False, error_msg=err_str)
+        raise HTTPException(status_code=500, detail=f"Záloha selhala: {err_str}")
+
+    # Uložíme výsledek
+    await db.finish_backup_record(
+        pool, backup_db_id,
+        success          = result.success,
+        file_size_bytes  = result.file_size_bytes,
+        mikrotik_version = result.mikrotik_version,
+        duration_ms      = result.duration_ms,
+        error_msg        = result.error if not result.success else None,
+    )
+
+    # Aktualizujeme filepath/filename na skutečné hodnoty
+    if result.success and result.filepath:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE device_backups SET filename=$2, filepath=$3 WHERE id=$1",
+                backup_db_id, result.filename, str(result.filepath),
+            )
+
+    log.info(f"Backup dokončen device_id={device_id}: {'OK' if result.success else 'FAIL'}")
+
+    return {
+        "backup_id":        backup_db_id,
+        "device_id":        device_id,
+        "hostname":         hostname,
+        "success":          result.success,
+        "filename":         result.filename,
+        "file_size_bytes":  result.file_size_bytes,
+        "file_size_human":  bkp.format_file_size(result.file_size_bytes),
+        "mikrotik_version": result.mikrotik_version,
+        "duration_ms":      result.duration_ms,
+        "error":            result.error,
+    }
+
+
+@app.get("/devices/{device_id}/backups", tags=["Backup"])
+async def get_device_backups(
+    device_id: int,
+    limit:     int = 50,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """Vrátí seznam záloh konkrétního zařízení."""
+    backups = await db.get_device_backups(pool, device_id, limit)
+    for b in backups:
+        b["file_size_human"] = bkp.format_file_size(b.get("file_size_bytes"))
+    return backups
+
+
+@app.get("/backups/stats", tags=["Backup"])
+async def get_backup_stats(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Celkové statistiky záloh."""
+    stats = await db.get_backup_stats(pool)
+    stats["total_size_human"] = bkp.format_file_size(stats.get("total_bytes"))
+    return stats
+
+
+@app.get("/backups", tags=["Backup"])
+async def get_all_backups(
+    limit:  int = 200,
+    status: str = None,
+    user    = Depends(current_user),
+    pool    = Depends(get_db),
+):
+    """Přehled všech záloh přes všechna zařízení."""
+    backups = await db.get_all_backups(pool, limit=limit, status_filter=status)
+    for b in backups:
+        b["file_size_human"] = bkp.format_file_size(b.get("file_size_bytes"))
+    return backups
+
+
+@app.get("/backups/{backup_id}/download", tags=["Backup"])
+async def download_backup(
+    backup_id: int,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """Stáhne soubor zálohy."""
+    from pathlib import Path
+    record = await db.get_backup_by_id(pool, backup_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Záloha nenalezena")
+    if record["status"] != "ok":
+        raise HTTPException(status_code=400, detail="Záloha není ve stavu OK")
+    filepath = Path(record["filepath"])
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail=f"Soubor neexistuje: {filepath}")
+    return FileResponse(
+        path       = str(filepath),
+        filename   = record["filename"],
+        media_type = "application/octet-stream",
+    )
+
+
+@app.delete("/backups/{backup_id}", tags=["Backup"])
+async def delete_backup(
+    backup_id: int,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """Smaže zálohu z DB a disku."""
+    from pathlib import Path
+    record = await db.get_backup_by_id(pool, backup_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Záloha nenalezena")
+    filepath    = Path(record["filepath"])
+    deleted_file = False
+    if filepath.exists():
+        try:
+            filepath.unlink()
+            deleted_file = True
+        except Exception as e:
+            log.warning(f"Nelze smazat soubor {filepath}: {e}")
+    await db.delete_backup_record(pool, backup_id)
+    return {"backup_id": backup_id, "deleted_file": deleted_file}
