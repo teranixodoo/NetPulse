@@ -331,6 +331,21 @@ export function useRunBackup() {
   });
 }
 
+export function useUpdateDeviceBackup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceId, backup_enabled }: { deviceId: number; backup_enabled: boolean }) =>
+      api.patch(`/devices/${deviceId}/backup-settings`, { backup_enabled }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.devices }),
+  });
+}
+
+export function useTriggerBackupScan() {
+  return useMutation({
+    mutationFn: () => api.post("/scan/trigger-backup").then(r => r.data),
+  });
+}
+
 export function useDeleteBackup() {
   const qc = useQueryClient();
   return useMutation({

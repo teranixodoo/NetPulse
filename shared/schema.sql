@@ -222,3 +222,15 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_credential_id INTEG
 -- Ukládá kompletní parametry které vedly k úspěšnému pollu:
 -- credential_id, auth_type, username, port, use_ssl, ssl_context_type
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_auth JSONB;
+
+-- Migrace: Backup scheduler — globální konfigurace
+INSERT INTO app_config (key, value, description) VALUES
+    ('backup_enabled',         'false', 'Automatický backup scheduler zapnutý'),
+    ('backup_interval_s',      '86400', 'Interval automatického backupu v sekundách (výchozí 24h)'),
+    ('backup_only_online',     'true',  'Zálohovat pouze online zařízení'),
+    ('backup_only_successful', 'true',  'Zálohovat pouze zařízení s úspěšným pollem (last_polled_at NOT NULL)')
+ON CONFLICT (key) DO NOTHING;
+
+-- Migrace: individuální backup nastavení pro každé zařízení
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_enabled   BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_schedule  TEXT;    -- cron-like: 'daily'|'weekly'|'disabled'

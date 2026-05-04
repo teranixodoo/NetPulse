@@ -1057,7 +1057,7 @@ async def trigger_backup_scan(
     pool = Depends(get_db),
 ):
     """Spustí backup scheduler okamžitě pro všechna způsobilá zařízení."""
-    config = await db.get_config(pool)
+    config = await db.get_config_db(pool)
     await scheduler.trigger_backup_now(pool, config, triggered_by=user.username)
     return {"status": "started", "triggered_by": user.username}
 

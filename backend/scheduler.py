@@ -348,6 +348,26 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     else:
         log.info("Discovery scheduler: vypnutý")
 
+    # Backup scheduler (jen pokud je zapnutý)
+    backup_enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
+    if backup_enabled:
+        backup_interval = max(3600, int(config.get("backup_interval_s", 86400)))
+
+        async def _backup_job_startup():
+            cfg = await _load_config(pool)
+            await run_backup_scan(pool, cfg, trigger_type="scheduler")
+
+        _scheduler.add_job(
+            _backup_job_startup,
+            IntervalTrigger(seconds=backup_interval),
+            id               = "backup_scan",
+            name             = f"Backup scan",
+            replace_existing = True,
+        )
+        log.info(f"Backup scheduler: interval {backup_interval}s, zapnutý")
+    else:
+        log.info("Backup scheduler: vypnutý")
+
     _scheduler.start()
     log.info("Scheduler spuštěn")
     return _scheduler
@@ -428,3 +448,163 @@ def stop_scheduler() -> None:
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         log.info("Scheduler zastaven")
+
+
+# ===========================================================================
+# BACKUP SCHEDULER
+# ===========================================================================
+
+async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -> None:
+    """
+    Spustí backup pro všechna zařízení která:
+    - mají backup_enabled = true
+    - jsou online (pokud backup_only_online = true)
+    - mají last_polled_at (pokud backup_only_successful = true)
+    - mají SSH credentials
+    """
+    import backup as bkp
+    import db as _db
+
+    only_online     = str(config.get("backup_only_online", "true")).lower() == "true"
+    only_successful = str(config.get("backup_only_successful", "true")).lower() == "true"
+
+    log.info(
+        f"Backup scheduler zahájen: only_online={only_online} "
+        f"only_successful={only_successful}"
+    )
+
+    try:
+        devices = await _db.get_devices_with_credentials(pool)
+    except Exception as e:
+        log.error(f"Backup scheduler: chyba načítání zařízení: {e}")
+        return
+
+    # Filtrujeme zařízení
+    targets = []
+    for d in devices:
+        # Individuální nastavení — přeskočit pokud backup_enabled = false
+        if not d.get("backup_enabled", True):
+            continue
+        # Pouze online
+        if only_online and not d.get("is_alive"):
+            continue
+        # Pouze s úspěšným pollem
+        if only_successful and not d.get("last_polled_at"):
+            continue
+        # Musí mít SSH credential
+        ssh_creds = [c for c in d.get("credentials", []) if c.get("auth_type") == "ssh"]
+        if not ssh_creds:
+            continue
+        targets.append(d)
+
+    log.info(f"Backup scheduler: {len(targets)} zařízení ke zálohování")
+
+    # Spustíme zálohy sekvenčně (nechceme zahltit síť)
+    for device in targets:
+        ip_str      = str(device["ip"]).split("/")[0]
+        hostname    = device.get("hostname") or device.get("alias") or ip_str
+        device_uuid = device["device_uuid"]
+
+        log.info(f"Backup scheduler: zálohuji {hostname} ({ip_str})")
+
+        try:
+            # Načteme credentials s hesly
+            usable_creds = [c for c in device["credentials"] if c.get("auth_type") in ("api", "ssh")]
+            creds_with_pass = []
+            for c in usable_creds:
+                raw = await _db.get_credential_raw(pool, c["id"])
+                if raw:
+                    creds_with_pass.append(raw)
+
+            # Záznam v DB
+            from cryptography.fernet import Fernet
+            import os
+            _key    = os.getenv("FERNET_KEY", "")
+            _cipher = Fernet(_key.encode()) if _key else None
+
+            backup_db_id = await _db.create_backup_record(
+                pool, device["id"], "export",
+                filename     = f"pending_{device_uuid}",
+                filepath     = f"/backups/{device_uuid}/pending",
+                triggered_by = trigger_type,
+            )
+
+            result = await bkp.backup_mikrotik(
+                ip                      = ip_str,
+                creds                   = creds_with_pass,
+                cipher                  = _cipher,
+                device_uuid             = device_uuid,
+                hostname                = hostname,
+                triggered_by            = trigger_type,
+                timeout                 = 90.0,
+                last_successful_cred_id = device.get("last_successful_credential_id"),
+                last_successful_auth    = device.get("last_successful_auth"),
+            )
+
+            await _db.finish_backup_record(
+                pool, backup_db_id,
+                success          = result.success,
+                file_size_bytes  = result.file_size_bytes,
+                mikrotik_version = result.mikrotik_version,
+                duration_ms      = result.duration_ms,
+                error_msg        = result.error if not result.success else None,
+            )
+
+            if result.success and result.filepath:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE device_backups SET filename=$2, filepath=$3 WHERE id=$1",
+                        backup_db_id, result.filename, str(result.filepath),
+                    )
+
+            log.info(
+                f"Backup scheduler: {hostname} "
+                f"{'OK' if result.success else 'FAIL'} "
+                f"({result.file_size_bytes or 0}B)"
+            )
+
+        except Exception as e:
+            log.error(f"Backup scheduler: chyba zálohy {hostname}: {e}")
+
+
+def setup_backup_scheduler(pool, config: dict) -> None:
+    """Nastaví nebo odstraní backup scheduler job dle konfigurace."""
+    global _scheduler
+    if not _scheduler or not _scheduler.running:
+        return
+
+    enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
+    interval = max(3600, int(config.get("backup_interval_s", 86400)))
+
+    if enabled:
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        async def _backup_job():
+            cfg = await _load_config(pool)
+            await run_backup_scan(pool, cfg, trigger_type="scheduler")
+
+        if _scheduler.get_job("backup_scan"):
+            _scheduler.remove_job("backup_scan")
+
+        _scheduler.add_job(
+            _backup_job,
+            trigger  = IntervalTrigger(seconds=interval),
+            id       = "backup_scan",
+            name     = f"Backup scan (interval: {interval}s)",
+            max_instances = 1,
+            replace_existing = True,
+        )
+        log.info(f"Backup scheduler nastaven: interval={interval}s")
+    else:
+        try:
+            _scheduler.remove_job("backup_scan")
+            log.info("Backup scheduler odstraněn (vypnutý)")
+        except Exception:
+            pass
+
+
+async def trigger_backup_now(pool, config: dict, triggered_by: str = "manual") -> None:
+    """Spustí backup okamžitě jako background task."""
+    asyncio.create_task(
+        run_backup_scan(pool, config, trigger_type=triggered_by)
+    )

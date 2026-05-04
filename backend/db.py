@@ -396,7 +396,7 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d.id, d.device_uuid, d.ip::text, d.hostname, d.mac::text,
                 d.device_type, d.description, d.alias,
                 d.vendor, d.serial_number,
-                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth,
+                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
                 d.created_at, d.updated_at,
                 COALESCE(
                     json_agg(
