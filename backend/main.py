@@ -509,7 +509,7 @@ async def update_config(
         "discovery_enabled", "discovery_interval_s", "discovery_only_online",
         "discovery_skip_polled",
         # Backup scheduler
-        "backup_enabled", "backup_interval_s", "backup_only_online", "backup_only_successful",
+        "backup_enabled", "backup_interval_s", "backup_start_time", "backup_only_online", "backup_only_successful",
     }
     for key in updates:
         if key not in allowed:
@@ -519,7 +519,7 @@ async def update_config(
     if any(k in updates for k in ("scan_interval_s", "discovery_enabled",
                                    "discovery_interval_s", "discovery_only_online",
                                    "discovery_skip_polled", "backup_enabled",
-                                   "backup_interval_s")):
+                                   "backup_interval_s", "backup_start_time")):
         cfg = await db.get_config_db(pool)
         scheduler.restart_scheduler(pool, cfg)
     return {"status": "ok", "updated": list(updates.keys())}

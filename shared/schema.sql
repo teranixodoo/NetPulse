@@ -234,3 +234,8 @@ ON CONFLICT (key) DO NOTHING;
 -- Migrace: individuální backup nastavení pro každé zařízení
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_enabled   BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_schedule  TEXT;    -- cron-like: 'daily'|'weekly'|'disabled'
+
+-- Migrace: čas prvního startu backup scheduleru (HH:MM UTC)
+INSERT INTO app_config (key, value, description)
+VALUES ('backup_start_time', '02:00', 'Čas prvního spuštění backup scheduleru (HH:MM UTC)')
+ON CONFLICT (key) DO NOTHING;

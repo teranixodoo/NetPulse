@@ -8,6 +8,7 @@ from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron   import CronTrigger
 
 import db
 import discovery as disc
@@ -311,6 +312,42 @@ async def run_discovery_scan(
 # ---------------------------------------------------------------------------
 # Scheduler management
 # ---------------------------------------------------------------------------
+def _make_backup_trigger(interval_s: int, start_time: str | None):
+    """
+    Vytvoří trigger pro backup scheduler.
+    Pokud je zadán start_time (HH:MM), použije CronTrigger s daným časem
+    a interval v hodinách. Pro intervaly < 1 den použije IntervalTrigger.
+    """
+    from datetime import datetime, timezone
+
+    if start_time and ":" in start_time and interval_s >= 3600:
+        try:
+            h, m = [int(x) for x in start_time.strip().split(":")]
+            interval_h = max(1, round(interval_s / 3600))
+            # Každých N hodin v čas HH:MM
+            if interval_h >= 24:
+                # Každý den v přesný čas
+                days = max(1, round(interval_h / 24))
+                return CronTrigger(
+                    hour=h, minute=m,
+                    day=f"*/{days}" if days > 1 else "*",
+                    timezone="UTC"
+                )
+            else:
+                # Každých N hodin — start_date nastavíme na dnes v HH:MM
+                now  = datetime.now(timezone.utc)
+                sd   = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                if sd <= now:
+                    # Přesuneme start_date na příští den pokud čas už dnes proběhl
+                    from datetime import timedelta
+                    sd += timedelta(days=1)
+                return IntervalTrigger(seconds=interval_s, start_date=sd)
+        except Exception:
+            pass
+    # Bez start_time — spustí se co nejdříve s daným intervalem
+    return IntervalTrigger(seconds=interval_s)
+
+
 def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     global _scheduler
 
@@ -351,7 +388,9 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     # Backup scheduler (jen pokud je zapnutý)
     backup_enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
     if backup_enabled:
-        backup_interval = max(3600, int(config.get("backup_interval_s", 86400)))
+        backup_interval  = max(3600, int(config.get("backup_interval_s", 86400)))
+        backup_start     = config.get("backup_start_time", "")  # HH:MM nebo prázdné
+        backup_trigger   = _make_backup_trigger(backup_interval, backup_start)
 
         async def _backup_job_startup():
             cfg = await _load_config(pool)
@@ -359,12 +398,14 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
 
         _scheduler.add_job(
             _backup_job_startup,
-            IntervalTrigger(seconds=backup_interval),
+            backup_trigger,
             id               = "backup_scan",
             name             = f"Backup scan",
             replace_existing = True,
         )
-        log.info(f"Backup scheduler: interval {backup_interval}s, zapnutý")
+        _job    = _scheduler.get_job("backup_scan")
+        next_run = getattr(_job, "next_run_time", None) or getattr(_job, "next_fire_time", None)
+        log.info(f"Backup scheduler: interval={backup_interval}s start={backup_start or 'ihned'} next={next_run}")
     else:
         log.info("Backup scheduler: vypnutý")
 
@@ -657,12 +698,11 @@ def setup_backup_scheduler(pool, config: dict) -> None:
     if not _scheduler or not _scheduler.running:
         return
 
-    enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
-    interval = max(3600, int(config.get("backup_interval_s", 86400)))
+    enabled      = str(config.get("backup_enabled", "false")).lower() == "true"
+    interval     = max(3600, int(config.get("backup_interval_s", 86400)))
+    start_time   = config.get("backup_start_time", "")  # HH:MM
 
     if enabled:
-        from apscheduler.triggers.interval import IntervalTrigger
-
         async def _backup_job():
             cfg = await _load_config(pool)
             await run_backup_scan(pool, cfg, trigger_type="scheduler")
@@ -670,15 +710,18 @@ def setup_backup_scheduler(pool, config: dict) -> None:
         if _scheduler.get_job("backup_scan"):
             _scheduler.remove_job("backup_scan")
 
+        trigger = _make_backup_trigger(interval, start_time)
         _scheduler.add_job(
             _backup_job,
-            trigger  = IntervalTrigger(seconds=interval),
-            id       = "backup_scan",
-            name     = f"Backup scan (interval: {interval}s)",
-            max_instances = 1,
+            trigger          = trigger,
+            id               = "backup_scan",
+            name             = f"Backup scan",
+            max_instances    = 1,
             replace_existing = True,
         )
-        log.info(f"Backup scheduler nastaven: interval={interval}s")
+        _job    = _scheduler.get_job("backup_scan")
+        next_run = getattr(_job, "next_run_time", None) or getattr(_job, "next_fire_time", None)
+        log.info(f"Backup scheduler nastaven: interval={interval}s start={start_time or 'ihned'} next={next_run}")
     else:
         try:
             _scheduler.remove_job("backup_scan")

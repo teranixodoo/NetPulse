@@ -134,6 +134,10 @@ export interface Device {
   created_at: string;
   updated_at: string | null;
   credentials: Credential[];
+  backup_enabled: boolean;          // individuální nastavení zálohy
+  last_successful_credential_id: number | null;
+  last_successful_auth: Record<string, unknown> | null;
+  is_alive: boolean | null;
 }
 
 export interface DeviceCreate {

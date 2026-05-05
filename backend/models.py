@@ -214,7 +214,10 @@ class DeviceWithCredentials(BaseModel):
     last_poll_method: Optional[str] = None
     created_at:      Optional[datetime] = None
     updated_at:      Optional[datetime] = None
-    credentials:     List[Credential] = []
+    credentials:              List[Credential] = []
+    backup_enabled:           Optional[bool] = True    # individuální nastavení zálohy
+    backup_schedule:          Optional[str]  = None
+    last_successful_credential_id: Optional[int] = None
 
     class Config:
         from_attributes = True

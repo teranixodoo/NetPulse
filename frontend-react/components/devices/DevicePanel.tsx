@@ -1140,9 +1140,30 @@ function BackupTab({ device }: { device: Device }) {
     }
   }
 
-  function handleDownload(backupId: number, filename: string) {
-    // Stažení přes Next.js proxy — token je v cookie, backend ho přečte
-    window.open(`/api/backend/backups/${backupId}/download`, "_blank");
+  async function handleDownload(backupId: number, filename: string) {
+    // Stažení přes fetch s JWT tokenem — window.open nezašle Authorization header
+    try {
+      const token = document.cookie.match(/np_token=([^;]+)/)?.[1] ?? "";
+      const res   = await fetch(`/api/backend/backups/${backupId}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`Chyba stahování: ${err.detail ?? res.statusText}`);
+        return;
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(`Chyba stahování: ${e}`);
+    }
   }
 
   const typeLabel: Record<string, string> = { binary: ".backup", export: ".rsc" };
