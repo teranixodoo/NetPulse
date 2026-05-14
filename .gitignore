@@ -1,14 +1,26 @@
-.env
-*.env
-docker-compose.override.yml
-__pycache__/
-*.pyc
-.next/
-node_modules/
-
 # Citlivé soubory — NIKDY na GitHub
 .env
 .env.local
 *.key
 *.pem
 secrets/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Node.js / Next.js
+node_modules/
+frontend-react/.next/
+frontend-react/out/
+frontend-react/.env.local
+
+# Logy a dočasné soubory
+*.log
+.DS_Store

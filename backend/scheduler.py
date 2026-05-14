@@ -660,7 +660,7 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
             # Cipher — použijeme stejný klíč jako main.py
             from cryptography.fernet import Fernet
             import os
-            _key    = os.getenv("FERNET_KEY", "Bfo7vpyswMPI8F-4tV3t8FwvONJmGJP5VxaaTKzZp2s=")
+            _key    = os.getenv("FERNET_KEY", "")
             _cipher = Fernet(_key.encode()) if _key else None
             log.info(f"Backup cipher: key_len={len(_key)} cipher={_cipher is not None}")
 
