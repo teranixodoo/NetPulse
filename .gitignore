@@ -5,3 +5,10 @@ __pycache__/
 *.pyc
 .next/
 node_modules/
+
+# Citlivé soubory — NIKDY na GitHub
+.env
+.env.local
+*.key
+*.pem
+secrets/
