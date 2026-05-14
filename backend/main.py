@@ -825,6 +825,18 @@ async def poll_device_data(
         f"method={result.method} success={result.success} "
         f"hostname={result.hostname} firmware={result.firmware}"
     )
+    sl.write_bg(
+        "INFO" if result.success else "ERROR",
+        "netpulse.poller",
+        "poll_ok" if result.success else "poll_fail",
+        f"Poll {result.hostname or ip_str}: "
+        f"{"OK" if result.success else "FAIL"} (method={result.method})",
+        device_id = device_id,
+        user_name = user.username,
+        meta      = {"ip": ip_str, "method": result.method,
+                     "hostname": result.hostname, "firmware": result.firmware,
+                     "error": result.error},
+    )
 
     return {
         "poll_id":              poll_id,

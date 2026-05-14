@@ -148,7 +148,7 @@ async def get_logs(
         params.append(f"%{search}%")
         i += 1
     if hours:
-        conditions.append(f"created_at >= NOW() - INTERVAL '{int(hours)} hours'")
+        conditions.append(f"s.created_at >= NOW() - INTERVAL '{int(hours)} hours'")
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 

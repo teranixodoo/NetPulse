@@ -133,9 +133,17 @@ async def run_scan(
             f"Scan dokončen: {len(results)} výsledků — "
             f"{ok_count} online, {fail_count} offline"
         )
+        _syslog().write_bg(
+            "INFO", "netpulse.scanner", "scan_done",
+            f"Ping scan: {ok_count}/{len(results)} online",
+            meta={"total": len(results), "online": ok_count,
+                  "offline": fail_count, "trigger": trigger_type},
+        )
 
     except Exception as e:
         log.error(f"Chyba scanu: {e}", exc_info=True)
+        _syslog().write_bg("ERROR", "netpulse.scanner", "scan_error",
+            f"Chyba ping scanu: {str(e)[:200]}")
         if job_id:
             try:
                 await db.scan_job_finish(
@@ -295,6 +303,13 @@ async def run_discovery_scan(
         log.info(
             f"Discovery dokončen: {ok_count} OK, {fail_count} chyb, "
             f"{changed_count} změn"
+        )
+        _syslog().write_bg(
+            "INFO" if fail_count == 0 else "WARNING",
+            "netpulse.discovery", "discovery_done",
+            f"Discovery: {ok_count} OK, {fail_count} chyb, {changed_count} změn",
+            meta={"ok": ok_count, "fail": fail_count,
+                  "changed": changed_count, "trigger": trigger_type},
         )
 
     except Exception as e:
