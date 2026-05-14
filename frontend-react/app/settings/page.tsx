@@ -195,7 +195,6 @@ function BackupTab({ config, onSave, isPending }: { config: any; onSave: (d: any
   const [interval, setIntervalS]            = useState(86400);
   const [onlyOnline, setOnlyOnline]         = useState(true);
   const [onlySuccessful, setOnlySuccessful] = useState(true);
-  const [startTime, setStartTime]           = useState("02:00");
   const [saved, setSaved]                   = useState(false);
 
   const { data: devices = [] }   = useDevices();
@@ -208,12 +207,10 @@ function BackupTab({ config, onSave, isPending }: { config: any; onSave: (d: any
     setIntervalS(Number((config as any).backup_interval_s) || 86400);
     setOnlyOnline(String((config as any).backup_only_online) !== "false");
     setOnlySuccessful(String((config as any).backup_only_successful) !== "false");
-    setStartTime((config as any).backup_start_time || "02:00");
   }, [config]);
 
   async function handleSave() {
     await onSave({ backup_enabled: String(enabled), backup_interval_s: interval,
-      backup_start_time: startTime,
       backup_only_online: String(onlyOnline), backup_only_successful: String(onlySuccessful) });
     setSaved(true); setTimeout(() => setSaved(false), 3000);
   }
@@ -239,20 +236,6 @@ function BackupTab({ config, onSave, isPending }: { config: any; onSave: (d: any
           <div className="space-y-3 pl-1">
             <NumInput label="Interval zálohy (s)" value={interval} onChange={setIntervalS}
               min={3600} max={604800} hint={`Aktuálně: ${intervalLabel(interval)} — min 1h, doporučeno 24h`} />
-            <div className="space-y-1">
-              <label className="block text-xs font-medium text-muted-foreground">
-                Čas prvního spuštění (UTC)
-              </label>
-              <input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                className="h-9 w-32 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
-              />
-              <p className="text-xs text-muted-foreground">
-                Backup se spustí každý den v tento čas (UTC). Prázdné = ihned po startu.
-              </p>
-            </div>
             <Toggle enabled={onlyOnline} onChange={setOnlyOnline} label="Pouze online zařízení" description="Offline zařízení přeskočí" />
             <Toggle enabled={onlySuccessful} onChange={setOnlySuccessful} label="Pouze zařízení s úspěšným pollem"
               description="Přeskočí zařízení bez last_polled_at — neznámé credentials" />
@@ -296,12 +279,12 @@ function BackupTab({ config, onSave, isPending }: { config: any; onSave: (d: any
                 </p>
               </div>
               <button
-                onClick={() => updateDeviceBackup.mutate({ deviceId: d.id, backup_enabled: !(d.backup_enabled ?? true) })}
+                onClick={() => updateDeviceBackup.mutate({ deviceId: d.id, backup_enabled: !(d.backup_enabled !== false) })}
                 disabled={updateDeviceBackup.isPending}
                 className={cn("relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0",
-                  (d.backup_enabled ?? true) ? "bg-primary" : "bg-muted")}>
+                  d.backup_enabled !== false ? "bg-primary" : "bg-muted")}>
                 <span className={cn("inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                  (d.backup_enabled ?? true) ? "translate-x-6" : "translate-x-1")} />
+                  d.backup_enabled !== false ? "translate-x-6" : "translate-x-1")} />
               </button>
             </div>
           ))}

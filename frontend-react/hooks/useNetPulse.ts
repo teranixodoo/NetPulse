@@ -1,6 +1,7 @@
 // hooks/useNetPulse.ts — React Query hooks pro všechny API volání
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { systemLogsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -357,5 +358,40 @@ export function useDeleteBackup() {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// System Logs (pouze admin)
+// ---------------------------------------------------------------------------
+
+export function useSystemLogs(params: {
+  limit?: number; level?: string; module?: string;
+  event_type?: string; device_id?: number;
+  search?: string; hours?: number;
+} = {}) {
+  return useQuery({
+    queryKey: ["system-logs", params],
+    queryFn:  () => systemLogsApi.getLogs(params),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useSystemLogStats() {
+  return useQuery({
+    queryKey: ["system-log-stats"],
+    queryFn:  () => systemLogsApi.getStats(),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useCleanupSystemLogs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => systemLogsApi.cleanup(),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ["system-logs"] });
+      qc.invalidateQueries({ queryKey: ["system-log-stats"] });
+    },
+  });
+}
 
 export { getErrorMessage };

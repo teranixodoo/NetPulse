@@ -15,6 +15,7 @@ import discovery as disc
 import scanner as sc
 
 log = logging.getLogger("netpulse.scheduler")
+def _syslog(): import syslog as _s; return _s
 
 _scheduler: Optional[AsyncIOScheduler] = None
 
@@ -312,39 +313,48 @@ async def run_discovery_scan(
 # ---------------------------------------------------------------------------
 # Scheduler management
 # ---------------------------------------------------------------------------
-def _make_backup_trigger(interval_s: int, start_time: str | None):
+
+
+async def _run_backup_job(pool) -> None:
+    """Top-level funkce pro APScheduler — spustí backup scan."""
+    import db as _db
+    cfg = await _db.get_config_db(pool)
+    await run_backup_scan(pool, cfg, trigger_type="scheduler")
+
+
+def _make_backup_trigger(interval_s: int, start_time: str):
     """
     Vytvoří trigger pro backup scheduler.
-    Pokud je zadán start_time (HH:MM), použije CronTrigger s daným časem
-    a interval v hodinách. Pro intervaly < 1 den použije IntervalTrigger.
+    start_time = "HH:MM" (UTC) — čas kdy se záloha spustí.
+    Pokud interval >= 24h, použije CronTrigger (přesný čas každý den).
+    Jinak IntervalTrigger s start_date nastaveným na nejbližší HH:MM.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
 
-    if start_time and ":" in start_time and interval_s >= 3600:
+    if start_time and ":" in str(start_time):
         try:
-            h, m = [int(x) for x in start_time.strip().split(":")]
-            interval_h = max(1, round(interval_s / 3600))
-            # Každých N hodin v čas HH:MM
+            h, m = [int(x) for x in str(start_time).strip().split(":")]
+            interval_h = interval_s / 3600
+
             if interval_h >= 24:
-                # Každý den v přesný čas
+                # Každý den v přesný čas — nejspolehlivější přístup
                 days = max(1, round(interval_h / 24))
-                return CronTrigger(
-                    hour=h, minute=m,
-                    day=f"*/{days}" if days > 1 else "*",
-                    timezone="UTC"
-                )
+                if days == 1:
+                    return CronTrigger(hour=h, minute=m, timezone="UTC")
+                else:
+                    return CronTrigger(hour=h, minute=m,
+                                       day=f"*/{days}", timezone="UTC")
             else:
-                # Každých N hodin — start_date nastavíme na dnes v HH:MM
-                now  = datetime.now(timezone.utc)
-                sd   = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                # Kratší interval — start_date = dnes/zítra v HH:MM UTC
+                now = datetime.now(timezone.utc)
+                sd  = now.replace(hour=h, minute=m, second=0, microsecond=0)
                 if sd <= now:
-                    # Přesuneme start_date na příští den pokud čas už dnes proběhl
-                    from datetime import timedelta
                     sd += timedelta(days=1)
                 return IntervalTrigger(seconds=interval_s, start_date=sd)
-        except Exception:
-            pass
-    # Bez start_time — spustí se co nejdříve s daným intervalem
+        except Exception as e:
+            log.warning(f"_make_backup_trigger: chybný start_time={start_time!r}: {e}")
+
+    # Bez start_time — spustí se při příštím ticku
     return IntervalTrigger(seconds=interval_s)
 
 
@@ -386,28 +396,38 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
         log.info("Discovery scheduler: vypnutý")
 
     # Backup scheduler (jen pokud je zapnutý)
-    backup_enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
+    backup_enabled = str(config.get("backup_enabled", "false")).lower() == "true"
     if backup_enabled:
-        backup_interval  = max(3600, int(config.get("backup_interval_s", 86400)))
-        backup_start     = config.get("backup_start_time", "")  # HH:MM nebo prázdné
-        backup_trigger   = _make_backup_trigger(backup_interval, backup_start)
-
-        async def _backup_job_startup():
-            cfg = await _load_config(pool)
-            await run_backup_scan(pool, cfg, trigger_type="scheduler")
+        backup_interval = max(3600, int(config.get("backup_interval_s", 86400)))
+        backup_start    = str(config.get("backup_start_time", "") or "")
+        backup_trigger  = _make_backup_trigger(backup_interval, backup_start)
 
         _scheduler.add_job(
-            _backup_job_startup,
+            _run_backup_job,
             backup_trigger,
             id               = "backup_scan",
-            name             = f"Backup scan",
+            name             = "Backup scan",
             replace_existing = True,
+            args             = [pool],
         )
-        _job    = _scheduler.get_job("backup_scan")
-        next_run = getattr(_job, "next_run_time", None) or getattr(_job, "next_fire_time", None)
-        log.info(f"Backup scheduler: interval={backup_interval}s start={backup_start or 'ihned'} next={next_run}")
+        log.info(f"Backup scheduler: interval={backup_interval}s start={backup_start or 'ihned'}")
     else:
         log.info("Backup scheduler: vypnutý")
+
+    # Denní cleanup system_logs
+    async def _syslog_cleanup():
+        import db as _db
+        import syslog as _sl
+        cfg = await _db.get_config_db(pool)
+        await _sl.cleanup_old_logs(pool, cfg)
+
+    _scheduler.add_job(
+        _syslog_cleanup,
+        CronTrigger(hour=3, minute=30, timezone="UTC"),
+        id               = "syslog_cleanup",
+        name             = "System log cleanup",
+        replace_existing = True,
+    )
 
     _scheduler.start()
     log.info("Scheduler spuštěn")
@@ -673,11 +693,30 @@ async def run_backup_scan(pool, config: dict, trigger_type: str = "scheduler") -
                 f"{'OK' if result.success else 'FAIL'} "
                 f"({result.file_size_bytes or 0}B)"
             )
+            # Syslog per zařízení
+            _syslog().write_bg(
+                "INFO" if result.success else "ERROR",
+                "netpulse.scheduler",
+                "backup_ok" if result.success else "backup_fail",
+                f"Scheduler backup {hostname}: {'OK' if result.success else 'FAIL'} "
+                f"({result.file_size_bytes or 0}B)",
+                device_id = device.get("id"),
+                meta      = {"ip": ip_str, "size": result.file_size_bytes,
+                             "error": result.error},
+            )
 
         except Exception as e:
             _fail_count += 1
             log.error(f"Backup scheduler: chyba zálohy {hostname}: {e}")
 
+    # Syslog — souhrn backup runu
+    _syslog().write_bg(
+        "INFO" if _fail_count == 0 else "WARNING",
+        "netpulse.scheduler", "backup_run_done",
+        f"Backup scheduler dokončen: {_ok_count} OK, {_fail_count} FAIL "
+        f"z {len(targets)} zařízení",
+        meta={"ok": _ok_count, "fail": _fail_count, "total": len(targets)},
+    )
     # Zapíšeme výsledek backup jobu do scan_jobs
     if job_id:
         try:
@@ -698,30 +737,26 @@ def setup_backup_scheduler(pool, config: dict) -> None:
     if not _scheduler or not _scheduler.running:
         return
 
-    enabled      = str(config.get("backup_enabled", "false")).lower() == "true"
-    interval     = max(3600, int(config.get("backup_interval_s", 86400)))
-    start_time   = config.get("backup_start_time", "")  # HH:MM
+    enabled  = str(config.get("backup_enabled", "false")).lower() == "true"
+    interval = max(3600, int(config.get("backup_interval_s", 86400)))
 
     if enabled:
-        async def _backup_job():
-            cfg = await _load_config(pool)
-            await run_backup_scan(pool, cfg, trigger_type="scheduler")
+        start_time = str(config.get("backup_start_time", "") or "")
+        trigger    = _make_backup_trigger(interval, start_time)
 
         if _scheduler.get_job("backup_scan"):
             _scheduler.remove_job("backup_scan")
 
-        trigger = _make_backup_trigger(interval, start_time)
         _scheduler.add_job(
-            _backup_job,
+            _run_backup_job,
             trigger          = trigger,
             id               = "backup_scan",
-            name             = f"Backup scan",
+            name             = "Backup scan",
             max_instances    = 1,
             replace_existing = True,
+            args             = [pool],
         )
-        _job    = _scheduler.get_job("backup_scan")
-        next_run = getattr(_job, "next_run_time", None) or getattr(_job, "next_fire_time", None)
-        log.info(f"Backup scheduler nastaven: interval={interval}s start={start_time or 'ihned'} next={next_run}")
+        log.info(f"Backup scheduler nastaven: interval={interval}s start={start_time or 'ihned'}")
     else:
         try:
             _scheduler.remove_job("backup_scan")

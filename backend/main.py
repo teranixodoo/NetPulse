@@ -17,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import auth
 import backup as bkp
 import db
+import syslog as sl
 import discovery as disc
 import scanner as sc
 import poller
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
     log.info(f"Připojuji se k DB: {db_url[:40]}...")
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
+    sl.init(pool)   # inicializace systémového logu
     scheduler.start_scheduler(pool, cfg)
     yield
     scheduler.stop_scheduler()
@@ -218,6 +220,10 @@ async def login(req: LoginRequest, pool=Depends(get_db)):
     if not user or not auth.verify_password(req.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Špatné přihlašovací údaje")
     token = auth.create_token(user["id"], user["username"], user["role"])
+    sl.write_bg("INFO", "netpulse.auth", "user_login",
+        f"Přihlášení: {user['username']} (role={user['role']})",
+        user_name=user["username"],
+        meta={"role": user["role"]})
     return TokenResponse(access_token=token, expires_in=auth.JWT_EXPIRE_MIN * 60)
 
 @app.post("/auth/users", response_model=UserModel, tags=["Auth"])
@@ -509,7 +515,7 @@ async def update_config(
         "discovery_enabled", "discovery_interval_s", "discovery_only_online",
         "discovery_skip_polled",
         # Backup scheduler
-        "backup_enabled", "backup_interval_s", "backup_start_time", "backup_only_online", "backup_only_successful",
+        "backup_enabled", "backup_interval_s", "backup_only_online", "backup_only_successful",
     }
     for key in updates:
         if key not in allowed:
@@ -519,7 +525,7 @@ async def update_config(
     if any(k in updates for k in ("scan_interval_s", "discovery_enabled",
                                    "discovery_interval_s", "discovery_only_online",
                                    "discovery_skip_polled", "backup_enabled",
-                                   "backup_interval_s", "backup_start_time")):
+                                   "backup_interval_s")):
         cfg = await db.get_config_db(pool)
         scheduler.restart_scheduler(pool, cfg)
     return {"status": "ok", "updated": list(updates.keys())}
@@ -956,6 +962,19 @@ async def run_device_backup(
             )
 
     log.info(f"Backup dokončen device_id={device_id}: {'OK' if result.success else 'FAIL'}")
+    sl.write_bg(
+        "INFO" if result.success else "ERROR",
+        "netpulse.backup",
+        "backup_ok" if result.success else "backup_fail",
+        f"Ruční backup {hostname}: {'OK' if result.success else 'FAIL'} "
+        f"({result.file_size_bytes or 0}B)",
+        device_id = device_id,
+        user_name = user.username,
+        meta      = {"ip": ip_str, "filename": result.filename,
+                     "size_bytes": result.file_size_bytes,
+                     "version": result.mikrotik_version,
+                     "error": result.error},
+    )
 
     return {
         "backup_id":        backup_db_id,
@@ -1081,3 +1100,50 @@ async def update_device_backup_settings(
             device_id, backup_enabled,
         )
     return {"device_id": device_id, "backup_enabled": backup_enabled}
+
+
+# ===========================================================================
+# SYSTEM LOGS ENDPOINTY (pouze admin)
+# ===========================================================================
+
+@app.get("/system-logs", tags=["SystemLogs"])
+async def get_system_logs(
+    limit:      int           = 200,
+    level:      str           = None,
+    module:     str           = None,
+    event_type: str           = None,
+    device_id:  int           = None,
+    search:     str           = None,
+    hours:      int           = None,
+    user        = Depends(admin_only),
+    pool        = Depends(get_db),
+):
+    """Vrátí systémové logy. Pouze pro administrátory."""
+    return await sl.get_logs(
+        pool, limit=limit, level=level, module=module,
+        event_type=event_type, device_id=device_id,
+        search=search, hours=hours,
+    )
+
+
+@app.get("/system-logs/stats", tags=["SystemLogs"])
+async def get_system_log_stats(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Statistiky systémových logů."""
+    stats   = await sl.get_log_stats(pool)
+    modules = await sl.get_distinct_modules(pool)
+    events  = await sl.get_distinct_event_types(pool)
+    return {"stats": stats, "modules": modules, "event_types": events}
+
+
+@app.delete("/system-logs/cleanup", tags=["SystemLogs"])
+async def cleanup_system_logs(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Ručně spustí cleanup starých systémových logů."""
+    cfg     = await db.get_config_db(pool)
+    deleted = await sl.cleanup_old_logs(pool, cfg)
+    return {"deleted": deleted, "total": sum(deleted.values())}

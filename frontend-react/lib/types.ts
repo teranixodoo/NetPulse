@@ -298,3 +298,37 @@ export interface BackupRunResult {
   duration_ms:      number | null;
   error:            string | null;
 }
+
+// ---------------------------------------------------------------------------
+// System Logs
+// ---------------------------------------------------------------------------
+export interface SystemLog {
+  id:         number;
+  created_at: string;
+  level:      "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+  module:     string;
+  event_type: string;
+  message:    string;
+  device_id:  number | null;
+  user_name:  string | null;
+  meta:       Record<string, unknown> | null;
+  // z JOIN s devices
+  hostname?:  string | null;
+  alias?:     string | null;
+}
+
+export interface SystemLogStats {
+  total:         number;
+  info_count:    number;
+  warning_count: number;
+  error_count:   number;
+  last_24h:      number;
+  oldest_at:     string | null;
+  newest_at:     string | null;
+}
+
+export interface SystemLogMeta {
+  stats:       SystemLogStats;
+  modules:     string[];
+  event_types: string[];
+}

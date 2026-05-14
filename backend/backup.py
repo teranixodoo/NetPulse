@@ -16,6 +16,9 @@ from typing import Optional
 
 log = logging.getLogger("netpulse.backup")
 
+# Syslog — importujeme lazy aby nevznikl circular import
+def _syslog(): import syslog as _s; return _s
+
 BACKUP_ROOT = Path(os.getenv("BACKUP_DIR", "/backups"))
 
 

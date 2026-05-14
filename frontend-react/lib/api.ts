@@ -299,5 +299,27 @@ export const backupApi = {
 };
 
 
+// ---------------------------------------------------------------------------
+// System Logs
+// ---------------------------------------------------------------------------
+export const systemLogsApi = {
+  async getLogs(params: {
+    limit?: number; level?: string; module?: string;
+    event_type?: string; device_id?: number;
+    search?: string; hours?: number;
+  } = {}): Promise<import('./types').SystemLog[]> {
+    const { data } = await api.get('/system-logs', { params });
+    return data;
+  },
+  async getStats(): Promise<import('./types').SystemLogMeta> {
+    const { data } = await api.get('/system-logs/stats');
+    return data;
+  },
+  async cleanup(): Promise<{ deleted: Record<string, number>; total: number }> {
+    const { data } = await api.delete('/system-logs/cleanup');
+    return data;
+  },
+};
+
 export { getErrorMessage };
 export default api;

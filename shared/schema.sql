@@ -235,7 +235,31 @@ ON CONFLICT (key) DO NOTHING;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_enabled   BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS backup_schedule  TEXT;    -- cron-like: 'daily'|'weekly'|'disabled'
 
--- Migrace: čas prvního startu backup scheduleru (HH:MM UTC)
-INSERT INTO app_config (key, value, description)
-VALUES ('backup_start_time', '02:00', 'Čas prvního spuštění backup scheduleru (HH:MM UTC)')
+-- ===========================================================================
+-- System logs — strukturované záznamy událostí backendu
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS system_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    level       TEXT        NOT NULL,   -- INFO / WARNING / ERROR / CRITICAL
+    module      TEXT        NOT NULL,   -- netpulse.backup / netpulse.scheduler / ...
+    event_type  TEXT        NOT NULL,   -- backup_ok / backup_fail / poll_ok / ...
+    message     TEXT        NOT NULL,
+    device_id   INTEGER     REFERENCES devices(id) ON DELETE SET NULL,
+    user_name   TEXT,                   -- kdo akci spustil (NULL = systém)
+    meta        JSONB                   -- extra strukturovaná data
+);
+
+-- Index pro rychlé filtrování
+CREATE INDEX IF NOT EXISTS idx_system_logs_created  ON system_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_level    ON system_logs (level, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_module   ON system_logs (module, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_device   ON system_logs (device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_event    ON system_logs (event_type, created_at DESC);
+
+-- Konfigurace retence
+INSERT INTO app_config (key, value, description) VALUES
+    ('syslog_retention_days_info',     '100', 'Retence INFO logů v dnech'),
+    ('syslog_retention_days_warning',  '365', 'Retence WARNING logů v dnech'),
+    ('syslog_retention_days_error',    '365', 'Retence ERROR/CRITICAL logů v dnech')
 ON CONFLICT (key) DO NOTHING;

@@ -34,8 +34,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    await authApi.login({ username, password });
-    const userData: User = { id: 0, username, role: "admin" };
+    const token = await authApi.login({ username, password });
+    // Načteme skutečnou roli uživatele z JWT tokenu (payload je base64)
+    let role: "admin" | "viewer" = "viewer";
+    try {
+      const payload = JSON.parse(atob((token.access_token || Cookies.get('np_token') || '').split('.')[1]));
+      role = payload.role === 'admin' ? 'admin' : 'viewer';
+    } catch { role = 'viewer'; }
+    const userData: User = { id: 0, username, role };
     Cookies.set("np_user", JSON.stringify(userData), { expires: 1, sameSite: "lax" });
     setUser(userData);
   }, []);
