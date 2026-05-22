@@ -65,17 +65,34 @@ async def run_scan(
     job_id = None
 
     try:
-        ranges = await db.get_ip_ranges(pool)
-        active = [r for r in ranges if r.active]
+        ranges    = await db.get_ip_ranges(pool)
+        # Skenovat jen active=True AND scan_enabled=True
+        scannable = [r for r in ranges if r.active and r.scan_enabled]
+        skipped   = [r for r in ranges if r.active and not r.scan_enabled]
+        if skipped:
+            log.info(
+                f"Ping scan: přeskočeno {len(skipped)} rozsahů (scan disabled): "
+                f"{[r.label for r in skipped]}"
+            )
 
         import ipaddress
         target_ips = []
-        for rng in active:
+        for rng in scannable:
             try:
                 net = ipaddress.ip_network(rng.network, strict=False)
                 target_ips.extend(str(ip) for ip in net.hosts())
             except ValueError as e:
                 log.warning(f"Neplatný rozsah {rng.network}: {e}")
+
+        # Odstraníme vyloučené IP adresy
+        excluded = await db.get_excluded_ips(pool)
+        if excluded:
+            before     = len(target_ips)
+            target_ips = [ip for ip in target_ips
+                          if ip not in excluded and ip + "/32" not in excluded]
+            diff = before - len(target_ips)
+            if diff > 0:
+                log.info(f"Ping scan: vyloučeno {diff} IP ze scan_exclusions")
 
         scan_state["total_ips"] = len(target_ips)
 

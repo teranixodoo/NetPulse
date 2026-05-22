@@ -4,12 +4,13 @@ import { useEffect, useState } from "react";
 import {
   Save, Loader2, Trash2, RefreshCw, Database, HardDrive,
   Table2, AlertTriangle, Radio, Search, Settings2,
-  CheckCircle2, XCircle, Clock,
+  CheckCircle2, XCircle, Clock, Ban, Plus,
 } from "lucide-react";
 import {
   useConfig, useUpdateConfig, useHealth,
   useScanStatus, useTriggerScan, useDevices,
   useTriggerBackupScan, useUpdateDeviceBackup,
+  useScanExclusions, useAddScanExclusion, useRemoveScanExclusion,
   getErrorMessage,
 } from "@/hooks/useNetPulse";
 import { dataApi } from "@/lib/api";
@@ -416,16 +417,121 @@ function SystemTab() {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Tab: Vyloučené IP ze scanování
+// ---------------------------------------------------------------------------
+function ExclusionsTab() {
+  const { data: exclusions = [], isLoading } = useScanExclusions();
+  const addExclusion    = useAddScanExclusion();
+  const removeExclusion = useRemoveScanExclusion();
+  const [newIp,     setNewIp]     = useState("");
+  const [newReason, setNewReason] = useState("");
+  const [error,     setError]     = useState("");
+
+  async function handleAdd() {
+    setError("");
+    if (!newIp.trim()) { setError("IP adresa je povinná"); return; }
+    try {
+      await addExclusion.mutateAsync({ ip: newIp.trim(), reason: newReason.trim() });
+      setNewIp(""); setNewReason("");
+    } catch (e) { setError(getErrorMessage(e)); }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="space-y-1">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Přidat vyloučení
+        </p>
+        <p className="text-xs text-muted-foreground">
+          IP adresy v tomto seznamu jsou přeskočeny při ICMP scanu — i pokud jsou v aktivním rozsahu.
+        </p>
+      </div>
+
+      {/* Formulář přidání */}
+      <div className="flex gap-2 items-start">
+        <div className="space-y-1 flex-1">
+          <input
+            type="text" placeholder="IP adresa (např. 10.30.30.55)"
+            value={newIp} onChange={(e) => setNewIp(e.target.value)}
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono"
+          />
+        </div>
+        <div className="space-y-1 flex-1">
+          <input
+            type="text" placeholder="Důvod vyloučení (volitelné)"
+            value={newReason} onChange={(e) => setNewReason(e.target.value)}
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+          />
+        </div>
+        <Button variant="primary" size="sm" onClick={handleAdd} disabled={addExclusion.isPending}>
+          {addExclusion.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+          Přidat
+        </Button>
+      </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      {/* Seznam vyloučení */}
+      {isLoading && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Načítám...</div>}
+
+      {!isLoading && exclusions.length === 0 && (
+        <div className="rounded-lg border border-dashed border-border py-8 text-center">
+          <Ban className="h-8 w-8 mx-auto text-muted-foreground/20 mb-2" />
+          <p className="text-sm text-muted-foreground">Žádné vyloučené IP adresy</p>
+        </div>
+      )}
+
+      {exclusions.length > 0 && (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40">
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">IP adresa</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Důvod</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Přidal</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">Datum</th>
+                <th className="px-4 py-2.5 w-10" />
+              </tr>
+            </thead>
+            <tbody>
+              {exclusions.map((ex: any, i: number) => (
+                <tr key={ex.id} className={cn("border-b border-border last:border-0", i % 2 === 0 ? "" : "bg-muted/10")}>
+                  <td className="px-4 py-2.5 font-mono text-sm font-medium">{ex.ip}</td>
+                  <td className="px-4 py-2.5 text-xs text-muted-foreground">{ex.reason || "—"}</td>
+                  <td className="px-4 py-2.5 text-xs text-muted-foreground">{ex.created_by || "—"}</td>
+                  <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                    {new Date(ex.created_at).toLocaleDateString("cs-CZ")}
+                  </td>
+                  <td className="px-2 py-2">
+                    <Button variant="ghost" size="icon"
+                      onClick={() => removeExclusion.mutate(ex.id)}
+                      disabled={removeExclusion.isPending}
+                      className="h-7 w-7 text-destructive hover:text-destructive">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
-type TabId = "scan" | "discovery" | "backup" | "data" | "system";
+type TabId = "scan" | "discovery" | "backup" | "exclusions" | "data" | "system";
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
-  { id: "scan",      label: "Konfigurace scanu",   icon: Radio },
-  { id: "discovery", label: "Discovery scheduler", icon: Search },
-  { id: "backup",    label: "Backup scheduler",    icon: HardDrive },
-  { id: "data",      label: "Správa dat",          icon: Database },
-  { id: "system",    label: "O systému",           icon: Settings2 },
+  { id: "scan",       label: "Konfigurace scanu",   icon: Radio },
+  { id: "discovery",  label: "Discovery scheduler", icon: Search },
+  { id: "backup",     label: "Backup scheduler",    icon: HardDrive },
+  { id: "exclusions", label: "Vyloučené IP",        icon: Ban },
+  { id: "data",       label: "Správa dat",          icon: Database },
+  { id: "system",     label: "O systému",           icon: Settings2 },
 ];
 
 export default function SettingsPage() {
@@ -459,8 +565,9 @@ export default function SettingsPage() {
       {activeTab === "scan"      && <ScanTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
       {activeTab === "discovery" && <DiscoveryTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
       {activeTab === "backup"    && <BackupTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
-      {activeTab === "data"      && <DataTab />}
-      {activeTab === "system"    && <SystemTab />}
+      {activeTab === "exclusions" && <ExclusionsTab />}
+      {activeTab === "data"       && <DataTab />}
+      {activeTab === "system"     && <SystemTab />}
     </div>
   );
 }

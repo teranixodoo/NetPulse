@@ -546,10 +546,89 @@ async def update_range(range_id: int, rng: IpRangeModel, user=Depends(admin_only
     rng.id = range_id
     return await db.upsert_ip_range(pool, rng)
 
+@app.get("/ranges/{range_id}/impact", tags=["Ranges"])
+async def get_range_impact(range_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    """Vrátí dopad smazání/změny rozsahu — počty ovlivněných záznamů."""
+    async with pool.acquire() as conn:
+        # Načteme rozsah
+        row = await conn.fetchrow("SELECT id, label, network::text FROM ip_ranges WHERE id=$1", range_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Rozsah nenalezen")
+        network = row["network"]
+
+        # Počet ping_results záznamů
+        ping_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM ping_results WHERE ip << $1::cidr", network
+        )
+        # Počet záznamů za posledních 30 dní
+        ping_30d = await conn.fetchval(
+            "SELECT COUNT(*) FROM ping_results WHERE ip << $1::cidr "
+            "AND scanned_at > NOW() - INTERVAL '30 days'", network
+        )
+        # Počet zařízení v rozsahu
+        device_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM devices WHERE ip << $1::cidr", network
+        )
+        # Zařízení — jejich jména
+        devices_in = await conn.fetch(
+            "SELECT id, hostname, alias, ip::text FROM devices WHERE ip << $1::cidr LIMIT 10", network
+        )
+        # Počet outage eventů
+        outage_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM outage_events WHERE ip << $1::cidr", network
+        ) or 0
+
+    return {
+        "range_id":     range_id,
+        "label":        row["label"],
+        "network":      network,
+        "ping_total":   int(ping_count or 0),
+        "ping_30d":     int(ping_30d or 0),
+        "device_count": int(device_count or 0),
+        "devices":      [dict(d) for d in devices_in],
+        "outage_count": int(outage_count),
+    }
+
+
 @app.delete("/ranges/{range_id}", tags=["Ranges"])
-async def delete_range(range_id: int, user=Depends(admin_only), pool=Depends(get_db)):
-    await db.delete_ip_range(pool, range_id)
-    return {"status": "deleted", "id": range_id}
+async def delete_range(
+    range_id:     int,
+    delete_data:  bool = False,  # smazat i ping_results a outage_events
+    user          = Depends(admin_only),
+    pool          = Depends(get_db),
+):
+    """Smaže rozsah. Volitelně i historická ping data."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT network::text FROM ip_ranges WHERE id=$1", range_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Rozsah nenalezen")
+        network = row["network"]
+
+        deleted_pings   = 0
+        deleted_outages = 0
+
+        if delete_data:
+            # Smažeme historická ping data pro IP v rozsahu
+            r = await conn.fetchval(
+                "WITH d AS (DELETE FROM ping_results WHERE ip << $1::cidr RETURNING 1) "
+                "SELECT COUNT(*) FROM d", network
+            )
+            deleted_pings = int(r or 0)
+            # Smažeme outage eventy
+            r2 = await conn.fetchval(
+                "WITH d AS (DELETE FROM outage_events WHERE ip << $1::cidr RETURNING 1) "
+                "SELECT COUNT(*) FROM d", network
+            )
+            deleted_outages = int(r2 or 0)
+
+        await conn.execute("DELETE FROM ip_ranges WHERE id=$1", range_id)
+
+    return {
+        "status":          "deleted",
+        "id":              range_id,
+        "deleted_pings":   deleted_pings,
+        "deleted_outages": deleted_outages,
+    }
 
 # ---------------------------------------------------------------------------
 # CREDENTIALS — trezor přihlašovacích profilů (SOA)
@@ -1159,3 +1238,44 @@ async def cleanup_system_logs(
     cfg     = await db.get_config_db(pool)
     deleted = await sl.cleanup_old_logs(pool, cfg)
     return {"deleted": deleted, "total": sum(deleted.values())}
+
+
+# ===========================================================================
+# SCAN EXCLUSIONS — IP adresy vyloučené ze scanování
+# ===========================================================================
+
+@app.get("/scan-exclusions", tags=["Scan"])
+async def get_scan_exclusions(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Seznam IP adres vyloučených ze scanování."""
+    return await db.get_scan_exclusions(pool)
+
+
+@app.post("/scan-exclusions", tags=["Scan"])
+async def add_scan_exclusion(
+    data: models.ScanExclusion,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Přidá IP adresu do seznamu vyloučení."""
+    return await db.add_scan_exclusion(
+        pool,
+        ip         = data.ip,
+        reason     = data.reason or "",
+        created_by = user.username,
+    )
+
+
+@app.delete("/scan-exclusions/{exclusion_id}", tags=["Scan"])
+async def remove_scan_exclusion(
+    exclusion_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Odstraní IP adresu ze seznamu vyloučení."""
+    ok = await db.remove_scan_exclusion(pool, exclusion_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Vyloučení nenalezeno")
+    return {"status": "deleted", "id": exclusion_id}

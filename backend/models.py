@@ -44,7 +44,17 @@ class IpRangeModel(BaseModel):
     id:      Optional[int] = None
     label:   str
     network: str           # "192.168.1.0/24"
-    active:  bool = True
+    active:      bool = True
+    scan_enabled: bool = True           # zda se má rozsah skenovat
+    description: Optional[str] = None  # volitelný popis rozsahu
+
+
+class ScanExclusion(BaseModel):
+    id:         Optional[int] = None
+    ip:         str
+    reason:     Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class AppConfigModel(BaseModel):

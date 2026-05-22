@@ -226,24 +226,27 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active FROM ip_ranges ORDER BY id"
+            "SELECT id, label, network::text, active, scan_enabled, description FROM ip_ranges ORDER BY id"
         )
-    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
-            for r in rows]
+    return [IpRangeModel(
+        id=r["id"], label=r["label"], network=r["network"],
+        active=bool(r["active"]), scan_enabled=bool(r["scan_enabled"]),
+        description=r.get("description"),
+    ) for r in rows]
 
 
 async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel:
     async with pool.acquire() as conn:
         if rng.id:
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id,
+                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5, scan_enabled=$6 WHERE id=$4",
+                rng.label, rng.network, rng.active, rng.id, rng.description, rng.scan_enabled,
             )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active) VALUES ($1, $2::cidr, $3) RETURNING id",
-                rng.label, rng.network, rng.active,
+                "INSERT INTO ip_ranges (label, network, active, description, scan_enabled) VALUES ($1, $2::cidr, $3, $4, $5) RETURNING id",
+                rng.label, rng.network, rng.active, rng.description, rng.scan_enabled,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -1021,3 +1024,43 @@ async def get_backup_stats(pool) -> dict:
             """
         )
     return dict(row) if row else {}
+
+
+# ---------------------------------------------------------------------------
+# Scan exclusions — IP adresy vyloučené ze scanování
+# ---------------------------------------------------------------------------
+
+async def get_scan_exclusions(pool) -> list:
+    """Vrátí seznam vyloučených IP adres."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, ip::text, reason, created_by, created_at "
+            "FROM scan_exclusions ORDER BY created_at DESC"
+        )
+    return [dict(r) for r in rows]
+
+
+async def add_scan_exclusion(pool, ip: str, reason: str, created_by: str) -> dict:
+    """Přidá IP do seznamu vyloučení (nebo aktualizuje existující)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO scan_exclusions (ip, reason, created_by) VALUES ($1::inet, $2, $3) "
+            "ON CONFLICT (ip) DO UPDATE SET reason=$2, created_by=$3 "
+            "RETURNING id, ip::text, reason, created_by, created_at",
+            ip, reason, created_by,
+        )
+    return dict(row)
+
+
+async def remove_scan_exclusion(pool, exclusion_id: int) -> bool:
+    """Odstraní IP ze seznamu vyloučení."""
+    async with pool.acquire() as conn:
+        r = await conn.execute("DELETE FROM scan_exclusions WHERE id=$1", exclusion_id)
+    return r == "DELETE 1"
+
+
+async def get_excluded_ips(pool) -> set:
+    """Vrátí set vyloučených IP — pro rychlé filtrování při scanu."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT ip::text FROM scan_exclusions")
+    return {r["ip"] for r in rows}

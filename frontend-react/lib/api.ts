@@ -160,8 +160,12 @@ export const rangesApi = {
     const { data } = await api.put<IpRange>(`/ranges/${id}`, range);
     return data;
   },
-  async delete(id: number): Promise<void> {
-    await api.delete(`/ranges/${id}`);
+  async getImpact(id: number): Promise<import('./types').RangeImpact> {
+    const { data } = await api.get<import('./types').RangeImpact>(`/ranges/${id}/impact`);
+    return data;
+  },
+  async delete(id: number, deleteData = false): Promise<void> {
+    await api.delete(`/ranges/${id}`, { params: { delete_data: deleteData } });
   },
 };
 
@@ -323,3 +327,20 @@ export const systemLogsApi = {
 
 export { getErrorMessage };
 export default api;
+
+// ---------------------------------------------------------------------------
+// Scan Exclusions
+// ---------------------------------------------------------------------------
+export const scanExclusionsApi = {
+  async list(): Promise<import('./types').ScanExclusion[]> {
+    const { data } = await api.get('/scan-exclusions');
+    return data;
+  },
+  async add(ip: string, reason: string): Promise<import('./types').ScanExclusion> {
+    const { data } = await api.post('/scan-exclusions', { ip, reason });
+    return data;
+  },
+  async remove(id: number): Promise<void> {
+    await api.delete(`/scan-exclusions/${id}`);
+  },
+};

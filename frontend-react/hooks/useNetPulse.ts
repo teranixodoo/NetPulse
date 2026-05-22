@@ -2,6 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
+import { scanExclusionsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -125,8 +126,18 @@ export function useUpdateRange() {
 export function useDeleteRange() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => rangesApi.delete(id),
+    mutationFn: ({ id, deleteData }: { id: number; deleteData: boolean }) =>
+      rangesApi.delete(id, deleteData),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.ranges }),
+  });
+}
+
+export function useRangeImpact(rangeId: number | null) {
+  return useQuery({
+    queryKey: ["range-impact", rangeId],
+    queryFn:  () => rangesApi.getImpact(rangeId!),
+    enabled:  rangeId != null,
+    staleTime: 0,  // vždy čerstvá data
   });
 }
 
@@ -391,6 +402,34 @@ export function useCleanupSystemLogs() {
       qc.invalidateQueries({ queryKey: ["system-logs"] });
       qc.invalidateQueries({ queryKey: ["system-log-stats"] });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Scan Exclusions
+// ---------------------------------------------------------------------------
+
+export function useScanExclusions() {
+  return useQuery({
+    queryKey: ["scan-exclusions"],
+    queryFn:  () => scanExclusionsApi.list(),
+  });
+}
+
+export function useAddScanExclusion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ip, reason }: { ip: string; reason: string }) =>
+      scanExclusionsApi.add(ip, reason),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scan-exclusions"] }),
+  });
+}
+
+export function useRemoveScanExclusion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => scanExclusionsApi.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scan-exclusions"] }),
   });
 }
 

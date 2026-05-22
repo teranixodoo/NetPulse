@@ -85,10 +85,31 @@ export interface OutageEvent {
 // IP Rozsahy
 // ---------------------------------------------------------------------------
 export interface IpRange {
-  id: number | null;
-  label: string;
-  network: string;
-  active: boolean;
+  id:          number | null;
+  label:       string;
+  network:     string;
+  active:       boolean;
+  scan_enabled: boolean;
+  description:  string | null;
+}
+
+export interface ScanExclusion {
+  id:         number;
+  ip:         string;
+  reason:     string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface RangeImpact {
+  range_id:     number;
+  label:        string;
+  network:      string;
+  ping_total:   number;   // celkem ping záznamů
+  ping_30d:     number;   // ping záznamy za 30 dní
+  device_count: number;   // počet zařízení v rozsahu
+  devices:      { id: number; hostname: string; alias: string | null; ip: string }[];
+  outage_count: number;   // počet výpadků
 }
 
 // ---------------------------------------------------------------------------

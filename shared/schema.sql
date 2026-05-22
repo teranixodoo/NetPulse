@@ -263,3 +263,22 @@ INSERT INTO app_config (key, value, description) VALUES
     ('syslog_retention_days_warning',  '365', 'Retence WARNING logů v dnech'),
     ('syslog_retention_days_error',    '365', 'Retence ERROR/CRITICAL logů v dnech')
 ON CONFLICT (key) DO NOTHING;
+
+-- Migrace: popis IP rozsahu
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS description TEXT;
+
+-- Migrace: scan_enabled na ip_ranges
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS scan_enabled BOOLEAN NOT NULL DEFAULT true;
+
+-- Výjimky ze scanování — konkrétní IP vyloučené ze scanu
+CREATE TABLE IF NOT EXISTS scan_exclusions (
+    id          SERIAL PRIMARY KEY,
+    ip          INET NOT NULL UNIQUE,
+    reason      TEXT,
+    created_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scan_exclusions_ip ON scan_exclusions (ip);
+
+-- Migrace: popis rozsahu
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS description TEXT;
