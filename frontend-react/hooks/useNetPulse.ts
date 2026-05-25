@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -343,6 +343,15 @@ export function useRunBackup() {
   });
 }
 
+export function useUpdateDeviceCronPoll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceId, cron_poll }: { deviceId: number; cron_poll: boolean }) =>
+      api.patch(`/devices/${deviceId}/cron-poll`, { cron_poll }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.devices }),
+  });
+}
+
 export function useUpdateDeviceBackup() {
   const qc = useQueryClient();
   return useMutation({
@@ -430,6 +439,19 @@ export function useRemoveScanExclusion() {
   return useMutation({
     mutationFn: (id: number) => scanExclusionsApi.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["scan-exclusions"] }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Device Extended Data
+// ---------------------------------------------------------------------------
+
+export function useDeviceAllData(deviceId: number | null) {
+  return useQuery({
+    queryKey: ["device-data", deviceId],
+    queryFn:  () => deviceDataApi.getAll(deviceId!),
+    enabled:  deviceId != null,
+    staleTime: 30_000,
   });
 }
 

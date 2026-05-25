@@ -922,6 +922,18 @@ async def poll_device_data(
         f"method={result.method} success={result.success} "
         f"hostname={result.hostname} firmware={result.firmware}"
     )
+    # Uložíme rozšířená data (interfaces, ARP, DHCP) pokud byla sebrána
+    if result.success and result.extended:
+        for data_type, data in result.extended.items():
+            if data:  # uložíme jen neprázdná data
+                try:
+                    await db.save_device_data(
+                        pool, device_id, data_type, data,
+                        source=result.method
+                    )
+                    log.info(f"Uloženo {data_type}: {len(data)} záznamů")
+                except Exception as _de:
+                    log.warning(f"Chyba ukládání {data_type}: {_de}")
     sl.write_bg(
         "INFO" if result.success else "ERROR",
         "netpulse.poller",
@@ -1256,3 +1268,47 @@ async def cleanup_system_logs(
     cfg     = await db.get_config_db(pool)
     deleted = await sl.cleanup_old_logs(pool, cfg)
     return {"deleted": deleted, "total": sum(deleted.values())}
+
+
+# ===========================================================================
+# DEVICE DATA — rozšířená data ze zařízení (interfaces, ARP, DHCP)
+# ===========================================================================
+
+@app.get("/devices/{device_id}/data", tags=["Devices"])
+async def get_device_data_all(
+    device_id: int,
+    user      = Depends(current_user),
+    pool      = Depends(get_db),
+):
+    """Vrátí všechna rozšířená data zařízení (interfaces, ARP, DHCP)."""
+    return await db.get_all_device_data(pool, device_id)
+
+
+@app.get("/devices/{device_id}/data/{data_type}", tags=["Devices"])
+async def get_device_data_type(
+    device_id: int,
+    data_type: str,
+    user      = Depends(current_user),
+    pool      = Depends(get_db),
+):
+    """Vrátí nejnovější data daného typu pro zařízení."""
+    result = await db.get_device_data(pool, device_id, data_type)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Žádná data typu '{data_type}'")
+    return result
+
+
+@app.patch("/devices/{device_id}/cron-poll", tags=["Devices"])
+async def update_device_cron_poll(
+    device_id:  int,
+    cron_poll:  bool = Body(..., embed=True),
+    user        = Depends(admin_only),
+    pool        = Depends(get_db),
+):
+    """Nastaví povolení cron pollu pro zařízení."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE devices SET cron_poll=$2 WHERE id=$1",
+            device_id, cron_poll,
+        )
+    return {"device_id": device_id, "cron_poll": cron_poll}

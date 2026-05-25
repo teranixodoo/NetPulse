@@ -6,6 +6,7 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   getFilteredRowModel,
+  getPaginationRowModel,
   flexRender,
   type ColumnDef,
   type SortingState,
@@ -15,7 +16,7 @@ import {
 } from "@tanstack/react-table";
 import {
   ChevronUp, ChevronDown, ChevronsUpDown,
-  Search, X, ChevronRight,
+  Search, X, ChevronRight, ChevronLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, Spinner } from "@/components/ui";
@@ -37,6 +38,7 @@ export interface DataTableProps<T> {
   selectedRowId?: string | null;
   emptyMessage?: string;
   stickyHeader?: boolean;
+  pageSize?: number;        // počet řádků na stránku (0 = bez stránkování)
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ export function DataTable<T>({
   selectedRowId,
   emptyMessage = "Žádná data",
   stickyHeader = true,
+  pageSize = 100,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -139,17 +142,23 @@ export function DataTable<T>({
     return [...cols, ...columns];
   }, [columns, renderBulkActions, renderSubRow, expandedRowId]);
 
+  const [pagination, setPagination] = useState({ pageIndex: 0, pageSize });
+  // Reset na první stránku při změně dat nebo filtru
+  React.useEffect(() => { setPagination(p => ({ ...p, pageIndex: 0 })); }, [data.length, globalFilter]);
+
   const table = useReactTable<T>({
     data,
     columns: tableColumns,
-    state: { sorting, rowSelection, columnFilters, globalFilter },
+    state: { sorting, rowSelection, columnFilters, globalFilter, pagination },
     onSortingChange: setSorting,
     onRowSelectionChange: setRowSelection,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange,
+    onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     getRowId,
     enableRowSelection: !!renderBulkActions,
     globalFilterFn: "includesString",
@@ -295,12 +304,42 @@ export function DataTable<T>({
         </table>
       </div>
 
-      {/* Footer — počet záznamů */}
+      {/* Pagination / Footer */}
       <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          Zobrazeno {rows.length} z {data.length} záznamů
+          {pageSize > 0 && table.getPageCount() > 1
+            ? `Stránka ${table.getState().pagination.pageIndex + 1} z ${table.getPageCount()} · celkem ${table.getFilteredRowModel().rows.length.toLocaleString("cs-CZ")}`
+            : `Zobrazeno ${rows.length} z ${data.length} záznamů`}
           {selectedRows.length > 0 && ` · ${selectedRows.length} vybráno`}
         </span>
+        {pageSize > 0 && table.getPageCount() > 1 && (
+          <div className="flex items-center gap-1">
+            <button onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}
+              className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40">
+              <ChevronLeft className="h-3 w-3" />
+            </button>
+            {(() => {
+              const total = table.getPageCount();
+              const cur   = table.getState().pagination.pageIndex;
+              const pages = total <= 7
+                ? Array.from({ length: total }, (_, i) => i)
+                : cur < 4 ? [0,1,2,3,4,-1,total-1]
+                : cur > total-5 ? [0,-1,total-5,total-4,total-3,total-2,total-1]
+                : [0,-1,cur-1,cur,cur+1,-1,total-1];
+              return pages.map((p, i) => p === -1
+                ? <span key={`e${i}`} className="px-0.5">…</span>
+                : <button key={p} onClick={() => table.setPageIndex(p)}
+                    className={`h-6 min-w-[24px] rounded border px-1 text-xs ${
+                      p === cur ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"
+                    }`}>{p+1}</button>
+              );
+            })()}
+            <button onClick={() => table.nextPage()} disabled={!table.getCanNextPage()}
+              className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40">
+              <ChevronRight className="h-3 w-3" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

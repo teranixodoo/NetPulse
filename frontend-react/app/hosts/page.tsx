@@ -180,6 +180,7 @@ export default function HostsPage() {
         renderToolbar={renderToolbar}
         onRowClick={handleRowClick}
         selectedRowId={expandedRowIp}
+        pageSize={100}
         emptyMessage="Žádné IP adresy — spusťte scan."
       />
     </div>

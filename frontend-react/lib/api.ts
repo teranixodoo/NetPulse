@@ -344,3 +344,17 @@ export const scanExclusionsApi = {
     await api.delete(`/scan-exclusions/${id}`);
   },
 };
+
+// ---------------------------------------------------------------------------
+// Device Extended Data
+// ---------------------------------------------------------------------------
+export const deviceDataApi = {
+  async getAll(deviceId: number): Promise<import('./types').DeviceAllData> {
+    const { data } = await api.get(`/devices/${deviceId}/data`);
+    return data;
+  },
+  async getType(deviceId: number, type: string) {
+    const { data } = await api.get(`/devices/${deviceId}/data/${type}`);
+    return data;
+  },
+};

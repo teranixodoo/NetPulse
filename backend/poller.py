@@ -58,6 +58,75 @@ def _decrypt(password_cipher: str, cipher_obj) -> str:
         return password_cipher
 
 
+
+def _collect_mikrotik_extended(api) -> dict:
+    """Sbírá ARP, DHCP leases a interfaces přes MikroTik API."""
+    result = {}
+
+    # Interfaces + statistiky
+    try:
+        ifaces = api.get_resource("/interface").get()
+        result["interfaces"] = [
+            {
+                "name":      f.get("name", ""),
+                "type":      f.get("type", ""),
+                "running":   f.get("running", "false") == "true",
+                "disabled":  f.get("disabled", "false") == "true",
+                "comment":   f.get("comment", ""),
+                "mac":       f.get("mac-address", ""),
+                "mtu":       str(f.get("mtu", "")),
+                "rx_byte":   int(f.get("rx-byte", 0) or 0),
+                "tx_byte":   int(f.get("tx-byte", 0) or 0),
+                "rx_packet": int(f.get("rx-packet", 0) or 0),
+                "tx_packet": int(f.get("tx-packet", 0) or 0),
+                "rx_error":  int(f.get("rx-error", 0) or 0),
+                "tx_error":  int(f.get("tx-error", 0) or 0),
+            }
+            for f in ifaces if not f.get("name", "").startswith("*")
+        ]
+    except Exception as e:
+        log.debug(f"Interfaces sběr: {e}")
+
+    # ARP tabulka
+    try:
+        result["arp"] = [
+            {
+                "ip":        e.get("address", ""),
+                "mac":       e.get("mac-address", ""),
+                "interface": e.get("interface", ""),
+                "status":    "dynamic" if e.get("dynamic") == "true" else "static",
+                "complete":  e.get("complete", "false") == "true",
+                "invalid":   e.get("invalid", "false") == "true",
+            }
+            for e in api.get_resource("/ip/arp").get()
+            if e.get("address")
+        ]
+    except Exception as e:
+        log.debug(f"ARP sběr: {e}")
+
+    # DHCP leases
+    try:
+        result["dhcp"] = [
+            {
+                "ip":         l.get("address", ""),
+                "mac":        l.get("mac-address", ""),
+                "hostname":   l.get("host-name", ""),
+                "server":     l.get("server", ""),
+                "status":     l.get("status", ""),
+                "expires_at": l.get("expires-after", ""),
+                "dynamic":    l.get("dynamic", "false") == "true",
+                "blocked":    l.get("blocked", "false") == "true",
+                "comment":    l.get("comment", ""),
+            }
+            for l in api.get_resource("/ip/dhcp-server/lease").get()
+            if l.get("address")
+        ]
+    except Exception as e:
+        log.debug(f"DHCP sběr: {e}")
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Metoda 1: MikroTik RouterOS API (routeros_api knihovna)
 # Podporuje: plaintext login (ROS 6.43+), SSL (port 8729/58729)
@@ -163,6 +232,29 @@ async def _poll_mikrotik_api(
                 ctx_all.set_ciphers("ALL:@SECLEVEL=0")
                 ssl_variants.append({"use_ssl": True, "ssl_verify": False,
                                      "ssl_verify_hostname": False, "ssl_context": ctx_all})
+            except Exception:
+                pass
+            # Varianta 4: TLS 1.2 only + relaxed ciphers — Python 3.12 fix
+            try:
+                ctx_tls12 = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+                ctx_tls12.check_hostname = False
+                ctx_tls12.verify_mode    = _ssl.CERT_NONE
+                ctx_tls12.maximum_version = _ssl.TLSVersion.TLSv1_2
+                ctx_tls12.set_ciphers("ALL:@SECLEVEL=0")
+                ssl_variants.append({"use_ssl": True, "ssl_verify": False,
+                                     "ssl_verify_hostname": False, "ssl_context": ctx_tls12})
+            except Exception:
+                pass
+            # Varianta 5: TLS 1.1 — velmi starý ROS
+            try:
+                ctx_tls11 = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+                ctx_tls11.check_hostname = False
+                ctx_tls11.verify_mode    = _ssl.CERT_NONE
+                ctx_tls11.minimum_version = _ssl.TLSVersion.TLSv1
+                ctx_tls11.maximum_version = _ssl.TLSVersion.TLSv1_2
+                ctx_tls11.set_ciphers("ALL:@SECLEVEL=0")
+                ssl_variants.append({"use_ssl": True, "ssl_verify": False,
+                                     "ssl_verify_hostname": False, "ssl_context": ctx_tls11})
             except Exception:
                 pass
         else:
@@ -314,6 +406,12 @@ async def _poll_mikrotik_api(
             except Exception:
                 pkg_names = set()
 
+            # Rozšířená data — interfaces, ARP, DHCP
+            try:
+                data["extended"] = _collect_mikrotik_extended(api)
+            except Exception as _ee:
+                log.debug(f"Rozšířená data {ip}: {_ee}")
+
             # Detekce typu — board-name má VŽDY prioritu
             board = data.get("model", "") or ""
             SWITCH_PREFIXES   = ("CRS", "CSS")
@@ -361,6 +459,7 @@ async def _poll_mikrotik_api(
         result.interfaces  = data.get("interfaces", [])
         result.ports       = data.get("ports", [])
         result.system_info = data.get("system_info", {})
+        result.extended    = data.get("extended", {})
         # Přidáme klíčové hodnoty do system_info
         if result.software_id:
             result.system_info["software-id"] = result.software_id
@@ -547,6 +646,204 @@ async def _snmp_get_multi(
     return results
 
 
+async def _snmp_walk(
+    ip: str, community: str, base_oid: str,
+    port: int = 161, timeout: float = 10.0, max_rows: int = 500,
+) -> list[tuple[str, any]]:
+    """
+    SNMP GETNEXT walk — prochází celou tabulku od base_oid.
+    Vrátí list (oid_suffix, value).
+    Kompatibilní s pysnmp 7.x.
+    """
+    from pysnmp.hlapi.v3arch.asyncio import (
+        SnmpEngine, CommunityData, UdpTransportTarget,
+        ContextData, ObjectType, ObjectIdentity, get_cmd,
+    )
+
+    results  = []
+    engine   = SnmpEngine()
+    base_dot = base_oid.rstrip(".") + "."
+
+    try:
+        transport = await UdpTransportTarget.create((ip, port), timeout=timeout, retries=1)
+        current_oid = base_oid
+
+        for _ in range(max_rows):
+            # Použijeme get_cmd s GETNEXT semantikou přes OID inkrementaci
+            # pysnmp 7.x: ObjectIdentity s explicitním OID
+            from pysnmp.proto.rfc1902 import ObjectName
+            from pysnmp.hlapi.v3arch.asyncio import next_cmd as _next
+
+            try:
+                errInd, errStat, errIdx, varBinds = await _next(
+                    engine,
+                    CommunityData(community, mpModel=1),
+                    transport,
+                    ContextData(),
+                    ObjectType(ObjectIdentity(current_oid)),
+                    lexicographicMode=False,
+                )
+            except TypeError:
+                # pysnmp 7.x vrací async generátor
+                gen = _next(
+                    engine,
+                    CommunityData(community, mpModel=1),
+                    transport,
+                    ContextData(),
+                    ObjectType(ObjectIdentity(current_oid)),
+                    lexicographicMode=False,
+                )
+                errInd, errStat, errIdx, varBinds = await gen.__anext__()
+
+            if errInd or errStat:
+                break
+            if not varBinds:
+                break
+
+            for vb in varBinds:
+                oid_str = str(vb[0])
+                val     = vb[1]
+                # Zastavíme pokud jsme mimo rozsah
+                if not oid_str.startswith(base_dot):
+                    return results
+                suffix = oid_str[len(base_dot):]
+                results.append((suffix, val))
+                current_oid = oid_str
+
+    except Exception as e:
+        log.debug(f"SNMP walk {ip} {base_oid}: {e}")
+    finally:
+        try:
+            engine.close_dispatcher()
+        except Exception:
+            pass
+
+    return results
+
+
+def _mac_from_snmp(val) -> str:
+    """Převede SNMP OctetString na MAC adresu formátu AA:BB:CC:DD:EE:FF."""
+    try:
+        raw = val.asOctets()
+        if len(raw) == 6:
+            return ":".join(f"{b:02X}" for b in raw)
+    except Exception:
+        pass
+    # Odstraníme null bytes a neprintovatelné znaky
+    return str(val).replace("\x00", "").replace("\u0000", "")
+
+
+def _sanitize_str(val: str) -> str:
+    """Odstraní null bytes a neprintovatelné znaky z řetězce."""
+    if not isinstance(val, str):
+        return val
+    return val.replace("\x00", "").replace("\u0000", "")
+
+
+async def _collect_snmp_extended(
+    ip: str, community: str, port: int = 161, timeout: float = 10.0
+) -> dict:
+    """
+    Sbírá interfaces a ARP tabulku přes standardní SNMP MIBs.
+
+    IF-MIB:
+      ifIndex      1.3.6.1.2.1.2.2.1.1
+      ifDescr      1.3.6.1.2.1.2.2.1.2   — název rozhraní
+      ifType       1.3.6.1.2.1.2.2.1.3
+      ifOperStatus 1.3.6.1.2.1.2.2.1.8   — 1=up, 2=down
+      ifInOctets   1.3.6.1.2.1.2.2.1.10
+      ifOutOctets  1.3.6.1.2.1.2.2.1.16
+      ifInErrors   1.3.6.1.2.1.2.2.1.14
+      ifOutErrors  1.3.6.1.2.1.2.2.1.20
+      ifPhysAddress 1.3.6.1.2.1.2.2.1.6  — MAC
+
+    IP-MIB ARP:
+      ipNetToMediaNetAddress  1.3.6.1.2.1.4.22.1.3
+      ipNetToMediaPhysAddress 1.3.6.1.2.1.4.22.1.2
+      ipNetToMediaType        1.3.6.1.2.1.4.22.1.4  — 3=dynamic, 4=static
+    """
+    result = {}
+
+    # --- INTERFACES ---
+    try:
+        # Načteme jednotlivé sloupce tabulky
+        descr_rows   = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.2",  port, timeout)
+        status_rows  = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.8",  port, timeout)
+        mac_rows     = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.6",  port, timeout)
+        rxbyte_rows  = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.10", port, timeout)
+        txbyte_rows  = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.16", port, timeout)
+        rxerr_rows   = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.14", port, timeout)
+        txerr_rows   = await _snmp_walk(ip, community, "1.3.6.1.2.1.2.2.1.20", port, timeout)
+
+        # Sestavíme slovníky idx → hodnota
+        descr   = {idx: str(v)  for idx, v in descr_rows}
+        status  = {idx: int(v)  for idx, v in status_rows  if str(v).isdigit()}
+        mac     = {idx: _mac_from_snmp(v) for idx, v in mac_rows}
+        rxbyte  = {idx: int(v)  for idx, v in rxbyte_rows  if str(v).isdigit()}
+        txbyte  = {idx: int(v)  for idx, v in txbyte_rows  if str(v).isdigit()}
+        rxerr   = {idx: int(v)  for idx, v in rxerr_rows   if str(v).isdigit()}
+        txerr   = {idx: int(v)  for idx, v in txerr_rows   if str(v).isdigit()}
+
+        result["interfaces"] = [
+            {
+                "name":      _sanitize_str(descr.get(idx, f"if{idx}")),
+                "type":      "",
+                "running":   status.get(idx, 2) == 1,
+                "disabled":  False,
+                "comment":   "",
+                "mac":       _sanitize_str(mac.get(idx, "")),
+                "mtu":       "",
+                "rx_byte":   rxbyte.get(idx, 0),
+                "tx_byte":   txbyte.get(idx, 0),
+                "rx_packet": 0,
+                "tx_packet": 0,
+                "rx_error":  rxerr.get(idx, 0),
+                "tx_error":  txerr.get(idx, 0),
+            }
+            for idx in descr
+        ]
+        log.debug(f"SNMP interfaces {ip}: {len(result['interfaces'])} záznamů")
+    except Exception as e:
+        log.warning(f"SNMP interfaces {ip}: {e}")
+
+    # --- ARP tabulka ---
+    try:
+        mac_rows = await _snmp_walk(ip, community, "1.3.6.1.2.1.4.22.1.2", port, timeout)
+        type_rows= await _snmp_walk(ip, community, "1.3.6.1.2.1.4.22.1.4", port, timeout)
+
+        # ARP tabulka — index je "ifIndex.a.b.c.d"
+        # IP adresu čteme přímo ze suffixu OID (poslední 4 čísla)
+        # Příklad: suffix "16.10.30.30.1" → ifIndex=16, IP=10.30.30.1
+        arp_macs = {idx: _mac_from_snmp(v) for idx, v in mac_rows}
+        arp_type = {idx: int(v) for idx, v in type_rows if str(v).isdigit()}
+
+        def _suffix_to_ip(suffix: str) -> tuple[str, str]:
+            """Převede OID suffix "ifIdx.a.b.c.d" na (ifIdx, "a.b.c.d")."""
+            parts = suffix.split(".")
+            if len(parts) == 5:  # ifIndex + 4 oktety IP
+                return parts[0], ".".join(parts[1:])
+            return parts[0] if parts else "", ""
+
+        result["arp"] = []
+        for idx in arp_macs:
+            if_idx, ip_addr = _suffix_to_ip(idx)
+            if not ip_addr:
+                continue
+            result["arp"].append({
+                "ip":        ip_addr,
+                "mac":       _sanitize_str(arp_macs.get(idx, "")),
+                "interface": if_idx,
+                "status":    "dynamic" if arp_type.get(idx, 3) == 3 else "static",
+                "complete":  True,
+                "invalid":   False,
+            })
+        log.debug(f"SNMP ARP {ip}: {len(result['arp'])} záznamů")
+    except Exception as e:
+        log.warning(f"SNMP ARP {ip}: {e}")
+
+    return result
+
+
 async def _poll_snmp(ip: str, cred: dict, timeout: float = 5.0) -> PollerResult:
     community  = cred.get("_password", "public")
     port       = int(cred.get("port") or 161)
@@ -555,17 +852,12 @@ async def _poll_snmp(ip: str, cred: dict, timeout: float = 5.0) -> PollerResult:
     # snmp_host v extra_params — alternativní IP/hostname pro SNMP dotaz
     # Použití: zařízení má WAN IP ale SNMP je dostupné jen přes LAN IP
     extra      = cred.get("extra_params") or {}
-    log.info(f"SNMP debug: extra_params={extra} type={type(extra).__name__}")
     snmp_host  = extra.get("snmp_host", "").strip() if isinstance(extra, dict) else ""
     snmp_host  = snmp_host or ip
     if snmp_host != ip:
         log.info(f"SNMP {ip}: použiji snmp_host={snmp_host} (z extra_params)")
-    else:
-        log.info(f"SNMP {ip}: použiji přímé IP (snmp_host není nastaven)")
 
-    # Zkrátíme timeout pro rychlejší odezvu
     snmp_timeout = min(timeout, 5.0)
-    log.info(f"SNMP {ip}: dotaz na {snmp_host}:{port} community={community} timeout={snmp_timeout}")
     try:
         vals = await _snmp_get_multi(snmp_host, community, _SNMP_OIDS, port, snmp_timeout)
 
@@ -666,6 +958,19 @@ async def _poll_snmp(ip: str, cred: dict, timeout: float = 5.0) -> PollerResult:
             f"SNMP {ip} OK — hostname={result.hostname} "
             f"model={result.model} fw={result.firmware} serial={result.serial}"
         )
+
+        # Rozšířená data přes SNMP — interfaces + ARP
+        try:
+            result.extended = await _collect_snmp_extended(
+                snmp_host, community, port, timeout=min(timeout, 15.0)
+            )
+            log.info(
+                f"SNMP extended {ip}: "
+                f"ifaces={len(result.extended.get('interfaces', []))} "
+                f"arp={len(result.extended.get('arp', []))}"
+            )
+        except Exception as _ee:
+            log.warning(f"SNMP extended {ip}: {_ee}")
 
     except Exception as e:
         import traceback

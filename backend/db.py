@@ -169,7 +169,7 @@ async def get_recent_results(pool: asyncpg.Pool, limit: int = 1000) -> List[Ping
 
 async def get_outages(pool: asyncpg.Pool, hours: int = 24) -> List[OutageEvent]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=5.0) as conn:
         rows = await conn.fetch(
             """
             SELECT ip::text, scanned_at, is_alive, prev_alive
@@ -180,6 +180,7 @@ async def get_outages(pool: asyncpg.Pool, hours: int = 24) -> List[OutageEvent]:
             LIMIT 200
             """,
             since,
+            timeout=10.0,
         )
     return [
         OutageEvent(ip=r["ip"], started_at=r["scanned_at"], ended_at=None, duration_s=None)
@@ -409,7 +410,7 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d.id, d.device_uuid, d.ip::text, d.hostname, d.mac::text,
                 d.device_type, d.description, d.alias,
                 d.vendor, d.serial_number,
-                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
+                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule, d.cron_poll,
                 d.created_at, d.updated_at,
                 COALESCE(
                     json_agg(
@@ -1083,3 +1084,87 @@ async def get_excluded_ips(pool) -> set:
         return {r["ip"] for r in rows}
     except Exception:
         return set()
+
+
+# ---------------------------------------------------------------------------
+# Device Data — rozšířená data ze zařízení (interfaces, ARP, DHCP)
+# ---------------------------------------------------------------------------
+
+async def save_device_data(
+    pool, device_id: int, data_type: str, data: list, source: str = "api"
+) -> None:
+    """Uloží rozšířená data zařízení do device_data tabulky."""
+    import json as _json
+    # Sanitizujeme null bytes které PostgreSQL neumí uložit do textu
+    def _clean(obj):
+        if isinstance(obj, str):
+            return obj.replace("\x00", "").replace("\u0000", "")
+        if isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_clean(i) for i in obj]
+        return obj
+    clean_data = _clean(data)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO device_data (device_id, data_type, data, source)
+            VALUES ($1, $2, $3::jsonb, $4)
+            """,
+            device_id, data_type, _json.dumps(clean_data), source,
+        )
+
+
+async def get_device_data(
+    pool, device_id: int, data_type: str
+) -> dict | None:
+    """Vrátí nejnovější záznam daného typu pro zařízení."""
+    import json as _json
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT data, collected_at, source
+            FROM device_data
+            WHERE device_id = $1 AND data_type = $2
+            ORDER BY collected_at DESC
+            LIMIT 1
+            """,
+            device_id, data_type,
+        )
+    if not row:
+        return None
+    data = row["data"]
+    if isinstance(data, str):
+        data = _json.loads(data)
+    return {
+        "data":         data,
+        "collected_at": row["collected_at"].isoformat(),
+        "source":       row["source"],
+    }
+
+
+async def get_all_device_data(pool, device_id: int) -> dict:
+    """Vrátí nejnovější data všech typů pro zařízení."""
+    import json as _json
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (data_type)
+                data_type, data, collected_at, source
+            FROM device_data
+            WHERE device_id = $1
+            ORDER BY data_type, collected_at DESC
+            """,
+            device_id,
+        )
+    result = {}
+    for r in rows:
+        data = r["data"]
+        if isinstance(data, str):
+            data = _json.loads(data)
+        result[r["data_type"]] = {
+            "data":         data,
+            "collected_at": r["collected_at"].isoformat(),
+            "source":       r["source"],
+        }
+    return result

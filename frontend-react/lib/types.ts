@@ -85,21 +85,24 @@ export interface OutageEvent {
 // IP Rozsahy
 // ---------------------------------------------------------------------------
 export interface IpRange {
-  id: number | null;
-  label: string;
-  network: string;
-  active: boolean;
+  id:           number | null;
+  label:        string;
+  network:      string;
+  active:       boolean;
+  scan_enabled: boolean;
+  description:  string | null;
 }
 
 // ---------------------------------------------------------------------------
 // Credentials
 // ---------------------------------------------------------------------------
 export interface Credential {
-  id: number;
-  name: string;
-  auth_type: "ssh" | "snmp" | "api" | "http";
-  username: string | null;
-  port: number | null;
+  id:           number;
+  name:         string;
+  auth_type:    "ssh" | "snmp" | "api" | "http";
+  username:     string | null;
+  port:         number | null;
+  extra_params: Record<string, unknown>;
 }
 
 export interface CredentialCreate {
@@ -297,4 +300,103 @@ export interface BackupRunResult {
   mikrotik_version: string | null;
   duration_ms:      number | null;
   error:            string | null;
+}
+
+export interface SystemLog {
+  id:         number;
+  created_at: string;
+  level:      "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+  module:     string;
+  event_type: string;
+  message:    string;
+  device_id:  number | null;
+  user_name:  string | null;
+  meta:       Record<string, unknown> | null;
+  hostname?:  string | null;
+  alias?:     string | null;
+}
+
+export interface SystemLogStats {
+  total:         number;
+  info_count:    number;
+  warning_count: number;
+  error_count:   number;
+  last_24h:      number;
+  oldest_at:     string | null;
+  newest_at:     string | null;
+}
+
+export interface SystemLogMeta {
+  stats:       SystemLogStats;
+  modules:     string[];
+  event_types: string[];
+}
+export interface RangeImpact {
+  range_id:     number;
+  label:        string;
+  network:      string;
+  ping_total:   number;
+  ping_30d:     number;
+  device_count: number;
+  devices:      { id: number; hostname: string; alias: string | null; ip: string }[];
+  outage_count: number;
+}
+export interface ScanExclusion {
+  id:         number;
+  ip:         string;
+  reason:     string | null;
+  created_by: string | null;
+  created_at: string;
+}
+// ---------------------------------------------------------------------------
+// Device Extended Data (interfaces, ARP, DHCP)
+// ---------------------------------------------------------------------------
+
+export interface DeviceInterface {
+  name:      string;
+  type:      string;
+  running:   boolean;
+  disabled:  boolean;
+  comment:   string;
+  mac:       string;
+  mtu:       string;
+  rx_byte:   number;
+  tx_byte:   number;
+  rx_packet: number;
+  tx_packet: number;
+  rx_error:  number;
+  tx_error:  number;
+}
+
+export interface ArpEntry {
+  ip:        string;
+  mac:       string;
+  interface: string;
+  status:    string;
+  complete:  boolean;
+  invalid:   boolean;
+}
+
+export interface DhcpLease {
+  ip:         string;
+  mac:        string;
+  hostname:   string;
+  server:     string;
+  status:     string;
+  expires_at: string;
+  dynamic:    boolean;
+  blocked:    boolean;
+  comment:    string;
+}
+
+export interface DeviceDataResult<T> {
+  data:         T[];
+  collected_at: string;
+  source:       string;
+}
+
+export interface DeviceAllData {
+  interfaces?: DeviceDataResult<DeviceInterface>;
+  arp?:        DeviceDataResult<ArpEntry>;
+  dhcp?:       DeviceDataResult<DhcpLease>;
 }

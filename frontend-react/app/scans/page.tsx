@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Activity, CheckCircle, XCircle, Clock,
   RefreshCw, Wifi, Search, Cpu, ChevronDown, HardDrive,
@@ -320,12 +320,61 @@ function JobRow({ job }: { job: ScanJob }) {
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Stránkování
+// ---------------------------------------------------------------------------
+function usePaged<T>(items: T[], pageSize = 100) {
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [items.length]);
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const paged = items.slice((page - 1) * pageSize, page * pageSize);
+  return { page, setPage, totalPages, paged, total: items.length, pageSize };
+}
+
+function PagerUI({ page, totalPages, total, pageSize, setPage }: {
+  page: number; totalPages: number; total: number;
+  pageSize: number; setPage: (p: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to   = Math.min(page * pageSize, total);
+  const pages = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, i) => i + 1)
+    : page < 5 ? [1,2,3,4,5,0,totalPages]
+    : page > totalPages-4 ? [1,0,totalPages-4,totalPages-3,totalPages-2,totalPages-1,totalPages]
+    : [1,0,page-1,page,page+1,0,totalPages];
+  return (
+    <div className="flex items-center justify-between border-t border-border px-4 py-2 text-xs text-muted-foreground">
+      <span>{from}–{to} z {total.toLocaleString("cs-CZ")}</span>
+      <div className="flex items-center gap-1">
+        <button onClick={() => setPage(page-1)} disabled={page===1}
+          className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40">
+          ‹
+        </button>
+        {pages.map((p, i) => p === 0
+          ? <span key={`e${i}`}>…</span>
+          : <button key={p} onClick={() => setPage(p)}
+              className={`h-6 min-w-[24px] rounded border px-1 ${p===page ? "border-primary bg-primary text-primary-foreground" : "border-border hover:bg-muted"}`}>
+              {p}
+            </button>
+        )}
+        <button onClick={() => setPage(page+1)} disabled={page===totalPages}
+          className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40">
+          ›
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ScansPage() {
   const [typeFilter,   setTypeFilter]   = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const triggerScan = useTriggerScan();
 
   const { data: jobs  = [], isLoading }  = useScanJobs(typeFilter || undefined, 200);
+  const { paged: pagedJobs, page, setPage, totalPages, total, pageSize } = usePaged(jobs);
   const { data: stats }                  = useScanJobsStats();
 
   // Lokální filtr statusu
@@ -416,6 +465,7 @@ export default function ScansPage() {
           ))}
         </div>
       )}
+          <PagerUI page={page} totalPages={totalPages} total={total} pageSize={pageSize} setPage={setPage} />
     </div>
   );
 }

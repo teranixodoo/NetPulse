@@ -325,3 +325,5 @@ export function InlineConfirm({
     </div>
   );
 }
+
+export { Pagination, usePagination, PAGE_SIZE } from "./Pagination";

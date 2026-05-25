@@ -282,3 +282,47 @@ CREATE INDEX IF NOT EXISTS idx_scan_exclusions_ip ON scan_exclusions (ip);
 
 -- Migrace: popis rozsahu
 ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS description TEXT;
+
+-- ===========================================================================
+-- device_data — rozšířená data ze zařízení (ARP, DHCP, interfaces)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS device_data (
+    id          BIGSERIAL PRIMARY KEY,
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    data_type   TEXT NOT NULL,       -- 'interfaces' | 'arp' | 'dhcp'
+    data        JSONB NOT NULL,      -- pole objektů
+    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source      TEXT                 -- 'api' | 'snmp'
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_data_device ON device_data (device_id, data_type, collected_at DESC);
+
+-- Zachováme jen poslední 3 záznamy na typ — čistíme triggerem
+CREATE OR REPLACE FUNCTION cleanup_device_data() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM device_data
+    WHERE device_id = NEW.device_id
+      AND data_type = NEW.data_type
+      AND id NOT IN (
+          SELECT id FROM device_data
+          WHERE device_id = NEW.device_id
+            AND data_type = NEW.data_type
+          ORDER BY collected_at DESC
+          LIMIT 3
+      );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_cleanup_device_data ON device_data;
+CREATE TRIGGER trg_cleanup_device_data
+    AFTER INSERT ON device_data
+    FOR EACH ROW EXECUTE FUNCTION cleanup_device_data();
+
+-- Migrace: cron_poll — povolení automatického cron pollu zařízení
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS cron_poll BOOLEAN NOT NULL DEFAULT false;
+
+-- Migrace: indexy pro výkon
+CREATE INDEX IF NOT EXISTS idx_outage_events_scanned_at ON outage_events (scanned_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ping_results_scanned_at  ON ping_results  (scanned_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ping_results_ip_scanned  ON ping_results  (ip, scanned_at DESC);

@@ -206,6 +206,7 @@ export default function DevicesPage() {
         renderBulkActions={renderBulkActions}
         onRowClick={handleRowClick}
         selectedRowId={expandedRowId ? String(expandedRowId) : null}
+        pageSize={100}
         emptyMessage="Žádná zařízení — přidejte první zařízení výše."
       />
     </div>
