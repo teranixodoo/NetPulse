@@ -226,27 +226,24 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active, scan_enabled, description FROM ip_ranges ORDER BY id"
+            "SELECT id, label, network::text, active FROM ip_ranges ORDER BY id"
         )
-    return [IpRangeModel(
-        id=r["id"], label=r["label"], network=r["network"],
-        active=bool(r["active"]), scan_enabled=bool(r["scan_enabled"]),
-        description=r.get("description"),
-    ) for r in rows]
+    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
+            for r in rows]
 
 
 async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel:
     async with pool.acquire() as conn:
         if rng.id:
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5, scan_enabled=$6 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id, rng.description, rng.scan_enabled,
+                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5 WHERE id=$4",
+                rng.label, rng.network, rng.active, rng.id, rng.description,
             )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active, description, scan_enabled) VALUES ($1, $2::cidr, $3, $4, $5) RETURNING id",
-                rng.label, rng.network, rng.active, rng.description, rng.scan_enabled,
+                "INSERT INTO ip_ranges (label, network, active, description) VALUES ($1, $2::cidr, $3, $4) RETURNING id",
+                rng.label, rng.network, rng.active, rng.description,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -342,11 +339,24 @@ async def add_device(pool, dev: DeviceCreate) -> dict:
 
 async def get_credentials(pool: asyncpg.Pool) -> list[dict]:
     """Seznam všech profilů BEZ hesla."""
+    import json as _json
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, name, auth_type, username, port, extra_params FROM credentials ORDER BY name"
         )
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        # extra_params může přijít jako string — deserializujeme
+        if isinstance(d.get("extra_params"), str):
+            try:
+                d["extra_params"] = _json.loads(d["extra_params"] or "{}")
+            except Exception:
+                d["extra_params"] = {}
+        elif d.get("extra_params") is None:
+            d["extra_params"] = {}
+        result.append(d)
+    return result
 
 
 async def create_credential(
@@ -407,7 +417,8 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                             'id', c.id, 'name', c.name,
                             'auth_type', c.auth_type, 'username', c.username,
                             'port', c.port,
-                            'password_cipher', c.password_cipher
+                            'password_cipher', c.password_cipher,
+                            'extra_params', c.extra_params
                         )
                     ) FILTER (WHERE c.id IS NOT NULL),
                     '[]'
@@ -424,6 +435,15 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
         d = dict(r)
         import json as _json
         d["credentials"] = _json.loads(d["credentials"]) if isinstance(d["credentials"], str) else d["credentials"]
+        # Deserializujeme extra_params v každém credentialu
+        for cred in (d["credentials"] or []):
+            if isinstance(cred.get("extra_params"), str):
+                try:
+                    cred["extra_params"] = _json.loads(cred["extra_params"] or "{}")
+                except Exception:
+                    cred["extra_params"] = {}
+            elif cred.get("extra_params") is None:
+                cred["extra_params"] = {}
         # Deserializujeme JSONB last_successful_auth — asyncpg může vrátit string nebo dict
         auth = d.get("last_successful_auth")
         if isinstance(auth, str):
@@ -1031,17 +1051,14 @@ async def get_backup_stats(pool) -> dict:
 # ---------------------------------------------------------------------------
 
 async def get_scan_exclusions(pool) -> list:
-    """Vrátí seznam vyloučených IP adres."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, ip::text, reason, created_by, created_at "
-            "FROM scan_exclusions ORDER BY created_at DESC"
+            "SELECT id, ip::text, reason, created_by, created_at FROM scan_exclusions ORDER BY created_at DESC"
         )
     return [dict(r) for r in rows]
 
 
 async def add_scan_exclusion(pool, ip: str, reason: str, created_by: str) -> dict:
-    """Přidá IP do seznamu vyloučení (nebo aktualizuje existující)."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO scan_exclusions (ip, reason, created_by) VALUES ($1::inet, $2, $3) "
@@ -1053,14 +1070,16 @@ async def add_scan_exclusion(pool, ip: str, reason: str, created_by: str) -> dic
 
 
 async def remove_scan_exclusion(pool, exclusion_id: int) -> bool:
-    """Odstraní IP ze seznamu vyloučení."""
     async with pool.acquire() as conn:
         r = await conn.execute("DELETE FROM scan_exclusions WHERE id=$1", exclusion_id)
     return r == "DELETE 1"
 
 
 async def get_excluded_ips(pool) -> set:
-    """Vrátí set vyloučených IP — pro rychlé filtrování při scanu."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT ip::text FROM scan_exclusions")
-    return {r["ip"] for r in rows}
+    """Vrátí set vyloučených IP adres pro rychlé filtrování při scanu."""
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT ip::text FROM scan_exclusions")
+        return {r["ip"] for r in rows}
+    except Exception:
+        return set()

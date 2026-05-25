@@ -31,6 +31,9 @@ function CredentialForm({ initial, onSave, onCancel, isPending, isEdit = false }
   const [password,    setPassword]    = useState("");
   const [port,        setPort]        = useState<number>(initial?.port ?? 0);
   const [snmpVersion, setSnmpVersion] = useState("2c");
+  const [snmpHost,    setSnmpHost]    = useState(
+    (initial?.extra_params as any)?.snmp_host ?? ""
+  );
   const [showPw,      setShowPw]      = useState(false);
   const [error,       setError]       = useState<string | null>(null);
 
@@ -43,7 +46,9 @@ function CredentialForm({ initial, onSave, onCancel, isPending, isEdit = false }
       await onSave({
         name: name.trim(), auth_type: authType,
         username: username.trim(), password,
-        port, extra_params: authType === "snmp" ? { snmp_version: snmpVersion } : {},
+        port, extra_params: authType === "snmp"
+          ? { snmp_version: snmpVersion, ...(snmpHost.trim() ? { snmp_host: snmpHost.trim() } : {}) }
+          : {},
       });
     } catch (err) { setError(getErrorMessage(err)); }
   }
@@ -93,6 +98,15 @@ function CredentialForm({ initial, onSave, onCancel, isPending, isEdit = false }
               <option value="2c">2c</option>
               <option value="3">3</option>
             </select>
+          </FormField>
+        )}
+        {authType === "snmp" && (
+          <FormField label="SNMP Host (volitelné)">
+            <Input
+              value={snmpHost}
+              onChange={(e) => setSnmpHost(e.target.value)}
+              placeholder="10.221.0.1 — interní IP pro SNMP (prázdné = IP zařízení)"
+            />
           </FormField>
         )}
       </div>

@@ -67,13 +67,11 @@ async def run_scan(
     try:
         ranges    = await db.get_ip_ranges(pool)
         # Skenovat jen active=True AND scan_enabled=True
-        scannable = [r for r in ranges if r.active and r.scan_enabled]
-        skipped   = [r for r in ranges if r.active and not r.scan_enabled]
+        scannable = [r for r in ranges if r.active and getattr(r, "scan_enabled", True)]
+        skipped   = [r for r in ranges if r.active and not getattr(r, "scan_enabled", True)]
         if skipped:
-            log.info(
-                f"Ping scan: přeskočeno {len(skipped)} rozsahů (scan disabled): "
-                f"{[r.label for r in skipped]}"
-            )
+            log.info(f"Ping scan: přeskočeno {len(skipped)} rozsahů (scan disabled): "
+                     f"{[r.label for r in skipped]}")
 
         import ipaddress
         target_ips = []
@@ -107,7 +105,7 @@ async def run_scan(
             trigger_type  = trigger_type,
             triggered_by  = triggered_by,
             total_targets = len(target_ips),
-            meta          = {"ranges": [r.label for r in active]},
+            meta          = {"ranges": [r.label for r in scannable]},
         )
         log.info(
             f"Spouštím scan {len(target_ips)} IP adres "

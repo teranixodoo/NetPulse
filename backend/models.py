@@ -45,16 +45,7 @@ class IpRangeModel(BaseModel):
     label:   str
     network: str           # "192.168.1.0/24"
     active:      bool = True
-    scan_enabled: bool = True           # zda se má rozsah skenovat
     description: Optional[str] = None  # volitelný popis rozsahu
-
-
-class ScanExclusion(BaseModel):
-    id:         Optional[int] = None
-    ip:         str
-    reason:     Optional[str] = None
-    created_by: Optional[str] = None
-    created_at: Optional[datetime] = None
 
 
 class AppConfigModel(BaseModel):
@@ -193,11 +184,12 @@ class CredentialCreate(BaseModel):
 
 
 class Credential(BaseModel):
-    id:        int
-    name:      str
-    auth_type: str
-    username:  Optional[str]
-    port:      Optional[int]
+    id:           int
+    name:         str
+    auth_type:    str
+    username:     Optional[str]
+    port:         Optional[int]
+    extra_params: dict = {}   # snmp_host, snmp_version atd. — BEZ hesla
     # password_cipher se NIKDY neposílá klientovi
 
     class Config:

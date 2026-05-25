@@ -85,31 +85,10 @@ export interface OutageEvent {
 // IP Rozsahy
 // ---------------------------------------------------------------------------
 export interface IpRange {
-  id:          number | null;
-  label:       string;
-  network:     string;
-  active:       boolean;
-  scan_enabled: boolean;
-  description:  string | null;
-}
-
-export interface ScanExclusion {
-  id:         number;
-  ip:         string;
-  reason:     string | null;
-  created_by: string | null;
-  created_at: string;
-}
-
-export interface RangeImpact {
-  range_id:     number;
-  label:        string;
-  network:      string;
-  ping_total:   number;   // celkem ping záznamů
-  ping_30d:     number;   // ping záznamy za 30 dní
-  device_count: number;   // počet zařízení v rozsahu
-  devices:      { id: number; hostname: string; alias: string | null; ip: string }[];
-  outage_count: number;   // počet výpadků
+  id: number | null;
+  label: string;
+  network: string;
+  active: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,38 +297,4 @@ export interface BackupRunResult {
   mikrotik_version: string | null;
   duration_ms:      number | null;
   error:            string | null;
-}
-
-// ---------------------------------------------------------------------------
-// System Logs
-// ---------------------------------------------------------------------------
-export interface SystemLog {
-  id:         number;
-  created_at: string;
-  level:      "INFO" | "WARNING" | "ERROR" | "CRITICAL";
-  module:     string;
-  event_type: string;
-  message:    string;
-  device_id:  number | null;
-  user_name:  string | null;
-  meta:       Record<string, unknown> | null;
-  // z JOIN s devices
-  hostname?:  string | null;
-  alias?:     string | null;
-}
-
-export interface SystemLogStats {
-  total:         number;
-  info_count:    number;
-  warning_count: number;
-  error_count:   number;
-  last_24h:      number;
-  oldest_at:     string | null;
-  newest_at:     string | null;
-}
-
-export interface SystemLogMeta {
-  stats:       SystemLogStats;
-  modules:     string[];
-  event_types: string[];
 }

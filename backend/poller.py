@@ -548,12 +548,26 @@ async def _snmp_get_multi(
 
 
 async def _poll_snmp(ip: str, cred: dict, timeout: float = 5.0) -> PollerResult:
-    community = cred.get("_password", "public")
-    port      = int(cred.get("port") or 161)
-    result    = PollerResult(ip=ip, method="snmp")
+    community  = cred.get("_password", "public")
+    port       = int(cred.get("port") or 161)
+    result     = PollerResult(ip=ip, method="snmp")
 
+    # snmp_host v extra_params — alternativní IP/hostname pro SNMP dotaz
+    # Použití: zařízení má WAN IP ale SNMP je dostupné jen přes LAN IP
+    extra      = cred.get("extra_params") or {}
+    log.info(f"SNMP debug: extra_params={extra} type={type(extra).__name__}")
+    snmp_host  = extra.get("snmp_host", "").strip() if isinstance(extra, dict) else ""
+    snmp_host  = snmp_host or ip
+    if snmp_host != ip:
+        log.info(f"SNMP {ip}: použiji snmp_host={snmp_host} (z extra_params)")
+    else:
+        log.info(f"SNMP {ip}: použiji přímé IP (snmp_host není nastaven)")
+
+    # Zkrátíme timeout pro rychlejší odezvu
+    snmp_timeout = min(timeout, 5.0)
+    log.info(f"SNMP {ip}: dotaz na {snmp_host}:{port} community={community} timeout={snmp_timeout}")
     try:
-        vals = await _snmp_get_multi(ip, community, _SNMP_OIDS, port, timeout)
+        vals = await _snmp_get_multi(snmp_host, community, _SNMP_OIDS, port, snmp_timeout)
 
         # Základní dostupnost
         sysname = vals.get("sysName")
@@ -924,24 +938,27 @@ def _vendor_check(vendor: str | None) -> tuple[bool, str]:
 
 
 async def poll_device(
-    ip:       str,
-    creds:    list[dict],
+    ip:           str,
+    creds:        list[dict],
     cipher,
-    timeout:  float = 15.0,
-    vendor:   str | None = None,
+    timeout:      float = 15.0,
+    vendor:       str | None = None,
+    force_single: bool = False,  # True = použij jen zadané creds bez vendor sorting
 ) -> PollerResult:
     """
     Čte data ze zařízení pomocí přihlašovacích profilů.
-    Pořadí metod se řídí výrobcem (vendor).
-    Pokud vendor není nastaven, vrátí chybu s návodem.
+    force_single=True: ruční poll s konkrétním profilem — přeskočí vendor priority.
+    Pořadí metod se jinak řídí výrobcem (vendor).
+    Pokud vendor není nastaven a force_single=False, vrátí chybu s návodem.
     """
-    # Kontrola výrobce
-    vendor_ok, vendor_msg = _vendor_check(vendor)
-    if not vendor_ok:
-        return PollerResult(
-            ip=ip, method="failed",
-            error=vendor_msg
-        )
+    # Kontrola výrobce — přeskočíme při force_single (ruční poll s konkrétním profilem)
+    if not force_single:
+        vendor_ok, vendor_msg = _vendor_check(vendor)
+        if not vendor_ok:
+            return PollerResult(
+                ip=ip, method="failed",
+                error=vendor_msg
+            )
 
     if not creds:
         return PollerResult(ip=ip, method="failed",
@@ -954,18 +971,25 @@ async def poll_device(
         d["_password"] = _decrypt(d.get("password_cipher", ""), cipher)
         decrypted.append(d)
 
-    # Seřadíme dle vendor-specific priority
-    priority = _get_vendor_priority(vendor)
-    log.info(
-        f"Poll {ip}: vendor={vendor} → priorita metod: {priority} "
-        f"({len(decrypted)} profilů)"
-    )
+    if force_single:
+        # Ruční poll — použijeme profily přesně v zadaném pořadí bez sortování
+        log.info(
+            f"Poll {ip}: ruční poll → {[c['auth_type'] for c in decrypted]} "
+            f"({len(decrypted)} profilů)"
+        )
+    else:
+        # Seřadíme dle vendor-specific priority
+        priority = _get_vendor_priority(vendor)
+        log.info(
+            f"Poll {ip}: vendor={vendor} → priorita metod: {priority} "
+            f"({len(decrypted)} profilů)"
+        )
 
-    def _sort_key(cred: dict) -> int:
-        auth = cred["auth_type"]
-        return priority.index(auth) if auth in priority else 99
+        def _sort_key(cred: dict) -> int:
+            auth = cred["auth_type"]
+            return priority.index(auth) if auth in priority else 99
 
-    decrypted.sort(key=_sort_key)
+        decrypted.sort(key=_sort_key)
 
     for cred in decrypted:
         auth_type = cred["auth_type"]

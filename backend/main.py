@@ -840,13 +840,15 @@ def _build_discovery_layers(result) -> list[dict]:
 
 @app.post("/devices/{device_id}/poll", tags=["Devices"])
 async def poll_device_data(
-    device_id: int,
-    user       = Depends(current_user),
-    pool       = Depends(get_db),
+    device_id:     int,
+    credential_id: int = None,  # pokud zadán, použije pouze tento profil
+    user           = Depends(current_user),
+    pool           = Depends(get_db),
 ):
     """
-    Přečte data ze zařízení pomocí přiřazených přihlašovacích profilů.
-    Priorita metod: api → snmp → ssh → http
+    Přečte data ze zařízení.
+    credential_id: ruční poll — použije pouze zadaný profil.
+    Bez credential_id: automatický poll dle vendor priority.
     """
     # Načteme zařízení s credentials
     devices = await db.get_devices_with_credentials(pool)
@@ -869,12 +871,28 @@ async def poll_device_data(
 
     # Spustíme polling
     vendor = device.get("vendor") or None
+
+    # Ruční poll s konkrétním profilem — použijeme pouze ten jeden
+    if credential_id:
+        selected = [c for c in device["credentials"] if c["id"] == credential_id]
+        if not selected:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Přihlašovací profil {credential_id} není přiřazen tomuto zařízení"
+            )
+        poll_creds = selected
+        log.info(f"Poll {ip_str}: ruční poll s profilem {selected[0]["name"]} (id={credential_id})")
+    else:
+        poll_creds = device["credentials"]
+
     result = await poller.poll_device(
         ip      = ip_str,
-        creds   = device["credentials"],
+        creds   = poll_creds,
         cipher  = cipher,
         timeout = 20.0,
         vendor  = vendor,
+        # Pokud jeden profil — přeskočíme vendor priority sorting
+        force_single = credential_id is not None,
     )
 
     # Uložíme výsledek
@@ -1238,44 +1256,3 @@ async def cleanup_system_logs(
     cfg     = await db.get_config_db(pool)
     deleted = await sl.cleanup_old_logs(pool, cfg)
     return {"deleted": deleted, "total": sum(deleted.values())}
-
-
-# ===========================================================================
-# SCAN EXCLUSIONS — IP adresy vyloučené ze scanování
-# ===========================================================================
-
-@app.get("/scan-exclusions", tags=["Scan"])
-async def get_scan_exclusions(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    """Seznam IP adres vyloučených ze scanování."""
-    return await db.get_scan_exclusions(pool)
-
-
-@app.post("/scan-exclusions", tags=["Scan"])
-async def add_scan_exclusion(
-    data: models.ScanExclusion,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    """Přidá IP adresu do seznamu vyloučení."""
-    return await db.add_scan_exclusion(
-        pool,
-        ip         = data.ip,
-        reason     = data.reason or "",
-        created_by = user.username,
-    )
-
-
-@app.delete("/scan-exclusions/{exclusion_id}", tags=["Scan"])
-async def remove_scan_exclusion(
-    exclusion_id: int,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    """Odstraní IP adresu ze seznamu vyloučení."""
-    ok = await db.remove_scan_exclusion(pool, exclusion_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Vyloučení nenalezeno")
-    return {"status": "deleted", "id": exclusion_id}
