@@ -140,7 +140,8 @@ export interface Device {
   backup_enabled: boolean;          // individuální nastavení zálohy
   last_successful_credential_id: number | null;
   last_successful_auth: Record<string, unknown> | null;
-  is_alive: boolean | null;
+  is_alive:  boolean | null;
+  cron_poll: boolean;
 }
 
 export interface DeviceCreate {

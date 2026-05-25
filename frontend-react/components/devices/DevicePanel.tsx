@@ -9,9 +9,10 @@ import {
   useUpdateDevice, useDeleteDevice,
   useLinkCredential, useUnlinkCredential,
   useRunDiscovery, useDiscoveryLogs,
-  useCredentials, useDeviceBackups, useRunBackup, useDeleteBackup, getErrorMessage,
+  useCredentials, useDeviceBackups, useRunBackup, useDeleteBackup,
+  useDeviceAllData, useUpdateDeviceCronPoll, getErrorMessage,
 } from "@/hooks/useNetPulse";
-import type { Device, HostStats, DiscoveryLayer, DeviceBackup } from "@/lib/types";
+import type { Device, HostStats, DiscoveryLayer, DeviceBackup, DeviceInterface, ArpEntry, DhcpLease, DeviceAllData } from "@/lib/types";
 import { Button, FormField, Input, Spinner } from "@/components/ui";
 import { formatDateTime, cn } from "@/lib/utils";
 
@@ -24,7 +25,7 @@ const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","
 // ---------------------------------------------------------------------------
 // Tab navigace
 // ---------------------------------------------------------------------------
-type TabId = "info" | "ip" | "credentials" | "discovery" | "poll" | "backup";
+type TabId = "info" | "ip" | "credentials" | "discovery" | "poll" | "backup" | "interfaces" | "arp" | "dhcp";
 
 function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   const tabs: { id: TabId; label: string }[] = [
@@ -34,6 +35,9 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
     { id: "discovery",   label: "🔍 Discovery" },
     { id: "poll",        label: "📡 Sběr dat" },
     { id: "backup",      label: "💾 Zálohy" },
+    { id: "interfaces",  label: "📡 Interfaces" },
+    { id: "arp",         label: "🔗 ARP" },
+    { id: "dhcp",        label: "🏠 DHCP" },
   ];
   return (
     <div className="flex border-b border-border bg-background">
@@ -67,8 +71,9 @@ function BasicInfoTab({
   hostInfo?: HostStats;
   onClose: () => void;
 }) {
-  const updateDevice = useUpdateDevice();
-  const deleteDevice = useDeleteDevice();
+  const updateDevice   = useUpdateDevice();
+  const deleteDevice   = useDeleteDevice();
+  const updateCronPoll = useUpdateDeviceCronPoll();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [hostname,     setHostname]     = useState(device.hostname);
@@ -169,7 +174,28 @@ function BasicInfoTab({
         </div>
       </div>
 
-      {/* Poll data — zobrazíme pokud existují */}
+      {/* Cron poll toggle */}
+     <div className="mt-4 flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+       <div>
+         <p className="text-sm font-medium">Cron poll povolen</p>
+         <p className="text-xs text-muted-foreground mt-0.5">Zahrnout do automatického sběru dat</p>
+       </div>
+       <button
+         onClick={() => updateCronPoll.mutate({ deviceId: device.id, cron_poll: !(device.cron_poll ?? false) })}
+         disabled={updateCronPoll.isPending}
+         className={cn(
+           "relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0",
+           (device.cron_poll ?? false) ? "bg-primary" : "bg-muted"
+         )}
+       >
+         <span className={cn(
+           "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+           (device.cron_poll ?? false) ? "translate-x-6" : "translate-x-1"
+         )} />
+       </button>
+     </div>
+
+     {/* Poll data — zobrazíme pokud existují */}
       {(device.firmware || device.model || device.last_uptime_s || device.last_polled_at) && (
         <div className="rounded-md border border-border bg-muted/10 p-3">
           <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">
@@ -1101,6 +1127,104 @@ function PollTab({ device }: { device: Device }) {
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Pomocná tabulka pro device data záložky
+// ---------------------------------------------------------------------------
+function DevDataTable({ headers, rows }: { headers: string[]; rows: (string | number | boolean | null)[][] }) {
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground py-4 text-center">Žádná data</p>;
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border bg-muted/40">
+            {headers.map((h) => <th key={h} className="px-3 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={cn("border-b border-border last:border-0", i % 2 === 0 ? "" : "bg-muted/10")}>
+              {row.map((cell, j) => (
+                <td key={j} className="px-3 py-2 font-mono whitespace-nowrap">
+                  {cell === true ? <span className="text-green-600 dark:text-green-400">●</span>
+                   : cell === false ? <span className="text-muted-foreground/40">○</span>
+                   : cell ?? "—"}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DevDataMeta({ collected_at, source }: { collected_at: string; source: string }) {
+  return <p className="text-xs text-muted-foreground mb-3">Sesbíráno: {new Date(collected_at).toLocaleString("cs-CZ")} · zdroj: <span className="font-mono">{source}</span></p>;
+}
+
+function fmtBytes(b: number): string {
+  if (!b) return "0 B";
+  const s = ["B","KB","MB","GB","TB"], i = Math.floor(Math.log(b)/Math.log(1024));
+  return `${(b/Math.pow(1024,i)).toFixed(1)} ${s[i]}`;
+}
+
+function InterfacesTab({ device }: { device: Device }) {
+  const { data: allData, isLoading } = useDeviceAllData(device.id);
+  const ifaces = allData?.interfaces;
+  if (isLoading) return <div className="py-8 text-center text-sm text-muted-foreground">Načítám...</div>;
+  if (!ifaces) return <div className="py-8 text-center text-sm text-muted-foreground">Žádná data — spusťte poll.</div>;
+  return (
+    <div className="space-y-3">
+      <DevDataMeta collected_at={ifaces.collected_at} source={ifaces.source} />
+      <DevDataTable
+        headers={["Rozhraní","Typ","Stav","MAC","MTU","RX","TX","Chyby RX","Chyby TX"]}
+        rows={ifaces.data.map((i: DeviceInterface) => [
+          i.name, i.type,
+          i.disabled ? "zakázáno" : i.running ? "aktivní" : "neaktivní",
+          i.mac||"—", i.mtu||"—",
+          fmtBytes(i.rx_byte), fmtBytes(i.tx_byte),
+          i.rx_error||0, i.tx_error||0,
+        ])}
+      />
+    </div>
+  );
+}
+
+function ArpTab({ device }: { device: Device }) {
+  const { data: allData, isLoading } = useDeviceAllData(device.id);
+  const arp = allData?.arp;
+  if (isLoading) return <div className="py-8 text-center text-sm text-muted-foreground">Načítám...</div>;
+  if (!arp) return <div className="py-8 text-center text-sm text-muted-foreground">Žádná data — spusťte poll.</div>;
+  return (
+    <div className="space-y-3">
+      <DevDataMeta collected_at={arp.collected_at} source={arp.source} />
+      <p className="text-xs text-muted-foreground">{arp.data.length} záznamů</p>
+      <DevDataTable
+        headers={["IP adresa","MAC adresa","Rozhraní","Stav","Kompletní"]}
+        rows={arp.data.map((e: ArpEntry) => [e.ip, e.mac||"—", e.interface, e.status, e.complete])}
+      />
+    </div>
+  );
+}
+
+function DhcpTab({ device }: { device: Device }) {
+  const { data: allData, isLoading } = useDeviceAllData(device.id);
+  const dhcp = allData?.dhcp;
+  if (isLoading) return <div className="py-8 text-center text-sm text-muted-foreground">Načítám...</div>;
+  if (!dhcp) return <div className="py-8 text-center text-sm text-muted-foreground">Žádná data — zařízení nemá DHCP server nebo spusťte API poll.</div>;
+  return (
+    <div className="space-y-3">
+      <DevDataMeta collected_at={dhcp.collected_at} source={dhcp.source} />
+      <p className="text-xs text-muted-foreground">{dhcp.data.length} přidělených adres</p>
+      <DevDataTable
+        headers={["IP adresa","MAC adresa","Hostname","Server","Stav","Vyprší za","Komentář"]}
+        rows={dhcp.data.map((l: DhcpLease) => [l.ip, l.mac||"—", l.hostname||"—", l.server||"—", l.status, l.expires_at||"—", l.comment||"—"])}
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab: Zálohy
 // ---------------------------------------------------------------------------
@@ -1374,9 +1498,10 @@ export function DevicePanel({
       {activeTab === "discovery" && (
         <DiscoveryTab device={device} hostInfo={hostInfo} logs={discoveryLogs} isLoadingLogs={logsLoading} />
       )}
-      {activeTab === "backup" && (
-        <BackupTab device={device} />
-      )}
+      {activeTab === "backup"     && <BackupTab device={device} />}
+      {activeTab === "interfaces" && <InterfacesTab device={device} />}
+      {activeTab === "arp"        && <ArpTab device={device} />}
+      {activeTab === "dhcp"       && <DhcpTab device={device} />}
     </div>
   );
 }
