@@ -140,7 +140,7 @@ export interface Device {
   backup_enabled: boolean;          // individuální nastavení zálohy
   last_successful_credential_id: number | null;
   last_successful_auth: Record<string, unknown> | null;
-  is_alive:  boolean | null;
+  is_alive: boolean | null;
   cron_poll: boolean;
 }
 
@@ -303,6 +303,46 @@ export interface BackupRunResult {
   error:            string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Device IPs
+// ---------------------------------------------------------------------------
+
+export interface DeviceIp {
+  ip:         string;
+  mac:        string | null;
+  interface:  string | null;
+  is_primary: boolean;
+  source:     string;           // 'api_address' | 'api_arp' | 'api_dhcp' | 'snmp_address' | 'snmp_arp'
+  first_seen: string;
+  last_seen:  string;
+}
+
+export interface DeviceIpHistory {
+  ip:         string;
+  mac:        string | null;
+  interface:  string | null;
+  source:     string;
+  event:      "assigned" | "released" | "changed_mac" | "changed_ip";
+  old_value:  Record<string, string> | null;
+  new_value:  Record<string, string> | null;
+  changed_at: string;
+}
+
+export interface IpOwner {
+  device_id: number;
+  ip:        string;
+  mac:       string | null;
+  interface: string | null;
+  source:    string;
+  last_seen: string;
+  hostname:  string;
+  alias:     string | null;
+  vendor:    string | null;
+  model:     string | null;
+  firmware:  string | null;
+}
+
+
 export interface SystemLog {
   id:         number;
   created_at: string;
@@ -316,86 +356,48 @@ export interface SystemLog {
   hostname?:  string | null;
   alias?:     string | null;
 }
-
 export interface SystemLogStats {
-  total:         number;
-  info_count:    number;
-  warning_count: number;
-  error_count:   number;
-  last_24h:      number;
-  oldest_at:     string | null;
-  newest_at:     string | null;
+  total: number; info_count: number; warning_count: number;
+  error_count: number; last_24h: number;
+  oldest_at: string | null; newest_at: string | null;
+}
+export interface SystemLogMeta {
+  stats: SystemLogStats; modules: string[]; event_types: string[];
 }
 
-export interface SystemLogMeta {
-  stats:       SystemLogStats;
-  modules:     string[];
-  event_types: string[];
-}
+
 export interface RangeImpact {
-  range_id:     number;
-  label:        string;
-  network:      string;
-  ping_total:   number;
-  ping_30d:     number;
-  device_count: number;
-  devices:      { id: number; hostname: string; alias: string | null; ip: string }[];
+  range_id: number; label: string; network: string;
+  ping_total: number; ping_30d: number; device_count: number;
+  devices: { id: number; hostname: string; alias: string | null; ip: string }[];
   outage_count: number;
 }
+
+
 export interface ScanExclusion {
-  id:         number;
-  ip:         string;
-  reason:     string | null;
-  created_by: string | null;
-  created_at: string;
+  id: number; ip: string; reason: string | null;
+  created_by: string | null; created_at: string;
 }
-// ---------------------------------------------------------------------------
-// Device Extended Data (interfaces, ARP, DHCP)
-// ---------------------------------------------------------------------------
+
 
 export interface DeviceInterface {
-  name:      string;
-  type:      string;
-  running:   boolean;
-  disabled:  boolean;
-  comment:   string;
-  mac:       string;
-  mtu:       string;
-  rx_byte:   number;
-  tx_byte:   number;
-  rx_packet: number;
-  tx_packet: number;
-  rx_error:  number;
-  tx_error:  number;
+  name: string; type: string; running: boolean; disabled: boolean;
+  comment: string; mac: string; mtu: string;
+  rx_byte: number; tx_byte: number; rx_packet: number; tx_packet: number;
+  rx_error: number; tx_error: number;
 }
-
 export interface ArpEntry {
-  ip:        string;
-  mac:       string;
-  interface: string;
-  status:    string;
-  complete:  boolean;
-  invalid:   boolean;
+  ip: string; mac: string; interface: string;
+  status: string; complete: boolean; invalid: boolean;
 }
-
 export interface DhcpLease {
-  ip:         string;
-  mac:        string;
-  hostname:   string;
-  server:     string;
-  status:     string;
-  expires_at: string;
-  dynamic:    boolean;
-  blocked:    boolean;
-  comment:    string;
+  ip: string; mac: string; hostname: string; server: string;
+  status: string; expires_at: string; dynamic: boolean;
+  blocked: boolean; comment: string;
 }
-
 export interface DeviceDataResult<T> {
-  data:         T[];
-  collected_at: string;
-  source:       string;
+  data: T[]; collected_at: string; source: string;
 }
-
 export interface DeviceAllData {
   interfaces?: DeviceDataResult<DeviceInterface>;
   arp?:        DeviceDataResult<ArpEntry>;
