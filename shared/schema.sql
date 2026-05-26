@@ -326,3 +326,45 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS cron_poll BOOLEAN NOT NULL DEFAULT 
 CREATE INDEX IF NOT EXISTS idx_outage_events_scanned_at ON outage_events (scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ping_results_scanned_at  ON ping_results  (scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ping_results_ip_scanned  ON ping_results  (ip, scanned_at DESC);
+
+-- ===========================================================================
+-- device_ips — aktuální IP adresy na zařízeních
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS device_ips (
+    id          BIGSERIAL PRIMARY KEY,
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    ip          INET NOT NULL,
+    mac         TEXT,                   -- MAC adresa (může být NULL u vlastních IP)
+    interface   TEXT,                   -- název rozhraní (ether1, vlan10...)
+    is_primary  BOOLEAN DEFAULT false,  -- primární IP = ta v devices.ip
+    source      TEXT NOT NULL,          -- 'api_address' | 'api_arp' | 'api_dhcp' | 'snmp_address' | 'snmp_arp'
+    first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (device_id, ip, source)      -- jedna IP z jednoho zdroje per zařízení
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_ips_device    ON device_ips (device_id);
+CREATE INDEX IF NOT EXISTS idx_device_ips_ip        ON device_ips (ip);
+CREATE INDEX IF NOT EXISTS idx_device_ips_mac       ON device_ips (mac) WHERE mac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips (last_seen DESC);
+
+-- ===========================================================================
+-- device_ip_history — log všech změn IP/MAC na zařízeních
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS device_ip_history (
+    id          BIGSERIAL PRIMARY KEY,
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    ip          INET NOT NULL,
+    mac         TEXT,
+    interface   TEXT,
+    source      TEXT,
+    event       TEXT NOT NULL,  -- 'assigned'|'released'|'changed_mac'|'changed_ip'
+    old_value   JSONB,          -- předchozí stav {ip, mac, interface}
+    new_value   JSONB,          -- nový stav
+    changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_ip_history_device     ON device_ip_history (device_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_ip_history_ip         ON device_ip_history (ip);
+CREATE INDEX IF NOT EXISTS idx_device_ip_history_mac        ON device_ip_history (mac) WHERE mac IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_device_ip_history_changed_at ON device_ip_history (changed_at DESC);

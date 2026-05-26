@@ -1168,3 +1168,211 @@ async def get_all_device_data(pool, device_id: int) -> dict:
             "source":       r["source"],
         }
     return result
+
+
+# ===========================================================================
+# Device IPs — aktuální IP adresy a jejich historie
+# ===========================================================================
+
+import json as _json_mod
+
+async def update_device_ips(
+    pool,
+    device_id: int,
+    entries: list[dict],   # [{ip, mac, interface, source, is_primary}]
+    source_prefix: str,    # 'api' | 'snmp'
+) -> dict:
+    """
+    Aktualizuje device_ips pro zařízení.
+    Detekuje změny a zapisuje je do device_ip_history.
+    Vrátí statistiky: {inserted, updated, released, changes}.
+    """
+    stats = {"inserted": 0, "updated": 0, "released": 0, "changes": []}
+
+    async with pool.acquire() as conn:
+        # Načteme aktuální stav pro toto zařízení a prefix zdroje
+        existing = await conn.fetch(
+            """
+            SELECT id, ip::text, mac, interface, source, last_seen
+            FROM device_ips
+            WHERE device_id = $1 AND source LIKE $2
+            """,
+            device_id, f"{source_prefix}%",
+        )
+        existing_map = {(r["ip"], r["source"]): dict(r) for r in existing}
+        seen_keys = set()
+
+        for entry in entries:
+            ip       = entry.get("ip", "")
+            mac      = entry.get("mac") or None
+            iface    = entry.get("interface") or None
+            source   = entry.get("source", source_prefix)
+            is_prim  = entry.get("is_primary", False)
+
+            if not ip:
+                continue
+
+            key = (ip, source)
+            seen_keys.add(key)
+            existing_rec = existing_map.get(key)
+
+            if existing_rec is None:
+                # Nový záznam — INSERT + event 'assigned'
+                await conn.execute(
+                    """
+                    INSERT INTO device_ips
+                        (device_id, ip, mac, interface, is_primary, source, first_seen, last_seen)
+                    VALUES ($1, $2::inet, $3, $4, $5, $6, NOW(), NOW())
+                    ON CONFLICT (device_id, ip, source) DO UPDATE
+                        SET mac=EXCLUDED.mac, interface=EXCLUDED.interface,
+                            is_primary=EXCLUDED.is_primary, last_seen=NOW()
+                    """,
+                    device_id, ip, mac, iface, is_prim, source,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO device_ip_history
+                        (device_id, ip, mac, interface, source, event, new_value, changed_at)
+                    VALUES ($1, $2::inet, $3, $4, $5, 'assigned',
+                            $6::jsonb, NOW())
+                    """,
+                    device_id, ip, mac, iface, source,
+                    _json_mod.dumps({"ip": ip, "mac": mac, "interface": iface}),
+                )
+                stats["inserted"] += 1
+                stats["changes"].append({"event": "assigned", "ip": ip, "mac": mac, "interface": iface})
+
+            else:
+                old_mac   = existing_rec["mac"]
+                old_iface = existing_rec.get("interface")
+                changed   = False
+
+                # Detekce změny MAC
+                if mac and old_mac and mac != old_mac:
+                    await conn.execute(
+                        """
+                        INSERT INTO device_ip_history
+                            (device_id, ip, mac, interface, source, event, old_value, new_value, changed_at)
+                        VALUES ($1, $2::inet, $3, $4, $5, 'changed_mac', $6::jsonb, $7::jsonb, NOW())
+                        """,
+                        device_id, ip, mac, iface, source,
+                        _json_mod.dumps({"mac": old_mac}),
+                        _json_mod.dumps({"mac": mac}),
+                    )
+                    stats["changes"].append({"event": "changed_mac", "ip": ip, "old_mac": old_mac, "new_mac": mac})
+                    changed = True
+
+                # Aktualizujeme last_seen + případné změny
+                await conn.execute(
+                    """
+                    UPDATE device_ips
+                    SET mac=$3, interface=$4, is_primary=$5, last_seen=NOW()
+                    WHERE device_id=$1 AND ip=$2::inet AND source=$6
+                    """,
+                    device_id, ip, mac, iface, is_prim, source,
+                )
+                stats["updated"] += 1
+
+        # Záznamy které jsme neviděli → event 'released'
+        for key, rec in existing_map.items():
+            if key not in seen_keys:
+                ip, source = key
+                await conn.execute(
+                    """
+                    INSERT INTO device_ip_history
+                        (device_id, ip, mac, interface, source, event, old_value, changed_at)
+                    VALUES ($1, $2::inet, $3, $4, $5, 'released', $6::jsonb, NOW())
+                    """,
+                    device_id, ip, rec["mac"], rec.get("interface"), source,
+                    _json_mod.dumps({"ip": ip, "mac": rec["mac"]}),
+                )
+                stats["released"] += 1
+
+    return stats
+
+
+async def get_device_ips(pool, device_id: int) -> list[dict]:
+    """Vrátí aktuální IP adresy zařízení (viděné v posledních 7 dnech)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ip::text, mac, interface, is_primary, source,
+                   first_seen, last_seen
+            FROM device_ips
+            WHERE device_id = $1
+              AND last_seen > NOW() - INTERVAL '7 days'
+            ORDER BY is_primary DESC, source, ip
+            """,
+            device_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_device_ip_history(
+    pool, device_id: int, limit: int = 200
+) -> list[dict]:
+    """Vrátí historii změn IP adres zařízení."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ip::text, mac, interface, source, event,
+                   old_value, new_value, changed_at
+            FROM device_ip_history
+            WHERE device_id = $1
+            ORDER BY changed_at DESC
+            LIMIT $2
+            """,
+            device_id, limit,
+        )
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("old_value"), str):
+            try: d["old_value"] = _json_mod.loads(d["old_value"])
+            except: pass
+        if isinstance(d.get("new_value"), str):
+            try: d["new_value"] = _json_mod.loads(d["new_value"])
+            except: pass
+        d["changed_at"] = d["changed_at"].isoformat()
+        result.append(d)
+    return result
+
+
+async def get_ip_owner(pool, ip: str) -> dict | None:
+    """Vrátí zařízení které vlastní danou IP (aktuálně nebo nedávno)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT di.device_id, di.ip::text, di.mac, di.interface,
+                   di.source, di.last_seen,
+                   d.hostname, d.alias, d.vendor, d.model, d.firmware
+            FROM device_ips di
+            JOIN devices d ON d.id = di.device_id
+            WHERE di.ip = $1::inet
+              AND di.last_seen > NOW() - INTERVAL '24 hours'
+            ORDER BY di.last_seen DESC
+            LIMIT 1
+            """,
+            ip,
+        )
+    if not row:
+        return None
+    r = dict(row)
+    r["last_seen"] = r["last_seen"].isoformat()
+    return r
+
+
+async def get_ip_changes_stats(pool, device_id: int, hours: int = 24) -> dict:
+    """Vrátí statistiky změn IP pro zařízení za posledních N hodin."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT event, COUNT(*) as cnt
+            FROM device_ip_history
+            WHERE device_id = $1
+              AND changed_at > NOW() - ($2 || ' hours')::INTERVAL
+            GROUP BY event
+            """,
+            device_id, str(hours),
+        )
+    return {r["event"]: r["cnt"] for r in rows}

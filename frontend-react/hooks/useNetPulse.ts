@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -450,6 +450,28 @@ export function useDeviceAllData(deviceId: number | null) {
   return useQuery({
     queryKey: ["device-data", deviceId],
     queryFn:  () => deviceDataApi.getAll(deviceId!),
+    enabled:  deviceId != null,
+    staleTime: 30_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Device IPs
+// ---------------------------------------------------------------------------
+
+export function useDeviceIps(deviceId: number | null) {
+  return useQuery({
+    queryKey: ["device-ips", deviceId],
+    queryFn:  () => deviceIpsApi.getAll(deviceId!),
+    enabled:  deviceId != null,
+    staleTime: 30_000,
+  });
+}
+
+export function useDeviceIpHistory(deviceId: number | null, limit = 200) {
+  return useQuery({
+    queryKey: ["device-ip-history", deviceId],
+    queryFn:  () => deviceIpsApi.getHistory(deviceId!, limit),
     enabled:  deviceId != null,
     staleTime: 30_000,
   });

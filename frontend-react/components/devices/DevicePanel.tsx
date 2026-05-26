@@ -10,9 +10,11 @@ import {
   useLinkCredential, useUnlinkCredential,
   useRunDiscovery, useDiscoveryLogs,
   useCredentials, useDeviceBackups, useRunBackup, useDeleteBackup,
-  useDeviceAllData, useUpdateDeviceCronPoll, getErrorMessage,
+  useDeviceAllData, useUpdateDeviceCronPoll,
+  useDeviceIps, useDeviceIpHistory,
+  getErrorMessage,
 } from "@/hooks/useNetPulse";
-import type { Device, HostStats, DiscoveryLayer, DeviceBackup, DeviceInterface, ArpEntry, DhcpLease, DeviceAllData } from "@/lib/types";
+import type { Device, HostStats, DiscoveryLayer, DeviceBackup, DeviceInterface, ArpEntry, DhcpLease, DeviceAllData, DeviceIp, DeviceIpHistory } from "@/lib/types";
 import { Button, FormField, Input, Spinner } from "@/components/ui";
 import { formatDateTime, cn } from "@/lib/utils";
 
@@ -25,7 +27,7 @@ const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","
 // ---------------------------------------------------------------------------
 // Tab navigace
 // ---------------------------------------------------------------------------
-type TabId = "info" | "ip" | "credentials" | "discovery" | "poll" | "backup" | "interfaces" | "arp" | "dhcp";
+type TabId = "info" | "ip" | "credentials" | "discovery" | "poll" | "backup" | "interfaces" | "arp" | "dhcp" | "net";
 
 function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => void }) {
   const tabs: { id: TabId; label: string }[] = [
@@ -38,6 +40,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
     { id: "interfaces",  label: "📡 Interfaces" },
     { id: "arp",         label: "🔗 ARP" },
     { id: "dhcp",        label: "🏠 DHCP" },
+    { id: "net",         label: "🌐 Síťové adresy" },
   ];
   return (
     <div className="flex border-b border-border bg-background">
@@ -174,28 +177,7 @@ function BasicInfoTab({
         </div>
       </div>
 
-      {/* Cron poll toggle */}
-     <div className="mt-4 flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
-       <div>
-         <p className="text-sm font-medium">Cron poll povolen</p>
-         <p className="text-xs text-muted-foreground mt-0.5">Zahrnout do automatického sběru dat</p>
-       </div>
-       <button
-         onClick={() => updateCronPoll.mutate({ deviceId: device.id, cron_poll: !(device.cron_poll ?? false) })}
-         disabled={updateCronPoll.isPending}
-         className={cn(
-           "relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0",
-           (device.cron_poll ?? false) ? "bg-primary" : "bg-muted"
-         )}
-       >
-         <span className={cn(
-           "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-           (device.cron_poll ?? false) ? "translate-x-6" : "translate-x-1"
-         )} />
-       </button>
-     </div>
-
-     {/* Poll data — zobrazíme pokud existují */}
+      {/* Poll data — zobrazíme pokud existují */}
       {(device.firmware || device.model || device.last_uptime_s || device.last_polled_at) && (
         <div className="rounded-md border border-border bg-muted/10 p-3">
           <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">
@@ -1129,7 +1111,155 @@ function PollTab({ device }: { device: Device }) {
 
 
 // ---------------------------------------------------------------------------
-// Pomocná tabulka pro device data záložky
+// Tab: Síťové adresy (device_ips + history)
+// ---------------------------------------------------------------------------
+const SOURCE_LABELS: Record<string, string> = {
+  api_address: "API vlastní",
+  api_arp:     "API ARP",
+  api_dhcp:    "API DHCP",
+  snmp_address:"SNMP vlastní",
+  snmp_arp:    "SNMP ARP",
+};
+
+const EVENT_COLORS: Record<string, string> = {
+  assigned:    "text-green-600 dark:text-green-400",
+  released:    "text-muted-foreground",
+  changed_mac: "text-amber-600 dark:text-amber-400",
+  changed_ip:  "text-blue-600 dark:text-blue-400",
+};
+
+const EVENT_LABELS: Record<string, string> = {
+  assigned:    "✅ Přiřazeno",
+  released:    "⬜ Uvolněno",
+  changed_mac: "⚠️ Změna MAC",
+  changed_ip:  "🔄 Změna IP",
+};
+
+function NetTab({ device }: { device: Device }) {
+  const { data: ips = [],     isLoading: ipsLoading }  = useDeviceIps(device.id);
+  const { data: history = [], isLoading: histLoading } = useDeviceIpHistory(device.id);
+  const [showHistory, setShowHistory] = useState(false);
+  const [filterMac,   setFilterMac]   = useState("");
+
+  // Rozdělíme vlastní IP a klienty
+  const ownIps     = ips.filter(ip => ip.source.endsWith("_address") || ip.is_primary);
+  const clientIps  = ips.filter(ip => !ip.source.endsWith("_address") && !ip.is_primary);
+
+  // Filtrace historie
+  const filteredHistory = filterMac
+    ? history.filter(h => h.mac?.toLowerCase().includes(filterMac.toLowerCase()) ||
+                          h.ip.includes(filterMac))
+    : history;
+
+  // Počty změn
+  const changeCounts = history.reduce((acc, h) => {
+    acc[h.event] = (acc[h.event] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  if (ipsLoading) return <div className="py-8 text-center text-sm text-muted-foreground">Načítám...</div>;
+
+  if (ips.length === 0) return (
+    <div className="py-8 text-center text-sm text-muted-foreground">
+      Žádná data — spusťte poll přes API nebo SNMP profil.
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Vlastní IP adresy */}
+      {ownIps.length > 0 && (
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
+            Vlastní IP adresy ({ownIps.length})
+          </p>
+          <DevDataTable
+            headers={["IP adresa", "Interface", "Zdroj", "Od kdy", "Naposledy"]}
+            rows={ownIps.map((ip: DeviceIp) => [
+              ip.ip + (ip.is_primary ? " ★" : ""),
+              ip.interface || "—",
+              SOURCE_LABELS[ip.source] || ip.source,
+              new Date(ip.first_seen).toLocaleDateString("cs-CZ"),
+              new Date(ip.last_seen).toLocaleString("cs-CZ"),
+            ])}
+          />
+        </div>
+      )}
+
+      {/* Klienti (ARP + DHCP) */}
+      {clientIps.length > 0 && (
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
+            Klienti / ARP / DHCP ({clientIps.length})
+          </p>
+          <DevDataTable
+            headers={["IP adresa", "MAC adresa", "Interface/Server", "Zdroj", "Naposledy"]}
+            rows={clientIps.map((ip: DeviceIp) => [
+              ip.ip,
+              ip.mac || "—",
+              ip.interface || "—",
+              SOURCE_LABELS[ip.source] || ip.source,
+              new Date(ip.last_seen).toLocaleString("cs-CZ"),
+            ])}
+          />
+        </div>
+      )}
+
+      {/* Statistiky změn + tlačítko historie */}
+      <div className="flex items-center justify-between pt-2 border-t border-border">
+        <div className="flex gap-3 text-xs">
+          {Object.entries(changeCounts).map(([event, cnt]) => (
+            <span key={event} className={cn("font-medium", EVENT_COLORS[event] || "")}>
+              {EVENT_LABELS[event] || event}: {cnt}
+            </span>
+          ))}
+        </div>
+        <button
+          onClick={() => setShowHistory(v => !v)}
+          className="text-xs text-primary hover:underline"
+        >
+          {showHistory ? "Skrýt historii" : `Zobrazit historii (${history.length})`}
+        </button>
+      </div>
+
+      {/* Historie změn */}
+      {showHistory && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Filtr: IP nebo MAC..."
+              value={filterMac}
+              onChange={e => setFilterMac(e.target.value)}
+              className="h-8 flex-1 rounded border border-border bg-background px-3 text-xs
+                         focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono"
+            />
+          </div>
+          {histLoading ? (
+            <p className="text-xs text-muted-foreground">Načítám historii...</p>
+          ) : (
+            <DevDataTable
+              headers={["Čas", "Událost", "IP", "MAC", "Interface", "Zdroj", "Detail"]}
+              rows={filteredHistory.map((h: DeviceIpHistory) => [
+                new Date(h.changed_at).toLocaleString("cs-CZ"),
+                EVENT_LABELS[h.event] || h.event,
+                h.ip,
+                h.mac || "—",
+                h.interface || "—",
+                SOURCE_LABELS[h.source] || h.source,
+                h.old_value ? `${JSON.stringify(h.old_value)} → ${JSON.stringify(h.new_value)}` : "—",
+              ])}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Pomocné komponenty pro device data záložky
 // ---------------------------------------------------------------------------
 function DevDataTable({ headers, rows }: { headers: string[]; rows: (string | number | boolean | null)[][] }) {
   if (rows.length === 0) return <p className="text-sm text-muted-foreground py-4 text-center">Žádná data</p>;
@@ -1169,11 +1299,15 @@ function fmtBytes(b: number): string {
   return `${(b/Math.pow(1024,i)).toFixed(1)} ${s[i]}`;
 }
 
+
+// ---------------------------------------------------------------------------
+// Tab: Interfaces
+// ---------------------------------------------------------------------------
 function InterfacesTab({ device }: { device: Device }) {
   const { data: allData, isLoading } = useDeviceAllData(device.id);
   const ifaces = allData?.interfaces;
   if (isLoading) return <div className="py-8 text-center text-sm text-muted-foreground">Načítám...</div>;
-  if (!ifaces) return <div className="py-8 text-center text-sm text-muted-foreground">Žádná data — spusťte poll.</div>;
+  if (!ifaces) return <div className="py-8 text-center text-sm text-muted-foreground">Žádná data — spusťte poll přes API nebo SNMP profil.</div>;
   return (
     <div className="space-y-3">
       <DevDataMeta collected_at={ifaces.collected_at} source={ifaces.source} />
@@ -1191,6 +1325,9 @@ function InterfacesTab({ device }: { device: Device }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Tab: ARP
+// ---------------------------------------------------------------------------
 function ArpTab({ device }: { device: Device }) {
   const { data: allData, isLoading } = useDeviceAllData(device.id);
   const arp = allData?.arp;
@@ -1208,6 +1345,9 @@ function ArpTab({ device }: { device: Device }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Tab: DHCP
+// ---------------------------------------------------------------------------
 function DhcpTab({ device }: { device: Device }) {
   const { data: allData, isLoading } = useDeviceAllData(device.id);
   const dhcp = allData?.dhcp;
@@ -1502,6 +1642,7 @@ export function DevicePanel({
       {activeTab === "interfaces" && <InterfacesTab device={device} />}
       {activeTab === "arp"        && <ArpTab device={device} />}
       {activeTab === "dhcp"       && <DhcpTab device={device} />}
+      {activeTab === "net"        && <NetTab device={device} />}
     </div>
   );
 }

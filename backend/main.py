@@ -922,6 +922,35 @@ async def poll_device_data(
         f"method={result.method} success={result.success} "
         f"hostname={result.hostname} firmware={result.firmware}"
     )
+    # Aktualizujeme device_ips z výsledků pollu
+    if result.success and result.extended:
+        ext        = result.extended
+        ip_entries = []
+        for entry in ext.get("own_ips", []):
+            ip_entries.append({"ip": entry["ip"], "mac": entry.get("mac"),
+                "interface": entry.get("interface"), "source": entry.get("source", "api_address"),
+                "is_primary": entry["ip"] == ip_str})
+        for entry in ext.get("arp", []):
+            if entry.get("ip"):
+                ip_entries.append({"ip": entry["ip"], "mac": entry.get("mac"),
+                    "interface": entry.get("interface"), "source": entry.get("source", "api_arp"),
+                    "is_primary": False})
+        for lease in ext.get("dhcp", []):
+            if lease.get("ip") and lease.get("status") == "bound":
+                ip_entries.append({"ip": lease["ip"], "mac": lease.get("mac"),
+                    "interface": lease.get("server"), "source": "api_dhcp",
+                    "is_primary": False})
+        if ip_entries:
+            try:
+                src_pfx  = "api" if result.method == "api" else "snmp"
+                ip_stats = await db.update_device_ips(pool, device_id, ip_entries, src_pfx)
+                if ip_stats["changes"]:
+                    log.info(f"device_ips {ip_str}: +{ip_stats['inserted']} "
+                             f"~{ip_stats['updated']} -{ip_stats['released']} "
+                             f"events={len(ip_stats['changes'])}")
+            except Exception as _ie:
+                log.warning(f"device_ips update: {_ie}")
+
     # Uložíme rozšířená data (interfaces, ARP, DHCP) pokud byla sebrána
     if result.success and result.extended:
         for data_type, data in result.extended.items():
@@ -1312,3 +1341,52 @@ async def update_device_cron_poll(
             device_id, cron_poll,
         )
     return {"device_id": device_id, "cron_poll": cron_poll}
+
+
+# ===========================================================================
+# DEVICE IPs — IP adresy zařízení + historie změn
+# ===========================================================================
+
+@app.get("/devices/{device_id}/ips", tags=["Devices"])
+async def get_device_ips(
+    device_id: int,
+    user      = Depends(current_user),
+    pool      = Depends(get_db),
+):
+    """Vrátí aktuální IP adresy zařízení (vlastní + klienti z ARP/DHCP)."""
+    return await db.get_device_ips(pool, device_id)
+
+
+@app.get("/devices/{device_id}/ips/history", tags=["Devices"])
+async def get_device_ip_history(
+    device_id: int,
+    limit:     int = 200,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """Vrátí historii změn IP adres zařízení."""
+    return await db.get_device_ip_history(pool, device_id, limit)
+
+
+@app.get("/ips/{ip}/owner", tags=["Devices"])
+async def get_ip_owner(
+    ip:   str,
+    user  = Depends(current_user),
+    pool  = Depends(get_db),
+):
+    """Vrátí zařízení které vlastní danou IP adresu."""
+    result = await db.get_ip_owner(pool, ip)
+    if not result:
+        raise HTTPException(status_code=404, detail="IP není přiřazena žádnému zařízení")
+    return result
+
+
+@app.get("/devices/{device_id}/ips/stats", tags=["Devices"])
+async def get_device_ip_stats(
+    device_id: int,
+    hours:     int = 24,
+    user       = Depends(current_user),
+    pool       = Depends(get_db),
+):
+    """Vrátí statistiky změn IP za posledních N hodin."""
+    return await db.get_ip_changes_stats(pool, device_id, hours)

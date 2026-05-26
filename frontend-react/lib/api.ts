@@ -358,3 +358,27 @@ export const deviceDataApi = {
     return data;
   },
 };
+
+// ---------------------------------------------------------------------------
+// Device IPs API
+// ---------------------------------------------------------------------------
+export const deviceIpsApi = {
+  async getAll(deviceId: number): Promise<import('./types').DeviceIp[]> {
+    const { data } = await api.get(`/devices/${deviceId}/ips`);
+    return data;
+  },
+  async getHistory(deviceId: number, limit = 200): Promise<import('./types').DeviceIpHistory[]> {
+    const { data } = await api.get(`/devices/${deviceId}/ips/history`, { params: { limit } });
+    return data;
+  },
+  async getStats(deviceId: number, hours = 24) {
+    const { data } = await api.get(`/devices/${deviceId}/ips/stats`, { params: { hours } });
+    return data;
+  },
+  async getOwner(ip: string): Promise<import('./types').IpOwner | null> {
+    try {
+      const { data } = await api.get(`/ips/${encodeURIComponent(ip)}/owner`);
+      return data;
+    } catch { return null; }
+  },
+};

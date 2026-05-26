@@ -104,6 +104,33 @@ def _collect_mikrotik_extended(api) -> dict:
     except Exception as e:
         log.debug(f"ARP sběr: {e}")
 
+    # Vlastní IP adresy na interfacech
+    try:
+        addrs = api.get_resource("/ip/address").get()
+        result["own_ips"] = [
+            {
+                "ip":        a.get("address", "").split("/")[0],  # bez prefixu
+                "network":   a.get("network", ""),
+                "interface": a.get("interface", ""),
+                "mac":       None,  # vlastní IP nemají MAC v /ip/address
+                "source":    "api_address",
+            }
+            for a in addrs
+            if a.get("address") and a.get("disabled", "false") != "true"
+        ]
+    except Exception as e:
+        log.debug(f"Own IPs sběr: {e}")
+
+    # ARP s MAC — přidáme source pro device_ips
+    if "arp" in result:
+        for entry in result["arp"]:
+            entry["source"] = "api_arp"
+
+    # DHCP s MAC — přidáme source
+    if "dhcp" in result:
+        for lease in result.get("dhcp", []):
+            lease["source"] = "api_dhcp"
+
     # DHCP leases
     try:
         result["dhcp"] = [
@@ -806,6 +833,29 @@ async def _collect_snmp_extended(
     except Exception as e:
         log.warning(f"SNMP interfaces {ip}: {e}")
 
+    # --- Vlastní IP adresy (ipAddrTable) ---
+    # OID: ipAdEntAddr 1.3.6.1.2.1.4.20.1.1
+    try:
+        addr_rows  = await _snmp_walk(ip, community, "1.3.6.1.2.1.4.20.1.1", port, timeout)
+        iface_rows = await _snmp_walk(ip, community, "1.3.6.1.2.1.4.20.1.2", port, timeout)  # ifIndex
+        # Mapujeme ifIndex na název interface
+        if_map = {idx: name for idx, name in descr.items()} if "descr" in dir() else {}
+        # Sestavíme ifIndex ze suffixu adresy
+        addr_iface = {idx: str(v) for idx, v in iface_rows}
+        result["own_ips"] = [
+            {
+                "ip":        str(v),
+                "interface": if_map.get(addr_iface.get(idx, ""), addr_iface.get(idx, "")),
+                "mac":       None,
+                "source":    "snmp_address",
+            }
+            for idx, v in addr_rows
+            if str(v) and not str(v).startswith("127.")
+        ]
+    except Exception as e:
+        log.debug(f"SNMP own IPs: {e}")
+
+    # Přidáme source do ARP záznamů
     # --- ARP tabulka ---
     try:
         mac_rows = await _snmp_walk(ip, community, "1.3.6.1.2.1.4.22.1.2", port, timeout)
