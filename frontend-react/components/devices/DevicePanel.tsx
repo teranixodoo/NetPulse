@@ -43,13 +43,13 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (t: TabId) => v
     { id: "net",         label: "🌐 Síťové adresy" },
   ];
   return (
-    <div className="flex border-b border-border bg-background">
+    <div className="flex border-b border-border bg-background overflow-x-auto scrollbar-none">
       {tabs.map((t) => (
         <button
           key={t.id}
           onClick={(e) => { e.stopPropagation(); onChange(t.id); }}
           className={cn(
-            "px-4 py-2.5 text-sm transition-colors whitespace-nowrap",
+            "px-3 py-2 text-xs transition-colors whitespace-nowrap shrink-0",
             active === t.id
               ? "border-b-2 border-primary font-medium text-foreground"
               : "text-muted-foreground hover:text-foreground"
