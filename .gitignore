@@ -25,3 +25,4 @@ frontend-react/.env.local
 *.log
 .DS_Store
 *.zip
+*.zip
