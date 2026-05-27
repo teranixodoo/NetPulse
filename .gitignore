@@ -24,3 +24,4 @@ frontend-react/.env.local
 # Logy a dočasné soubory
 *.log
 .DS_Store
+*.zip
