@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { Download } from "lucide-react";
-import { useHosts, useDevices } from "@/hooks/useNetPulse";
+import { useHosts, useDevices, useIpDeviceMap } from "@/hooks/useNetPulse";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getHostColumns, type HostRow } from "@/components/hosts/HostColumns";
 import { HostPanel } from "@/components/hosts/HostPanel";
@@ -13,6 +13,7 @@ import type { Device } from "@/lib/types";
 export default function HostsPage() {
   const { data: hosts   = [], isLoading: hostsLoading   } = useHosts();
   const { data: devices = [], isLoading: devicesLoading } = useDevices();
+  const { data: ipDevMap = {} } = useIpDeviceMap();
 
   const [globalFilter,  setGlobalFilter]  = useState("");
   const [statusFilter,  setStatusFilter]  = useState("");
@@ -30,9 +31,10 @@ export default function HostsPage() {
   const rows = useMemo<HostRow[]>(() => {
     return hosts.map((h) => ({
       ...h,
-      device: deviceByIp.get(h.ip.split("/")[0]),
+      device:  deviceByIp.get(h.ip.split("/")[0]),
+      ipOwner: ipDevMap[h.ip.split("/")[0]] ?? undefined,
     }));
-  }, [hosts, deviceByIp]);
+  }, [hosts, deviceByIp, ipDevMap]);
 
   // Filtrace
   const filteredRows = useMemo(() => {

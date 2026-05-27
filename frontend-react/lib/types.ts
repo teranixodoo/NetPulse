@@ -195,13 +195,24 @@ export interface DiscoveryLog {
 // Konfigurace
 // ---------------------------------------------------------------------------
 export interface AppConfig {
-  scan_interval_s: number;
-  ping_count: number;
-  ping_timeout_ms: number;
-  max_concurrent: number;
-  alert_rtt_ms: number;
-  alert_email: string;
-  retention_days: number;
+  scan_interval_s:           number;
+  ping_count:                number;
+  ping_timeout_ms:           number;
+  max_concurrent:            number;
+  alert_rtt_ms:              number;
+  alert_email:               string;
+  retention_days:            number;
+  discovery_enabled:         string;
+  discovery_interval_s:      number;
+  discovery_only_online:     string;
+  discovery_skip_polled:     string;
+  poll_scheduler_enabled:    string;
+  poll_scheduler_interval_s: number;
+  backup_enabled:            string;
+  backup_interval_s:         number;
+  backup_only_online:        string;
+  backup_only_successful:    string;
+  [key: string]:             unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,13 +319,14 @@ export interface BackupRunResult {
 // ---------------------------------------------------------------------------
 
 export interface DeviceIp {
-  ip:         string;
-  mac:        string | null;
-  interface:  string | null;
-  is_primary: boolean;
-  source:     string;           // 'api_address' | 'api_arp' | 'api_dhcp' | 'snmp_address' | 'snmp_arp'
-  first_seen: string;
-  last_seen:  string;
+  ip:           string;
+  mac:          string | null;
+  interface:    string | null;
+  is_primary:   boolean;
+  source:       string;
+  first_seen:   string;
+  last_seen:    string;
+  change_count: number;
 }
 
 export interface DeviceIpHistory {
@@ -322,7 +334,7 @@ export interface DeviceIpHistory {
   mac:        string | null;
   interface:  string | null;
   source:     string;
-  event:      "assigned" | "released" | "changed_mac" | "changed_ip";
+  event:      "assigned" | "released" | "changed_mac" | "changed_ip" | "seen";
   old_value:  Record<string, string> | null;
   new_value:  Record<string, string> | null;
   changed_at: string;
@@ -403,3 +415,4 @@ export interface DeviceAllData {
   arp?:        DeviceDataResult<ArpEntry>;
   dhcp?:       DeviceDataResult<DhcpLease>;
 }
+

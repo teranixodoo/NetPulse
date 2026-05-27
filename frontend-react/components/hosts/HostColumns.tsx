@@ -9,7 +9,10 @@ import { StatusDot, Badge } from "@/components/ui";
 // Rozšířený řádek — HostStats + přiřazené zařízení
 // ---------------------------------------------------------------------------
 export interface HostRow extends HostStats {
-  device?: Device;
+  device?:     Device;
+  ipOwner?:    { device_id: number; hostname: string; alias: string | null;
+                 vendor: string | null; model: string | null;
+                 interface: string | null; source: string; };
 }
 
 // ---------------------------------------------------------------------------
@@ -85,26 +88,6 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       cell: ({ getValue }) => (
         <span className="font-mono text-sm">{getValue() as string}</span>
       ),
-    },
-
-    // Zařízení (hostname + alias)
-    {
-      id: "device",
-      header: "Zařízení",
-      size: 180,
-      accessorFn: (row) => row.device?.hostname ?? "",
-      cell: ({ row }) => {
-        const d = row.original.device;
-        if (!d) return <span className="text-muted-foreground text-xs">—</span>;
-        return (
-          <div>
-            <p className="font-medium text-sm">{d.hostname}</p>
-            {d.alias && (
-              <p className="text-xs text-muted-foreground">{d.alias}</p>
-            )}
-          </div>
-        );
-      },
     },
 
     // Typ zařízení
@@ -225,6 +208,29 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
         return m
           ? <span className="font-mono text-xs">{m}</span>
           : <span className="text-muted-foreground">—</span>;
+      },
+    },
+
+    // Zařízení z device_ips
+    {
+      accessorKey: "ipOwner",
+      header: "Zařízení",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const owner = row.original.ipOwner;
+        if (!owner) return <span className="text-muted-foreground text-xs">—</span>;
+        const name = owner.alias || owner.hostname || `ID ${owner.device_id}`;
+        const src  = owner.source === "api_address"  ? "vlastní IP" :
+                     owner.source === "snmp_address" ? "vlastní IP" :
+                     owner.source === "api_arp"      ? "ARP" :
+                     owner.source === "snmp_arp"     ? "ARP" :
+                     owner.source === "api_dhcp"     ? "DHCP" : owner.source;
+        return (
+          <div className="min-w-0">
+            <p className="text-sm font-medium truncate max-w-[160px]" title={name}>{name}</p>
+            <p className="text-[10px] text-muted-foreground font-mono">{src}{owner.interface ? ` · ${owner.interface}` : ""}</p>
+          </div>
+        );
       },
     },
   ];

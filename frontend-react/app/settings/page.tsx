@@ -188,6 +188,74 @@ function DiscoveryTab({ config, onSave, isPending }: { config: any; onSave: (d: 
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Tab: Poll scheduler
+// ---------------------------------------------------------------------------
+function PollSchedulerTab({ config, onSave, isPending }: { config: any; onSave: (d: any) => void; isPending: boolean }) {
+  const [enabled,  setEnabled]  = useState(false);
+  const [interval, setInterval] = useState(300);
+  const [saved,    setSaved]    = useState(false);
+  const [triggering, setTriggering] = useState(false);
+
+  useEffect(() => {
+    if (!config) return;
+    setEnabled(String((config as any).poll_scheduler_enabled) === "true");
+    setInterval(Number((config as any).poll_scheduler_interval_s) || 300);
+  }, [config]);
+
+  async function handleSave() {
+    await onSave({
+      poll_scheduler_enabled:    String(enabled),
+      poll_scheduler_interval_s: interval,
+    });
+    setSaved(true); setTimeout(() => setSaved(false), 3000);
+  }
+
+  async function handleTrigger() {
+    setTriggering(true);
+    try {
+      const token = document.cookie.match(/np_token=([^;]+)/)?.[1] ?? "";
+      await fetch("/api/backend/poll/trigger", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } finally { setTriggering(false); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Toggle enabled={enabled} onChange={setEnabled}
+        label="Automatický poll scheduler"
+        description="Pravidelně sbírá data ze zařízení s povoleným Cron poll (přepínač v záložce Základní údaje)" />
+      {enabled && (
+        <div className="space-y-3 pl-1">
+          <NumInput label="Interval pollu (s)" value={interval} onChange={setInterval}
+            min={60} max={86400}
+            hint="Min 60s, doporučeno 300s (5 min). Zařízení s cron_poll=true budou pollována tímto intervalem." />
+          <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+            <p>💡 <strong>Jak nastavit zařízení pro cron poll:</strong></p>
+            <p>Zařízení → záložka Základní údaje → přepínač <em>Cron poll povolen</em></p>
+            <p>Poll použije nejlepší dostupný přihlašovací profil dle priority výrobce.</p>
+          </div>
+        </div>
+      )}
+      <div className="flex items-center gap-3 pt-2 border-t border-border">
+        <Button variant="outline" size="sm" onClick={handleTrigger} disabled={triggering}>
+          {triggering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Radio className="h-3.5 w-3.5" />}
+          Spustit poll nyní
+        </Button>
+        <div className="flex-1" />
+        <Button variant="primary" size="sm" onClick={handleSave} disabled={isPending}>
+          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          Uložit
+        </Button>
+        {saved && <p className="text-xs text-green-600 dark:text-green-400">✓ Uloženo</p>}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab: Backup scheduler
 // ---------------------------------------------------------------------------
@@ -524,10 +592,11 @@ function ExclusionsTab() {
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
-type TabId = "scan" | "discovery" | "backup" | "exclusions" | "data" | "system";
+type TabId = "scan" | "discovery" | "poll_sched" | "backup" | "exclusions" | "data" | "system";
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "scan",       label: "Konfigurace scanu",   icon: Radio },
   { id: "discovery",  label: "Discovery scheduler", icon: Search },
+  { id: "poll_sched", label: "Poll scheduler",      icon: Radio },
   { id: "backup",     label: "Backup scheduler",    icon: HardDrive },
   { id: "exclusions", label: "Vyloučené IP",        icon: Ban },
   { id: "data",       label: "Správa dat",          icon: Database },
@@ -564,6 +633,7 @@ export default function SettingsPage() {
       </div>
       {activeTab === "scan"      && <ScanTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
       {activeTab === "discovery" && <DiscoveryTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
+      {activeTab === "poll_sched" && <PollSchedulerTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
       {activeTab === "backup"    && <BackupTab config={config} onSave={handleSave} isPending={updateConfig.isPending} />}
       {activeTab === "exclusions" && <ExclusionsTab />}
       {activeTab === "data"       && <DataTab />}

@@ -168,24 +168,32 @@ async def get_recent_results(pool: asyncpg.Pool, limit: int = 1000) -> List[Ping
 
 
 async def get_outages(pool: asyncpg.Pool, hours: int = 24) -> List[OutageEvent]:
+    hours = min(hours, 6)  # max 6h okno pro výkon
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    async with pool.acquire(timeout=5.0) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT ip::text, scanned_at, is_alive, prev_alive
-            FROM outage_events
-            WHERE scanned_at > $1
-              AND is_alive = FALSE AND prev_alive = TRUE
-            ORDER BY scanned_at DESC
-            LIMIT 200
-            """,
-            since,
-            timeout=10.0,
-        )
-    return [
-        OutageEvent(ip=r["ip"], started_at=r["scanned_at"], ended_at=None, duration_s=None)
-        for r in rows
-    ]
+    try:
+        async with pool.acquire(timeout=10.0) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ip::text, scanned_at
+                FROM (
+                    SELECT ip::text, scanned_at, is_alive,
+                           LAG(is_alive) OVER (PARTITION BY ip ORDER BY scanned_at) AS prev_alive
+                    FROM ping_results
+                    WHERE scanned_at > $1
+                ) sub
+                WHERE is_alive = FALSE AND prev_alive = TRUE
+                ORDER BY scanned_at DESC
+                LIMIT 100
+                """,
+                since,
+                timeout=15.0,
+            )
+        return [
+            OutageEvent(ip=r["ip"], started_at=r["scanned_at"], ended_at=None, duration_s=None)
+            for r in rows
+        ]
+    except Exception:
+        return []
 
 
 async def cleanup_old_data(pool: asyncpg.Pool, retention_days: int) -> int:
@@ -227,9 +235,11 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active FROM ip_ranges ORDER BY id"
+            "SELECT id, label, network::text, active, scan_enabled, description FROM ip_ranges ORDER BY id"
         )
-    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
+    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"],
+                         active=r["active"], scan_enabled=r["scan_enabled"],
+                         description=r.get("description"))
             for r in rows]
 
 
@@ -237,14 +247,14 @@ async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel
     async with pool.acquire() as conn:
         if rng.id:
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id, rng.description,
+                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, scan_enabled=$5, description=$6 WHERE id=$4",
+                rng.label, rng.network, rng.active, rng.id, rng.scan_enabled, rng.description,
             )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active, description) VALUES ($1, $2::cidr, $3, $4) RETURNING id",
-                rng.label, rng.network, rng.active, rng.description,
+                "INSERT INTO ip_ranges (label, network, active, scan_enabled, description) VALUES ($1, $2::cidr, $3, $4, $5) RETURNING id",
+                rng.label, rng.network, rng.active, rng.scan_enabled, rng.description,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -709,6 +719,59 @@ async def scan_job_finish(
             """,
             job_id, status, ok_count, fail_count, changed_count, error_msg,
         )
+
+
+async def scan_job_heartbeat(pool, job_id: int) -> None:
+    """Aktualizuje heartbeat timestamp pro běžící job."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE scan_jobs SET heartbeat_at = NOW() WHERE id = $1 AND status = 'running'",
+            job_id,
+        )
+
+
+async def cleanup_zombie_jobs(pool) -> int:
+    """
+    Označí jako error joby které přestaly posílat heartbeat (> 2 minuty)
+    nebo jsou running déle než 30 minut bez heartbeatu.
+    Vrátí počet opravených jobů.
+    """
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status    = 'error',
+                finished_at = NOW(),
+                error_msg  = 'Zombie — ztráta heartbeatu'
+            WHERE status = 'running'
+              AND (
+                  -- Má heartbeat ale přestal aktualizovat > 2 min
+                  (heartbeat_at IS NOT NULL AND heartbeat_at < NOW() - INTERVAL '2 minutes')
+                  OR
+                  -- Nikdy neposlal heartbeat a běží > 10 min
+                  (heartbeat_at IS NULL AND started_at < NOW() - INTERVAL '10 minutes')
+              )
+            """,
+        )
+        # asyncpg vrátí "UPDATE N"
+        count = int(result.split()[-1]) if result else 0
+        return count
+
+
+async def mark_startup_zombies(pool) -> int:
+    """Při startu backendu opraví všechny running joby → error."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status = 'error',
+                finished_at = NOW(),
+                error_msg = 'Zombie — backend restart'
+            WHERE status = 'running'
+            """
+        )
+        count = int(result.split()[-1]) if result else 0
+        return count
 
 
 async def get_scan_jobs(
@@ -1193,7 +1256,7 @@ async def update_device_ips(
         # Načteme aktuální stav pro toto zařízení a prefix zdroje
         existing = await conn.fetch(
             """
-            SELECT id, ip::text, mac, interface, source, last_seen
+            SELECT id, ip::text, mac, interface, source, last_seen, change_count
             FROM device_ips
             WHERE device_id = $1 AND source LIKE $2
             """,
@@ -1209,8 +1272,14 @@ async def update_device_ips(
             source   = entry.get("source", source_prefix)
             is_prim  = entry.get("is_primary", False)
 
+            # Validace IP adresy — přeskočíme binární garbage z SNMP
             if not ip:
                 continue
+            import re as _re
+            ip_clean = ip.split("/")[0].strip()
+            if not _re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip_clean):
+                continue  # přeskočíme nevalidní IP (binární data z SNMP)
+            ip = ip_clean
 
             key = (ip, source)
             seen_keys.add(key)
@@ -1221,11 +1290,12 @@ async def update_device_ips(
                 await conn.execute(
                     """
                     INSERT INTO device_ips
-                        (device_id, ip, mac, interface, is_primary, source, first_seen, last_seen)
-                    VALUES ($1, $2::inet, $3, $4, $5, $6, NOW(), NOW())
+                        (device_id, ip, mac, interface, is_primary, source, first_seen, last_seen, change_count)
+                    VALUES ($1, $2::inet, $3, $4, $5, $6, NOW(), NOW(), 0)
                     ON CONFLICT (device_id, ip, source) DO UPDATE
                         SET mac=EXCLUDED.mac, interface=EXCLUDED.interface,
                             is_primary=EXCLUDED.is_primary, last_seen=NOW()
+                        -- change_count se NEZAHRNUJE — zachováváme historický počet
                     """,
                     device_id, ip, mac, iface, is_prim, source,
                 )
@@ -1259,6 +1329,12 @@ async def update_device_ips(
                         _json_mod.dumps({"mac": old_mac}),
                         _json_mod.dumps({"mac": mac}),
                     )
+                    # Inkrementujeme change_count při změně MAC
+                    await conn.execute(
+                        "UPDATE device_ips SET change_count = change_count + 1 "
+                        "WHERE device_id=$1 AND ip=$2::inet AND source=$3",
+                        device_id, ip, source,
+                    )
                     stats["changes"].append({"event": "changed_mac", "ip": ip, "old_mac": old_mac, "new_mac": mac})
                     changed = True
 
@@ -1273,6 +1349,35 @@ async def update_device_ips(
                 )
                 stats["updated"] += 1
 
+                # Event "seen" pokud IP nebyla viděna více než 1 hodinu
+                # Slouží pro sledování kdy byl klient naposledy online
+                last_seen = existing_rec.get("last_seen")
+                if last_seen:
+                    from datetime import timezone as _tz
+                    age = (last_seen.replace(tzinfo=_tz.utc)
+                           if last_seen.tzinfo is None
+                           else last_seen)
+                    import datetime as _dt
+                    diff = _dt.datetime.now(_tz.utc) - age
+                    if diff.total_seconds() > 3600:  # více než 1 hodina
+                        await conn.execute(
+                            """
+                            INSERT INTO device_ip_history
+                                (device_id, ip, mac, interface, source, event,
+                                 new_value, changed_at)
+                            VALUES ($1, $2::inet, $3, $4, $5, 'seen',
+                                    $6::jsonb, NOW())
+                            """,
+                            device_id, ip, mac, iface, source,
+                            _json_mod.dumps({"last_seen_ago_hours":
+                                round(diff.total_seconds() / 3600, 1)}),
+                        )
+                        # seen se nepočítá jako změna — neinkrementujeme change_count
+                        stats["changes"].append({
+                            "event": "seen", "ip": ip, "mac": mac,
+                            "gap_hours": round(diff.total_seconds() / 3600, 1)
+                        })
+
         # Záznamy které jsme neviděli → event 'released'
         for key, rec in existing_map.items():
             if key not in seen_keys:
@@ -1286,6 +1391,13 @@ async def update_device_ips(
                     device_id, ip, rec["mac"], rec.get("interface"), source,
                     _json_mod.dumps({"ip": ip, "mac": rec["mac"]}),
                 )
+                # Inkrementujeme change_count při released (DHCP rotace)
+                if source in ("api_dhcp", "api_arp", "snmp_arp"):
+                    await conn.execute(
+                        "UPDATE device_ips SET change_count = change_count + 1 "
+                        "WHERE device_id=$1 AND ip=$2::inet AND source=$3",
+                        device_id, ip, source,
+                    )
                 stats["released"] += 1
 
     return stats
@@ -1297,7 +1409,7 @@ async def get_device_ips(pool, device_id: int) -> list[dict]:
         rows = await conn.fetch(
             """
             SELECT ip::text, mac, interface, is_primary, source,
-                   first_seen, last_seen
+                   first_seen, last_seen, change_count
             FROM device_ips
             WHERE device_id = $1
               AND last_seen > NOW() - INTERVAL '7 days'
@@ -1376,3 +1488,73 @@ async def get_ip_changes_stats(pool, device_id: int, hours: int = 24) -> dict:
             device_id, str(hours),
         )
     return {r["event"]: r["cnt"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Hosts enriched — IP adresy s vazbou na zařízení
+# ---------------------------------------------------------------------------
+
+async def get_ip_device_map(pool) -> dict:
+    """
+    Vrátí mapu IP → zařízení z device_ips tabulky.
+    Zahrnuje všechny IP (vlastní + ARP + DHCP) naposledy viděné za 24h.
+    Jedna IP může patřit více zdrojům — vrátíme nejrelevantnější.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (di.ip)
+                di.ip::text,
+                di.mac,
+                di.interface,
+                di.source,
+                di.last_seen,
+                d.id          AS device_id,
+                d.hostname,
+                d.alias,
+                d.vendor,
+                d.model
+            FROM device_ips di
+            JOIN devices d ON d.id = di.device_id
+            WHERE di.last_seen > NOW() - INTERVAL '24 hours'
+            ORDER BY di.ip,
+                     -- Priorita: vlastní IP > ARP > DHCP
+                     CASE di.source
+                         WHEN 'api_address'  THEN 1
+                         WHEN 'snmp_address' THEN 2
+                         WHEN 'api_arp'      THEN 3
+                         WHEN 'snmp_arp'     THEN 4
+                         WHEN 'api_dhcp'     THEN 5
+                         ELSE 6
+                     END,
+                     di.last_seen DESC
+            """
+        )
+    result = {}
+    for r in rows:
+        r_dict = dict(r)
+        if r_dict.get("last_seen"):
+            r_dict["last_seen"] = r_dict["last_seen"].isoformat()
+        result[r_dict["ip"]] = r_dict
+    return result
+
+
+async def update_device_poll_result(pool, device_id: int, result) -> None:
+    """Aktualizuje výsledek pollu v tabulce devices."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE devices SET
+                hostname          = COALESCE($2, hostname),
+                firmware          = COALESCE($3, firmware),
+                model             = COALESCE($4, model),
+                last_polled_at    = NOW(),
+                last_poll_method  = $5
+            WHERE id = $1
+            """,
+            device_id,
+            getattr(result, "hostname", None),
+            getattr(result, "firmware", None),
+            getattr(result, "model", None),
+            getattr(result, "method", None),
+        )

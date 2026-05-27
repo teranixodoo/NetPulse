@@ -73,6 +73,15 @@ async def lifespan(app: FastAPI):
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
     sl.init(pool)   # inicializace systémového logu
+
+    # Opravíme zombie joby z předchozího běhu při startu
+    try:
+        zombie_count = await db.mark_startup_zombies(pool)
+        if zombie_count > 0:
+            log.info(f"Startup: opraveno {zombie_count} zombie jobů z předchozího běhu")
+    except Exception as _ze:
+        log.warning(f"Startup zombie cleanup: {_ze}")
+
     scheduler.start_scheduler(pool, cfg)
     yield
     scheduler.stop_scheduler()
@@ -516,6 +525,8 @@ async def update_config(
         "discovery_skip_polled",
         # Backup scheduler
         "backup_enabled", "backup_interval_s", "backup_only_online", "backup_only_successful",
+        # Poll scheduler
+        "poll_scheduler_enabled", "poll_scheduler_interval_s",
     }
     for key in updates:
         if key not in allowed:
@@ -525,7 +536,8 @@ async def update_config(
     if any(k in updates for k in ("scan_interval_s", "discovery_enabled",
                                    "discovery_interval_s", "discovery_only_online",
                                    "discovery_skip_polled", "backup_enabled",
-                                   "backup_interval_s")):
+                                   "backup_interval_s",
+                                   "poll_scheduler_enabled", "poll_scheduler_interval_s")):
         cfg = await db.get_config_db(pool)
         scheduler.restart_scheduler(pool, cfg)
     return {"status": "ok", "updated": list(updates.keys())}
@@ -926,18 +938,22 @@ async def poll_device_data(
     if result.success and result.extended:
         ext        = result.extended
         ip_entries = []
+        def _strip_prefix(ip_str: str) -> str:
+            """Odstraní /prefix z IP adresy."""
+            return ip_str.split("/")[0] if ip_str else ip_str
+
         for entry in ext.get("own_ips", []):
-            ip_entries.append({"ip": entry["ip"], "mac": entry.get("mac"),
+            ip_entries.append({"ip": _strip_prefix(entry["ip"]), "mac": entry.get("mac"),
                 "interface": entry.get("interface"), "source": entry.get("source", "api_address"),
-                "is_primary": entry["ip"] == ip_str})
+                "is_primary": _strip_prefix(entry["ip"]) == ip_str})
         for entry in ext.get("arp", []):
             if entry.get("ip"):
-                ip_entries.append({"ip": entry["ip"], "mac": entry.get("mac"),
+                ip_entries.append({"ip": _strip_prefix(entry["ip"]), "mac": entry.get("mac"),
                     "interface": entry.get("interface"), "source": entry.get("source", "api_arp"),
                     "is_primary": False})
         for lease in ext.get("dhcp", []):
             if lease.get("ip") and lease.get("status") == "bound":
-                ip_entries.append({"ip": lease["ip"], "mac": lease.get("mac"),
+                ip_entries.append({"ip": _strip_prefix(lease["ip"]), "mac": lease.get("mac"),
                     "interface": lease.get("server"), "source": "api_dhcp",
                     "is_primary": False})
         if ip_entries:
@@ -950,6 +966,7 @@ async def poll_device_data(
                              f"events={len(ip_stats['changes'])}")
             except Exception as _ie:
                 log.warning(f"device_ips update: {_ie}")
+
 
     # Uložíme rozšířená data (interfaces, ARP, DHCP) pokud byla sebrána
     if result.success and result.extended:
@@ -1390,3 +1407,25 @@ async def get_device_ip_stats(
 ):
     """Vrátí statistiky změn IP za posledních N hodin."""
     return await db.get_ip_changes_stats(pool, device_id, hours)
+
+
+@app.post("/poll/trigger", tags=["Poll"])
+async def trigger_poll_scan(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Ručně spustí poll pro všechna zařízení s cron_poll=True."""
+    cfg = await db.get_config_db(pool)
+    asyncio.create_task(
+        scheduler.run_poll_scan(pool, cfg, trigger_type="manual")
+    )
+    return {"status": "started"}
+
+
+@app.get("/hosts/ip-device-map", tags=["Hosts"])
+async def get_ip_device_map(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Vrátí mapu IP → zařízení pro zobrazení v hosts tabulce."""
+    return await db.get_ip_device_map(pool)

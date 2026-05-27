@@ -382,3 +382,10 @@ export const deviceIpsApi = {
     } catch { return null; }
   },
 };
+
+export const hostsApi = {
+  async getIpDeviceMap(): Promise<Record<string, import('./types').IpOwner>> {
+    const { data } = await api.get('/hosts/ip-device-map');
+    return data;
+  },
+};

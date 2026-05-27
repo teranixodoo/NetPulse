@@ -41,11 +41,12 @@ class Device(DeviceBase):
         from_attributes = True
 
 class IpRangeModel(BaseModel):
-    id:      Optional[int] = None
-    label:   str
-    network: str           # "192.168.1.0/24"
-    active:      bool = True
-    description: Optional[str] = None  # volitelný popis rozsahu
+    id:           Optional[int] = None
+    label:        str
+    network:      str
+    active:       bool = True
+    scan_enabled: bool = True
+    description:  Optional[str] = None  # volitelný popis rozsahu
 
 
 class AppConfigModel(BaseModel):

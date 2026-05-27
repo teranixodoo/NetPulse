@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect } from "react";
 import {
   Activity, CheckCircle, XCircle, Clock,
-  RefreshCw, Wifi, Search, Cpu, ChevronDown, HardDrive,
+  RefreshCw, Wifi, Search, Cpu, ChevronDown, HardDrive, Radio,
 } from "lucide-react";
 import { useScanJobs, useScanJobsStats, useTriggerScan } from "@/hooks/useNetPulse";
 import type { ScanJob, ScanJobStats } from "@/lib/types";
@@ -40,6 +40,12 @@ const JOB_META: Record<string, {
     icon:  Cpu,
     color: "text-amber-600 dark:text-amber-400",
     bg:    "bg-amber-50 dark:bg-amber-950/40",
+  },
+  poll:  {
+    label: "Poll scan",
+    icon:  Radio,
+    color: "text-cyan-600 dark:text-cyan-400",
+    bg:    "bg-cyan-50 dark:bg-cyan-950/40",
   },
   backup:  {
     label: "Backup",
@@ -143,6 +149,7 @@ function ActivityChart({ jobs }: { jobs: ScanJob[] }) {
         <Bar dataKey="ping"      name="Ping scan"  stackId="a" fill="#3b82f6" radius={[0,0,0,0]} />
         <Bar dataKey="discovery" name="Discovery"  stackId="a" fill="#a855f7" radius={[0,0,0,0]} />
         <Bar dataKey="backup"    name="Backup"     stackId="a" fill="#22c55e" radius={[0,0,0,0]} />
+        <Bar dataKey="poll"      name="Poll scan"  stackId="a" fill="#06b6d4" radius={[0,0,0,0]} />
         <Bar dataKey="error"     name="Chyba"      stackId="a" fill="#ef4444" radius={[4,4,0,0]} />
       </BarChart>
     </ResponsiveContainer>
@@ -423,6 +430,7 @@ export default function ScansPage() {
           <option value="ping_scan">Ping scan</option>
           <option value="discovery">Discovery</option>
           <option value="snmp_poll">SNMP poll</option>
+          <option value="poll">Poll scan</option>
           <option value="backup">Backup</option>
         </Select>
         <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-40">

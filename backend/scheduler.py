@@ -49,6 +49,18 @@ def get_discovery_state() -> dict:
 # ---------------------------------------------------------------------------
 # Ping scan
 # ---------------------------------------------------------------------------
+
+async def _heartbeat_loop(pool, job_id: int, interval: int = 30) -> None:
+    """Posílá heartbeat každých interval sekund dokud job běží."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await db.scan_job_heartbeat(pool, job_id)
+        except Exception:
+            break  # job zřejmě skončil
+
+
+
 async def run_scan(
     pool,
     config:       dict,
@@ -107,6 +119,7 @@ async def run_scan(
             total_targets = len(target_ips),
             meta          = {"ranges": [r.label for r in scannable]},
         )
+        hb_task_scan = asyncio.create_task(_heartbeat_loop(pool, job_id)) if job_id else None
         log.info(
             f"Spouštím scan {len(target_ips)} IP adres "
             f"(max_concurrent={int(config.get('max_concurrent', 128))}, job_id={job_id})"
@@ -137,6 +150,8 @@ async def run_scan(
         ok_count   = sum(1 for r in results if r.is_alive)
         fail_count = sum(1 for r in results if not r.is_alive)
 
+        if "hb_task_scan" in dir() and hb_task_scan:
+            hb_task_scan.cancel()
         await db.scan_job_finish(
             pool, job_id,
             status        = "done",
@@ -459,6 +474,43 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
         replace_existing = True,
     )
 
+    # Watchdog — čistí zombie joby každé 3 minuty
+    async def _watchdog_task():
+        import db as _db2
+        try:
+            count = await _db2.cleanup_zombie_jobs(pool)
+            if count > 0:
+                log.info(f"Watchdog: opraveno {count} zombie jobů")
+        except Exception as _we:
+            log.warning(f"Watchdog chyba: {_we}")
+
+    _scheduler.add_job(
+        _watchdog_task,
+        IntervalTrigger(minutes=3),
+        id               = "zombie_watchdog",
+        name             = "Zombie job watchdog",
+        replace_existing = True,
+        max_instances    = 1,
+    )
+
+    # Poll scheduler
+    poll_enabled = str(config.get("poll_scheduler_enabled", "false")).lower() == "true"
+    poll_interval = max(60, int(config.get("poll_scheduler_interval_s", 300) or 300))
+    if poll_enabled:
+        _scheduler.add_job(
+            lambda: asyncio.get_event_loop().create_task(
+                run_poll_scan(pool, config, trigger_type="scheduler")
+            ),
+            IntervalTrigger(seconds=poll_interval),
+            id               = "poll_scheduler",
+            name             = f"Poll scheduler (trigger: interval[{poll_interval}s])",
+            replace_existing = True,
+            max_instances    = 1,
+        )
+        log.info(f"Poll scheduler: interval {poll_interval}s, zapnutý")
+    else:
+        log.info("Poll scheduler: vypnutý")
+
     _scheduler.start()
     log.info("Scheduler spuštěn")
     return _scheduler
@@ -516,6 +568,8 @@ def restart_scheduler(pool, config: dict) -> None:
 
     # Backup — přidat/odebrat dle nastavení
     setup_backup_scheduler(pool, config)
+    # Poll scheduler — přidat/odebrat dle nastavení
+    setup_poll_scheduler(pool, config)
 
 
 async def trigger_scan_now(pool, config: dict, triggered_by: str = "manual") -> None:
@@ -800,3 +854,144 @@ async def trigger_backup_now(pool, config: dict, triggered_by: str = "manual") -
     asyncio.create_task(
         run_backup_scan(pool, config, trigger_type=triggered_by)
     )
+
+
+# ===========================================================================
+# Poll scheduler — automatický poll zařízení s cron_poll=True
+# ===========================================================================
+
+async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> None:
+    """Spustí poll pro všechna zařízení s cron_poll=True."""
+    job_id = None
+    try:
+        async with pool.acquire() as conn:
+            devices = await conn.fetch(
+                """
+                SELECT id, split_part(ip::text, '/', 1) AS ip,
+                       hostname, alias, vendor,
+                       last_successful_credential_id
+                FROM devices
+                WHERE cron_poll = TRUE
+                ORDER BY id
+                """
+            )
+
+        if not devices:
+            log.info("Poll scheduler: žádná zařízení s cron_poll=True")
+            return
+
+        log.info(f"Poll scheduler: spouštím poll pro {len(devices)} zařízení")
+
+        # Zaznamenáme start do historie scanů
+        try:
+            job_id = await db.scan_job_start(
+                pool,
+                job_type      = "poll",
+                trigger_type  = trigger_type,
+                triggered_by  = trigger_type,
+                total_targets = len(devices),
+                meta          = {"cron_poll_devices": [d["hostname"] or d["ip"] for d in devices]},
+            )
+        except Exception as _je:
+            log.warning(f"Poll scheduler: nelze zapsat job start: {_je}")
+
+        hb_task_poll = asyncio.create_task(_heartbeat_loop(pool, job_id)) if job_id else None
+
+        from poller import poll_device
+        from cryptography.fernet import Fernet
+        import os as _os
+        cipher = Fernet(_os.getenv("DB_ENCRYPTION_KEY", "").encode())
+
+        # Načteme zařízení s credentials jednou
+        device_data = await db.get_devices_with_credentials(pool)
+        dev_map = {d["id"]: d for d in device_data}
+
+        ok = 0
+        fail = 0
+        for dev in devices:
+            try:
+                dev_full = dev_map.get(dev["id"])
+                if not dev_full or not dev_full.get("credentials"):
+                    log.warning(f"Poll scheduler: zařízení {dev['ip']} nemá credentials")
+                    fail += 1
+                    continue
+
+                # Preferujeme poslední úspěšný profil
+                last_cred_id = dev.get("last_successful_credential_id")
+                creds = dev_full["credentials"]
+                if last_cred_id:
+                    preferred = [cr for cr in creds if cr.get("id") == last_cred_id]
+                    others    = [cr for cr in creds if cr.get("id") != last_cred_id]
+                    creds = preferred + others  # preferovaný první
+
+                result = await poll_device(
+                    ip=dev["ip"],
+                    creds=creds,
+                    cipher=cipher,
+                    timeout=30.0,
+                    vendor=dev_full.get("vendor"),
+                )
+
+                if result.success:
+                    await db.update_device_poll_result(pool, dev["id"], result)
+                    ok += 1
+                    log.info(f"Poll scheduler: {dev['ip']} OK ({result.method})")
+                else:
+                    fail += 1
+                    log.warning(f"Poll scheduler: {dev['ip']} FAIL")
+
+            except Exception as _pe:
+                log.warning(f"Poll scheduler: chyba zařízení {dev['ip']}: {_pe}")
+                fail += 1
+
+        log.info(f"Poll scheduler: dokončen — OK={ok} FAIL={fail}")
+
+        # Zaznamenáme dokončení do historie
+        if "hb_task_poll" in dir() and hb_task_poll:
+            hb_task_poll.cancel()
+        if job_id:
+            try:
+                await db.scan_job_finish(
+                    pool, job_id,
+                    status     = "done",
+                    ok_count   = ok,
+                    fail_count = fail,
+                )
+            except Exception as _jfe:
+                log.warning(f"Poll scheduler: nelze zapsat job finish: {_jfe}")
+
+    except Exception as e:
+        log.error(f"Poll scheduler: chyba: {e}")
+        if job_id:
+            try:
+                await db.scan_job_finish(pool, job_id, status="error", error_msg=str(e))
+            except Exception:
+                pass
+
+
+def setup_poll_scheduler(pool, config: dict) -> None:
+    """Nastaví nebo aktualizuje poll scheduler dle konfigurace."""
+    enabled  = str(config.get("poll_scheduler_enabled", "false")).lower() == "true"
+    interval = int(config.get("poll_scheduler_interval_s", 300) or 300)
+    interval = max(60, interval)  # minimum 60 sekund
+
+    # Odstraníme existující job
+    try:
+        _scheduler.remove_job("poll_scheduler")
+    except Exception:
+        pass
+
+    if enabled:
+        _scheduler.add_job(
+            lambda: asyncio.get_event_loop().create_task(
+                run_poll_scan(pool, config, trigger_type="scheduler")
+            ),
+            trigger=IntervalTrigger(seconds=interval),
+            id="poll_scheduler",
+            name=f"Poll scheduler (trigger: interval[{interval}s])",
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info(f"Poll scheduler: interval {interval}s, zapnutý")
+    else:
+        log.info("Poll scheduler: vypnutý")

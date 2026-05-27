@@ -867,11 +867,17 @@ async def _collect_snmp_extended(
         arp_macs = {idx: _mac_from_snmp(v) for idx, v in mac_rows}
         arp_type = {idx: int(v) for idx, v in type_rows if str(v).isdigit()}
 
+        import re as _re_arp
+
         def _suffix_to_ip(suffix: str) -> tuple[str, str]:
             """Převede OID suffix "ifIdx.a.b.c.d" na (ifIdx, "a.b.c.d")."""
             parts = suffix.split(".")
             if len(parts) == 5:  # ifIndex + 4 oktety IP
-                return parts[0], ".".join(parts[1:])
+                ip = ".".join(parts[1:])
+                # Validace — každý oktet musí být 0-255
+                if _re_arp.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
+                    if all(0 <= int(x) <= 255 for x in ip.split(".")):
+                        return parts[0], ip
             return parts[0] if parts else "", ""
 
         result["arp"] = []

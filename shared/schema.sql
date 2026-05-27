@@ -323,7 +323,6 @@ CREATE TRIGGER trg_cleanup_device_data
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS cron_poll BOOLEAN NOT NULL DEFAULT false;
 
 -- Migrace: indexy pro výkon
-CREATE INDEX IF NOT EXISTS idx_outage_events_scanned_at ON outage_events (scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ping_results_scanned_at  ON ping_results  (scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ping_results_ip_scanned  ON ping_results  (ip, scanned_at DESC);
 
@@ -340,6 +339,7 @@ CREATE TABLE IF NOT EXISTS device_ips (
     source      TEXT NOT NULL,          -- 'api_address' | 'api_arp' | 'api_dhcp' | 'snmp_address' | 'snmp_arp'
     first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    change_count INTEGER NOT NULL DEFAULT 0,  -- počet zaznamenaných změn
     UNIQUE (device_id, ip, source)      -- jedna IP z jednoho zdroje per zařízení
 );
 
@@ -368,3 +368,20 @@ CREATE INDEX IF NOT EXISTS idx_device_ip_history_device     ON device_ip_history
 CREATE INDEX IF NOT EXISTS idx_device_ip_history_ip         ON device_ip_history (ip);
 CREATE INDEX IF NOT EXISTS idx_device_ip_history_mac        ON device_ip_history (mac) WHERE mac IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_device_ip_history_changed_at ON device_ip_history (changed_at DESC);
+
+-- Migrace: change_count
+ALTER TABLE device_ips ADD COLUMN IF NOT EXISTS change_count INTEGER NOT NULL DEFAULT 0;
+
+-- Index pro ping_results
+CREATE INDEX IF NOT EXISTS idx_ping_results_scanned_at
+  ON ping_results (scanned_at DESC);
+
+-- Heartbeat pro detekci zombie jobů
+ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS pid INTEGER;
+
+-- Oprava zombie jobů při startu (joby starší 10 minut ve stavu running)
+UPDATE scan_jobs
+SET status = 'error', error_msg = 'Zombie — backend restart'
+WHERE status = 'running'
+  AND started_at < NOW() - INTERVAL '10 minutes';
