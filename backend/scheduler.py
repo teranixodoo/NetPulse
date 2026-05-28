@@ -403,6 +403,29 @@ def _make_backup_trigger(interval_s: int, start_time: str):
     return IntervalTrigger(seconds=interval_s)
 
 
+
+def _run_async(coro):
+    """Bezpečně spustí coroutine z APScheduler threadu."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        else:
+            loop.run_until_complete(coro)
+    except RuntimeError:
+        # Žádný event loop v threadu — použijeme hlavní loop
+        import threading
+        for thread in threading.enumerate():
+            if hasattr(thread, '_target') and 'uvicorn' in str(thread._target):
+                pass
+        asyncio.run_coroutine_threadsafe(coro, _main_loop)
+
+_main_loop = None
+
+def set_main_loop(loop):
+    global _main_loop
+    _main_loop = loop
+
 def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     global _scheduler
 
@@ -498,9 +521,7 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     poll_interval = max(60, int(config.get("poll_scheduler_interval_s", 300) or 300))
     if poll_enabled:
         _scheduler.add_job(
-            lambda: asyncio.get_event_loop().create_task(
-                run_poll_scan(pool, config, trigger_type="scheduler")
-            ),
+            lambda: _run_async(run_poll_scan(pool, config, trigger_type="scheduler")),
             IntervalTrigger(seconds=poll_interval),
             id               = "poll_scheduler",
             name             = f"Poll scheduler (trigger: interval[{poll_interval}s])",
@@ -983,9 +1004,7 @@ def setup_poll_scheduler(pool, config: dict) -> None:
 
     if enabled:
         _scheduler.add_job(
-            lambda: asyncio.get_event_loop().create_task(
-                run_poll_scan(pool, config, trigger_type="scheduler")
-            ),
+            lambda: _run_async(run_poll_scan(pool, config, trigger_type="scheduler")),
             trigger=IntervalTrigger(seconds=interval),
             id="poll_scheduler",
             name=f"Poll scheduler (trigger: interval[{interval}s])",

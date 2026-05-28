@@ -416,3 +416,46 @@ export interface DeviceAllData {
   dhcp?:       DeviceDataResult<DhcpLease>;
 }
 
+
+export interface HostEnriched {
+  ip:              string;
+  last_seen:       string;
+  currently_alive: boolean;
+  total_scans:     number;
+  online_count:    number;
+  avg_rtt_ms:      number | null;
+  first_seen:      string;
+  // Zařízení (z device_ips nebo primární IP)
+  device_id:       number | null;
+  device_hostname: string | null;
+  device_alias:    string | null;
+  device_vendor:   string | null;
+  device_model:    string | null;
+  device_source:   string | null;
+}
+
+// ---------------------------------------------------------------------------
+// IpAddress — živý přehled IP adres (ip_addresses tabulka)
+// ---------------------------------------------------------------------------
+export interface IpAddress {
+  ip:              string;
+  range_id:        number | null;
+  is_alive:        boolean | null;
+  rtt_ms:          number | null;
+  last_check:      string | null;
+  last_seen:       string | null;
+  first_seen:      string | null;
+  uptime_pct_24h:  number | null;
+  avg_rtt_24h:     number | null;
+  min_rtt_24h:     number | null;
+  max_rtt_24h:     number | null;
+  checks_24h:      number;
+  online_24h:      number;
+  // Zařízení
+  device_id:       number | null;
+  device_source:   string | null;
+  device_hostname: string | null;
+  device_alias:    string | null;
+  device_vendor:   string | null;
+  device_model:    string | null;
+}

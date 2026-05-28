@@ -2,7 +2,8 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { Download } from "lucide-react";
-import { useHosts, useDevices, useIpDeviceMap } from "@/hooks/useNetPulse";
+import { useHosts, useDevices, useIpDeviceMap, useIpAddresses } from "@/hooks/useNetPulse";
+import type { IpAddress } from "@/lib/types";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getHostColumns, type HostRow } from "@/components/hosts/HostColumns";
 import { HostPanel } from "@/components/hosts/HostPanel";
@@ -13,7 +14,23 @@ import type { Device } from "@/lib/types";
 export default function HostsPage() {
   const { data: hosts   = [], isLoading: hostsLoading   } = useHosts();
   const { data: devices = [], isLoading: devicesLoading } = useDevices();
-  const { data: ipDevMap = {} } = useIpDeviceMap();
+  const { data: ipDevMap = {} }   = useIpDeviceMap();
+  const { data: ipAddresses = [] } = useIpAddresses();
+
+  // Mapa IP → zařízení POUZE přes vlastní IP rozhraní (ne ARP)
+  const deviceMap = useMemo(() => {
+    const m: Record<string, { device_name: string | null; device_source: string | null }> = {};
+    for (const a of ipAddresses) {
+      if ((a.device_hostname || a.device_alias) &&
+          (a.device_source === "primary" || a.device_source === "api_address" || a.device_source === "snmp_address")) {
+        m[a.ip] = {
+          device_name:   a.device_alias || a.device_hostname || null,
+          device_source: a.device_source || null,
+        };
+      }
+    }
+    return m;
+  }, [ipAddresses]);
 
   const [globalFilter,  setGlobalFilter]  = useState("");
   const [statusFilter,  setStatusFilter]  = useState("");
@@ -29,21 +46,27 @@ export default function HostsPage() {
 
   // Sloučená data
   const rows = useMemo<HostRow[]>(() => {
-    return hosts.map((h) => ({
-      ...h,
-      device:  deviceByIp.get(h.ip.split("/")[0]),
-      ipOwner: ipDevMap[h.ip.split("/")[0]] ?? undefined,
-    }));
-  }, [hosts, deviceByIp, ipDevMap]);
+    return hosts.map((h) => {
+      const cleanIp = h.ip.split("/")[0];
+      const devInfo = deviceMap[cleanIp];
+      return {
+        ...h,
+        device:        deviceByIp.get(cleanIp),
+        ipOwner:       ipDevMap[cleanIp] ?? undefined,
+        device_name:   devInfo?.device_name ?? null,
+        device_source: devInfo?.device_source ?? null,
+      };
+    });
+  }, [hosts, deviceByIp, ipDevMap, deviceMap]);
 
   // Filtrace
   const filteredRows = useMemo(() => {
     return rows.filter((r) => {
       if (statusFilter === "online"   && !r.currently_alive)  return false;
       if (statusFilter === "offline"  &&  r.currently_alive)  return false;
-      if (statusFilter === "assigned" && !r.device)           return false;
+      if (statusFilter === "assigned" && !r.device_name)      return false;
       if (statusFilter === "free"     &&  r.device)           return false;
-      if (deviceFilter === "assigned" && !r.device)           return false;
+      if (deviceFilter === "assigned" && !r.device_name)      return false;
       if (deviceFilter === "free"     &&  r.device)           return false;
       return true;
     });
@@ -52,7 +75,7 @@ export default function HostsPage() {
   // Statistiky
   const stats = useMemo(() => {
     const alive    = rows.filter((r) => r.currently_alive).length;
-    const assigned = rows.filter((r) => !!r.device).length;
+    const assigned = rows.filter((r) => !!r.device_name).length;
     const rtts     = rows.filter((r) => r.avg_rtt_ms != null).map((r) => r.avg_rtt_ms!);
     const avgRtt   = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
     const ups      = rows.map((r) => r.uptime_pct);

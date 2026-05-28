@@ -389,3 +389,22 @@ export const hostsApi = {
     return data;
   },
 };
+
+export const hostsEnrichedApi = {
+  async get(hours = 24): Promise<import('./types').HostEnriched[]> {
+    const { data } = await api.get('/hosts/enriched', { params: { hours } });
+    return data;
+  },
+};
+
+export const ipAddressesApi = {
+  async getAll(params?: { alive_only?: boolean; range_id?: number; limit?: number }):
+      Promise<import('./types').IpAddress[]> {
+    const { data } = await api.get('/ip-addresses', { params });
+    return data;
+  },
+  async refresh() {
+    const { data } = await api.post('/ip-addresses/refresh');
+    return data;
+  },
+};

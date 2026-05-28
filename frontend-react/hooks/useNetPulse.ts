@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, hostsEnrichedApi, ipAddressesApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -474,6 +474,24 @@ export function useDeviceIpHistory(deviceId: number | null, limit = 200) {
     queryFn:  () => deviceIpsApi.getHistory(deviceId!, limit),
     enabled:  deviceId != null,
     staleTime: 30_000,
+  });
+}
+
+export function useIpAddresses(params?: { alive_only?: boolean; range_id?: number }) {
+  return useQuery({
+    queryKey: ['ip-addresses', params],
+    queryFn:  () => ipAddressesApi.getAll(params),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useHostsEnriched(hours = 24) {
+  return useQuery({
+    queryKey: ['hosts-enriched', hours],
+    queryFn:  () => hostsEnrichedApi.get(hours),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 

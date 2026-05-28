@@ -9,10 +9,12 @@ import { StatusDot, Badge } from "@/components/ui";
 // Rozšířený řádek — HostStats + přiřazené zařízení
 // ---------------------------------------------------------------------------
 export interface HostRow extends HostStats {
-  device?:     Device;
-  ipOwner?:    { device_id: number; hostname: string; alias: string | null;
-                 vendor: string | null; model: string | null;
-                 interface: string | null; source: string; };
+  device?:      Device;
+  ipOwner?:     { device_id: number; hostname: string; alias: string | null;
+                  vendor: string | null; model: string | null;
+                  interface: string | null; source: string; };
+  device_name?: string | null;   // pro třídění a vyhledávání
+  device_source?: string | null; // zdroj vazby
 }
 
 // ---------------------------------------------------------------------------
@@ -211,24 +213,26 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       },
     },
 
-    // Zařízení z device_ips
+    // Zařízení — tříditelný sloupec
     {
-      accessorKey: "ipOwner",
+      accessorKey: "device_name",
       header: "Zařízení",
-      enableSorting: false,
+      enableSorting: true,
+      sortingFn: "alphanumeric",
       cell: ({ row }) => {
-        const owner = row.original.ipOwner;
-        if (!owner) return <span className="text-muted-foreground text-xs">—</span>;
-        const name = owner.alias || owner.hostname || `ID ${owner.device_id}`;
-        const src  = owner.source === "api_address"  ? "vlastní IP" :
-                     owner.source === "snmp_address" ? "vlastní IP" :
-                     owner.source === "api_arp"      ? "ARP" :
-                     owner.source === "snmp_arp"     ? "ARP" :
-                     owner.source === "api_dhcp"     ? "DHCP" : owner.source;
+        const name   = row.original.device_name;
+        const source = row.original.device_source;
+        if (!name) return <span className="text-muted-foreground text-xs">—</span>;
+        const srcLabel = source === "primary"      ? "primární IP" :
+                         source === "api_address"  ? "vlastní IP" :
+                         source === "snmp_address" ? "vlastní IP" :
+                         source === "api_arp"      ? "ARP" :
+                         source === "snmp_arp"     ? "ARP" :
+                         source === "api_dhcp"     ? "DHCP" : (source ?? "");
         return (
           <div className="min-w-0">
             <p className="text-sm font-medium truncate max-w-[160px]" title={name}>{name}</p>
-            <p className="text-[10px] text-muted-foreground font-mono">{src}{owner.interface ? ` · ${owner.interface}` : ""}</p>
+            <p className="text-[10px] text-muted-foreground">{srcLabel}</p>
           </div>
         );
       },

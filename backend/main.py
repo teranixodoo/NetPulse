@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
     sl.init(pool)   # inicializace systémového logu
+    scheduler.set_main_loop(asyncio.get_event_loop())
 
     # Opravíme zombie joby z předchozího běhu při startu
     try:
@@ -1429,3 +1430,13 @@ async def get_ip_device_map(
 ):
     """Vrátí mapu IP → zařízení pro zobrazení v hosts tabulce."""
     return await db.get_ip_device_map(pool)
+
+
+@app.get("/hosts/enriched", tags=["Hosts"])
+async def get_hosts_enriched(
+    hours: int = 24,
+    user  = Depends(current_user),
+    pool  = Depends(get_db),
+):
+    """Vrátí IP adresy s přiřazenými zařízeními (JOIN přes device_ips i primární IP)."""
+    return await db.get_hosts_enriched(pool, hours)

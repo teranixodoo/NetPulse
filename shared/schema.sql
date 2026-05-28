@@ -385,3 +385,35 @@ UPDATE scan_jobs
 SET status = 'error', error_msg = 'Zombie — backend restart'
 WHERE status = 'running'
   AND started_at < NOW() - INTERVAL '10 minutes';
+
+-- ===========================================================================
+-- ip_addresses — zlatý zdroj IP adres (živý stav + stats)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS ip_addresses (
+    id              SERIAL PRIMARY KEY,
+    ip              INET NOT NULL UNIQUE,
+    range_id        INTEGER REFERENCES ip_ranges(id) ON DELETE SET NULL,
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen       TIMESTAMPTZ,
+    last_check      TIMESTAMPTZ,
+    -- Živý stav (aktualizuje se po každém scanu)
+    is_alive        BOOLEAN,
+    rtt_ms          FLOAT,
+    -- Předpočítané statistiky 24h
+    uptime_pct_24h  FLOAT,
+    avg_rtt_24h     FLOAT,
+    min_rtt_24h     FLOAT,
+    max_rtt_24h     FLOAT,
+    checks_24h      INTEGER DEFAULT 0,
+    online_24h      INTEGER DEFAULT 0,
+    -- Vazba na zařízení (denormalizace pro rychlost)
+    device_id       INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    device_source   TEXT,           -- 'primary'|'api_address'|'api_arp'|'api_dhcp'
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_ip        ON ip_addresses (ip);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_range     ON ip_addresses (range_id);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_device    ON ip_addresses (device_id);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_alive     ON ip_addresses (is_alive, last_check DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_uptime    ON ip_addresses (uptime_pct_24h DESC);
