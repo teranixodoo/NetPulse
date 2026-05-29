@@ -235,11 +235,9 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active, scan_enabled, description FROM ip_ranges ORDER BY id"
+            "SELECT id, label, network::text, active FROM ip_ranges ORDER BY id"
         )
-    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"],
-                         active=r["active"], scan_enabled=r["scan_enabled"],
-                         description=r.get("description"))
+    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
             for r in rows]
 
 
@@ -247,14 +245,14 @@ async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel
     async with pool.acquire() as conn:
         if rng.id:
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, scan_enabled=$5, description=$6 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id, rng.scan_enabled, rng.description,
+                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5 WHERE id=$4",
+                rng.label, rng.network, rng.active, rng.id, rng.description,
             )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active, scan_enabled, description) VALUES ($1, $2::cidr, $3, $4, $5) RETURNING id",
-                rng.label, rng.network, rng.active, rng.scan_enabled, rng.description,
+                "INSERT INTO ip_ranges (label, network, active, description) VALUES ($1, $2::cidr, $3, $4) RETURNING id",
+                rng.label, rng.network, rng.active, rng.description,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -1539,22 +1537,385 @@ async def get_ip_device_map(pool) -> dict:
     return result
 
 
+# ===========================================================================
+# ip_presence_log — timeline přítomnosti IP z ARP/DHCP
+# ===========================================================================
+
+async def bulk_log_ip_presence(
+    pool,
+    entries: list[dict],  # [{ip, source, expires_at}]
+) -> None:
+    """
+    Hromadně zapíše přítomnost IP z ARP/DHCP pollu.
+    Každý poll = nový záznam se seen_at=NOW().
+    """
+    if not entries:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO ip_presence_log (ip, source, seen_at, expires_at)
+            VALUES (split_part($1,'/',1)::inet, $2, NOW(), $3)
+            ON CONFLICT DO NOTHING
+            """,
+            [(e["ip"], e["source"], e.get("expires_at")) for e in entries],
+        )
+
+
+async def get_ip_presence(
+    pool,
+    ip: str,
+    hours: int = 24,
+) -> list[dict]:
+    """
+    Vrátí timeline přítomnosti IP za posledních N hodin.
+    Výsledek: [{seen_at, expires_at, source}] seřazené dle času.
+    """
+    import datetime as _dt
+    since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=hours)
+    ip_clean = ip.split("/")[0]
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT seen_at, expires_at, source
+            FROM ip_presence_log
+            WHERE ip = $1::inet
+              AND seen_at > $2
+            ORDER BY seen_at ASC
+            """,
+            ip_clean, since,
+        )
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["seen_at"] = d["seen_at"].isoformat()
+        if d.get("expires_at"):
+            d["expires_at"] = d["expires_at"].isoformat()
+        result.append(d)
+    return result
+
+
+async def get_ip_presence_timeline(
+    pool,
+    ip: str,
+    hours: int = 24,
+    gap_minutes: int = 15,
+) -> list[dict]:
+    """
+    Vrátí komprimovanou timeline — sloučí po sobě jdoucí záznamy
+    do bloků [online_from, online_to, source].
+    gap_minutes: mezera větší než N minut = výpadek.
+    """
+    import datetime as _dt
+    rows = await get_ip_presence(pool, ip, hours)
+    if not rows:
+        return []
+
+    gap = _dt.timedelta(minutes=gap_minutes)
+    blocks = []
+    block_start = None
+    block_end   = None
+    block_src   = None
+
+    for row in rows:
+        ts = _dt.datetime.fromisoformat(row["seen_at"])
+        expires = (_dt.datetime.fromisoformat(row["expires_at"])
+                   if row.get("expires_at") else ts + gap)
+
+        if block_start is None:
+            block_start = ts
+            block_end   = expires
+            block_src   = row["source"]
+        elif ts - block_end <= gap:
+            # Prodloužíme blok
+            block_end = max(block_end, expires)
+        else:
+            # Mezera = nový blok
+            blocks.append({
+                "from":   block_start.isoformat(),
+                "to":     block_end.isoformat(),
+                "source": block_src,
+                "online": True,
+            })
+            block_start = ts
+            block_end   = expires
+            block_src   = row["source"]
+
+    if block_start:
+        blocks.append({
+            "from":   block_start.isoformat(),
+            "to":     block_end.isoformat(),
+            "source": block_src,
+            "online": True,
+        })
+
+    return blocks
+
+
+async def cleanup_ip_presence(pool, days: int = 30) -> None:
+    """Smaže staré záznamy z ip_presence_log."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM ip_presence_log WHERE seen_at < NOW() - ($1 || ' days')::INTERVAL",
+            str(days),
+        )
+
+
+# ===========================================================================
+# ip_addresses — živý stav IP adres
+# ===========================================================================
+
+async def bulk_upsert_ip_addresses(pool, results: list[dict]) -> None:
+    """Hromadný UPSERT výsledků scanu do ip_addresses."""
+    if not results:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO ip_addresses (ip, is_alive, rtt_ms, last_check, last_seen, first_seen)
+            VALUES (split_part($1,'/',1)::inet, $2, $3, NOW(),
+                    CASE WHEN $2 THEN NOW() ELSE NULL END, NOW())
+            ON CONFLICT (ip) DO UPDATE SET
+                is_alive   = EXCLUDED.is_alive,
+                rtt_ms     = EXCLUDED.rtt_ms,
+                last_check = NOW(),
+                last_seen  = CASE WHEN EXCLUDED.is_alive THEN NOW()
+                                  ELSE ip_addresses.last_seen END,
+                updated_at = NOW()
+            """,
+            [(r["ip"], r["is_alive"], r.get("rtt_ms")) for r in results],
+        )
+
+
+async def refresh_ip_stats_24h(pool) -> None:
+    """Aktualizuje předpočítané statistiky 24h v ip_addresses."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE ip_addresses ia
+            SET
+                checks_24h     = stats.checks,
+                online_24h     = stats.online,
+                uptime_pct_24h = ROUND((100.0 * stats.online / NULLIF(stats.checks,0))::numeric, 2),
+                avg_rtt_24h    = ROUND(stats.avg_rtt::numeric, 2),
+                min_rtt_24h    = ROUND(stats.min_rtt::numeric, 2),
+                max_rtt_24h    = ROUND(stats.max_rtt::numeric, 2),
+                updated_at     = NOW()
+            FROM (
+                SELECT ip::text AS ip,
+                    COUNT(*)                                        AS checks,
+                    SUM(is_alive::int)                              AS online,
+                    AVG(rtt_ms) FILTER (WHERE is_alive)             AS avg_rtt,
+                    MIN(rtt_ms) FILTER (WHERE is_alive)             AS min_rtt,
+                    MAX(rtt_ms) FILTER (WHERE is_alive)             AS max_rtt
+                FROM ping_results
+                WHERE scanned_at > NOW() - INTERVAL '24 hours'
+                GROUP BY ip
+            ) stats
+            WHERE split_part(ia.ip::text,'/',1) = stats.ip
+            """
+        )
+
+
+async def refresh_ip_device_map(pool) -> int:
+    """Aktualizuje device_id + device_source v ip_addresses. Vrátí počet řádků."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE ip_addresses ia
+            SET device_id = dm.device_id, device_source = dm.device_source, updated_at = NOW()
+            FROM (
+                SELECT DISTINCT ON (match_ip) match_ip, device_id, device_source, prio
+                FROM (
+                    SELECT split_part(d.ip::text,'/',1) AS match_ip,
+                           d.id AS device_id, 'primary' AS device_source, 1 AS prio
+                    FROM devices d
+                    UNION ALL
+                    SELECT split_part(di.ip::text,'/',1),
+                           di.device_id, di.source,
+                           CASE di.source WHEN 'api_address' THEN 2
+                               WHEN 'snmp_address' THEN 3 ELSE 9 END
+                    FROM device_ips di
+                    WHERE di.source IN ('api_address','snmp_address')
+                      AND di.last_seen > NOW() - INTERVAL '30 days'
+                ) sub
+                ORDER BY match_ip, prio
+            ) dm
+            WHERE split_part(ia.ip::text,'/',1) = dm.match_ip
+            """
+        )
+        return int(result.split()[-1]) if result else 0
+
+
+
+
+async def refresh_ip_range_map(pool) -> None:
+    """Přiřadí range_id k IP adresám podle ip_ranges (CIDR obsahuje IP)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE ip_addresses ia
+            SET range_id = r.id
+            FROM ip_ranges r
+            WHERE ia.ip << r.network
+              AND r.active = TRUE
+              AND ia.range_id IS NULL
+            """
+        )
+
+async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=10000, offset=0) -> list[dict]:
+    """Vrátí IP adresy s live stats a vazbou na zařízení."""
+    conditions = []
+    params: list = []
+    if alive_only:
+        conditions.append("ia.is_alive = TRUE")
+    if range_id:
+        params.append(range_id)
+        conditions.append(f"ia.range_id = ${len(params)}")
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params += [limit, offset]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT split_part(ia.ip::text,'/',1) AS ip,
+                ia.range_id, ia.is_alive, ia.rtt_ms,
+                ia.last_check, ia.last_seen, ia.first_seen,
+                ia.uptime_pct_24h, ia.avg_rtt_24h, ia.min_rtt_24h,
+                ia.max_rtt_24h, ia.checks_24h, ia.online_24h,
+                ia.device_id, ia.device_source,
+                d.hostname AS device_hostname, d.alias AS device_alias,
+                d.vendor AS device_vendor, d.model AS device_model
+            FROM ip_addresses ia
+            LEFT JOIN devices d ON d.id = ia.device_id
+            {where}
+            ORDER BY ia.ip
+            LIMIT ${len(params)-1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
+    result = []
+    for r in rows:
+        d = dict(r)
+        for k in ("last_check", "last_seen", "first_seen"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+        result.append(d)
+    return result
+
+
+async def get_ip_address_count(pool) -> int:
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT COUNT(*) FROM ip_addresses")
+
+
 async def update_device_poll_result(pool, device_id: int, result) -> None:
     """Aktualizuje výsledek pollu v tabulce devices."""
     async with pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE devices SET
-                hostname          = COALESCE($2, hostname),
-                firmware          = COALESCE($3, firmware),
-                model             = COALESCE($4, model),
-                last_polled_at    = NOW(),
-                last_poll_method  = $5
+                hostname         = COALESCE($2, hostname),
+                firmware         = COALESCE($3, firmware),
+                model            = COALESCE($4, model),
+                last_polled_at   = NOW(),
+                last_poll_method = $5
             WHERE id = $1
             """,
             device_id,
             getattr(result, "hostname", None),
             getattr(result, "firmware", None),
-            getattr(result, "model", None),
-            getattr(result, "method", None),
+            getattr(result, "model",    None),
+            getattr(result, "method",   None),
         )
+
+
+# ===========================================================================
+# Neznámé sítě — IP z ARP/DHCP mimo evidované rozsahy
+# ===========================================================================
+
+async def get_unknown_networks(pool) -> list[dict]:
+    """
+    Vrátí sítě viditelné v ARP/DHCP které nejsou v ip_ranges.
+    Seskupí po /24 pro privátní IP, ignoruje veřejné IP.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH unknown_ips AS (
+                SELECT DISTINCT pl.ip AS ip
+                FROM ip_presence_log pl
+                WHERE
+                    (pl.ip << '10.0.0.0/8'::inet
+                     OR pl.ip << '172.16.0.0/12'::inet
+                     OR pl.ip << '192.168.0.0/16'::inet)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM ip_ranges r
+                        WHERE r.active = TRUE AND pl.ip << r.network
+                    )
+            ),
+            grouped AS (
+                SELECT
+                    network(set_masklen(ui.ip, 24))   AS subnet,
+                    COUNT(DISTINCT ui.ip)              AS ip_count,
+                    array_agg(DISTINCT pl.source)      AS sources,
+                    MAX(pl.seen_at)                    AS last_seen
+                FROM unknown_ips ui
+                JOIN ip_presence_log pl ON pl.ip = ui.ip
+                GROUP BY network(set_masklen(ui.ip, 24))
+            )
+            SELECT
+                subnet::text,
+                ip_count,
+                sources,
+                last_seen
+            FROM grouped
+            ORDER BY ip_count DESC, subnet
+            """
+        )
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["last_seen"] = d["last_seen"].isoformat() if d.get("last_seen") else None
+        d["sources"] = list(d["sources"]) if d.get("sources") else []
+        result.append(d)
+    return result
+
+
+async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
+    """
+    Vrátí detailní seznam IP v dané neznámé síti s MAC adresami.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                pl.ip::text                          AS ip,
+                MAX(pl.seen_at)                      AS last_seen,
+                array_agg(DISTINCT pl.source)        AS sources,
+                -- MAC z device_ips (ARP)
+                (SELECT di.mac FROM device_ips di
+                 WHERE split_part(di.ip::text,'/',1) = host(pl.ip)
+                   AND di.mac IS NOT NULL
+                 ORDER BY di.last_seen DESC LIMIT 1) AS mac
+            FROM ip_presence_log pl
+            WHERE pl.ip << $1::inet
+              AND NOT EXISTS (
+                  SELECT 1 FROM ip_ranges r
+                  WHERE r.active = TRUE AND pl.ip << r.network
+              )
+            GROUP BY pl.ip
+            ORDER BY pl.ip
+            """,
+            subnet,
+        )
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["last_seen"] = d["last_seen"].isoformat() if d.get("last_seen") else None
+        d["sources"] = list(d["sources"]) if d.get("sources") else []
+        result.append(d)
+    return result

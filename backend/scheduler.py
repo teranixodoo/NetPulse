@@ -163,6 +163,16 @@ async def run_scan(
             f"Scan dokončen: {len(results)} výsledků — "
             f"{ok_count} online, {fail_count} offline"
         )
+        try:
+            await db.bulk_upsert_ip_addresses(pool, [
+                {"ip": r.ip.split("/")[0], "is_alive": r.is_alive,
+                 "rtt_ms": getattr(r, "rtt_ms", None)}
+                for r in results
+            ])
+            await db.refresh_ip_stats_24h(pool)
+            await db.refresh_ip_range_map(pool)
+        except Exception as _ipe:
+            log.warning(f"ip_addresses update: {_ipe}")
         _syslog().write_bg(
             "INFO", "netpulse.scanner", "scan_done",
             f"Ping scan: {ok_count}/{len(results)} online",
@@ -404,27 +414,34 @@ def _make_backup_trigger(interval_s: int, start_time: str):
 
 
 
-def _run_async(coro):
-    """Bezpečně spustí coroutine z APScheduler threadu."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, loop)
-        else:
-            loop.run_until_complete(coro)
-    except RuntimeError:
-        # Žádný event loop v threadu — použijeme hlavní loop
-        import threading
-        for thread in threading.enumerate():
-            if hasattr(thread, '_target') and 'uvicorn' in str(thread._target):
-                pass
-        asyncio.run_coroutine_threadsafe(coro, _main_loop)
-
 _main_loop = None
 
 def set_main_loop(loop):
     global _main_loop
     _main_loop = loop
+
+def _run_async(coro):
+    """Bezpečně spustí coroutine z APScheduler threadu."""
+    global _main_loop
+    # Preferujeme uložený hlavní loop
+    if _main_loop is not None and _main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro, _main_loop)
+        return
+    # Záložka: zkusíme získat running loop z aktuálního threadu
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.run_coroutine_threadsafe(coro, loop)
+        return
+    except RuntimeError:
+        pass
+    # Poslední záložka: projdeme všechna vlákna a najdeme running loop
+    import threading
+    for thread in threading.enumerate():
+        loop = getattr(thread, "_asyncio_event_loop", None)
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, loop)
+            return
+    log.error("_run_async: nelze najít běžící event loop")
 
 def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     global _scheduler
@@ -957,6 +974,32 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                     await db.update_device_poll_result(pool, dev["id"], result)
                     ok += 1
                     log.info(f"Poll scheduler: {dev['ip']} OK ({result.method})")
+
+                    # Logujeme ARP/DHCP přítomnost
+                    if result.extended:
+                        try:
+                            import datetime as _dt
+                            presence = []
+                            expiry = (_dt.datetime.now(_dt.timezone.utc)
+                                      + _dt.timedelta(minutes=10))
+                            for e in result.extended.get("arp", []):
+                                if e.get("ip"):
+                                    presence.append({"ip": e["ip"], "source": "arp",
+                                                     "expires_at": expiry})
+                            for l in result.extended.get("dhcp", []):
+                                if l.get("ip") and l.get("status") == "bound":
+                                    # DHCP expires_at může být string — převedeme
+                                    exp = l.get("expires_at")
+                                    if isinstance(exp, str):
+                                        try: exp = _dt.datetime.fromisoformat(exp)
+                                        except: exp = expiry
+                                    presence.append({"ip": l["ip"], "source": "dhcp",
+                                                     "expires_at": exp or expiry})
+                            if presence:
+                                await db.bulk_log_ip_presence(pool, presence)
+                                log.info(f"ip_presence_log: {dev['ip']} → {len(presence)} záznamů")
+                        except Exception as _pe:
+                            log.warning(f"ip_presence_log: {_pe}")
                 else:
                     fail += 1
                     log.warning(f"Poll scheduler: {dev['ip']} FAIL")

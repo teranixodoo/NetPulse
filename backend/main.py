@@ -72,8 +72,9 @@ async def lifespan(app: FastAPI):
     log.info(f"Připojuji se k DB: {db_url[:40]}...")
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
-    sl.init(pool)   # inicializace systémového logu
-    scheduler.set_main_loop(asyncio.get_event_loop())
+    sl.init(pool)
+    # Předáme hlavní event loop scheduleru pro _run_async
+    scheduler.set_main_loop(asyncio.get_event_loop())   # inicializace systémového logu
 
     # Opravíme zombie joby z předchozího běhu při startu
     try:
@@ -969,6 +970,32 @@ async def poll_device_data(
                 log.warning(f"device_ips update: {_ie}")
 
 
+    # Logujeme přítomnost IP z ARP/DHCP do ip_presence_log
+    if result.success and result.extended:
+        try:
+            import datetime as _dt2
+            presence_entries = []
+            poll_expiry = (_dt2.datetime.now(_dt2.timezone.utc)
+                          + _dt2.timedelta(minutes=10)).isoformat()
+            for entry in result.extended.get("arp", []):
+                if entry.get("ip"):
+                    presence_entries.append({
+                        "ip": entry["ip"], "source": "arp",
+                        "expires_at": poll_expiry,
+                    })
+            for lease in result.extended.get("dhcp", []):
+                if lease.get("ip") and lease.get("status") == "bound":
+                    presence_entries.append({
+                        "ip": lease["ip"], "source": "dhcp",
+                        "expires_at": lease.get("expires_at"),
+                    })
+            log.info(f"ip_presence_log: {len(presence_entries)} záznamů k zápisu")
+            if presence_entries:
+                await db.bulk_log_ip_presence(pool, presence_entries)
+                log.info(f"ip_presence_log: {len(presence_entries)} záznamů zapsáno")
+        except Exception as _pe:
+            log.warning(f"ip_presence_log chyba: {_pe}")
+
     # Uložíme rozšířená data (interfaces, ARP, DHCP) pokud byla sebrána
     if result.success and result.extended:
         for data_type, data in result.extended.items():
@@ -1432,11 +1459,67 @@ async def get_ip_device_map(
     return await db.get_ip_device_map(pool)
 
 
-@app.get("/hosts/enriched", tags=["Hosts"])
-async def get_hosts_enriched(
+# ===========================================================================
+# IP PRESENCE — timeline přítomnosti z ARP/DHCP
+# ===========================================================================
+
+@app.get("/ip-presence/{ip:path}", tags=["Hosts"])
+async def get_ip_presence(
+    ip:    str,
     hours: int = 24,
-    user  = Depends(current_user),
-    pool  = Depends(get_db),
+    user   = Depends(current_user),
+    pool   = Depends(get_db),
 ):
-    """Vrátí IP adresy s přiřazenými zařízeními (JOIN přes device_ips i primární IP)."""
-    return await db.get_hosts_enriched(pool, hours)
+    """Vrátí timeline přítomnosti IP (ARP/DHCP záznamy) za posledních N hodin."""
+    return await db.get_ip_presence_timeline(pool, ip, hours)
+
+
+# ===========================================================================
+# IP ADDRESSES
+# ===========================================================================
+
+@app.get("/ip-addresses", tags=["Hosts"])
+async def get_ip_addresses(
+    alive_only: bool = False,
+    range_id:   int  = None,
+    limit:      int  = 10000,
+    offset:     int  = 0,
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.get_ip_addresses(pool, alive_only, range_id, limit, offset)
+
+
+@app.post("/ip-addresses/refresh", tags=["Hosts"])
+async def refresh_ip_addresses(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    await db.refresh_ip_stats_24h(pool)
+    await db.refresh_ip_range_map(pool)
+    device_count = await db.refresh_ip_device_map(pool)
+    count = await db.get_ip_address_count(pool)
+    return {"status": "ok", "count": count, "devices_mapped": device_count}
+
+
+# ===========================================================================
+# NEZNÁMÉ SÍTĚ
+# ===========================================================================
+
+@app.get("/unknown-networks", tags=["Hosts"])
+async def get_unknown_networks(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Vrátí přehled privátních sítí viditelných v ARP/DHCP ale mimo ip_ranges."""
+    return await db.get_unknown_networks(pool)
+
+
+@app.get("/unknown-networks/{subnet:path}", tags=["Hosts"])
+async def get_unknown_network_ips(
+    subnet: str,
+    user   = Depends(current_user),
+    pool   = Depends(get_db),
+):
+    """Vrátí detail IP adres v dané neznámé síti s MAC adresami."""
+    return await db.get_unknown_network_ips(pool, subnet)

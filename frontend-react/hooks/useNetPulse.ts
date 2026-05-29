@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, hostsEnrichedApi, ipAddressesApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -477,6 +477,15 @@ export function useDeviceIpHistory(deviceId: number | null, limit = 200) {
   });
 }
 
+export function useIpDeviceMap() {
+  return useQuery({
+    queryKey: ["ip-device-map"],
+    queryFn:  () => hostsApi.getIpDeviceMap(),
+    staleTime: 60_000,  // 1 minuta cache
+  });
+}
+
+
 export function useIpAddresses(params?: { alive_only?: boolean; range_id?: number }) {
   return useQuery({
     queryKey: ['ip-addresses', params],
@@ -489,17 +498,35 @@ export function useIpAddresses(params?: { alive_only?: boolean; range_id?: numbe
 export function useHostsEnriched(hours = 24) {
   return useQuery({
     queryKey: ['hosts-enriched', hours],
-    queryFn:  () => hostsEnrichedApi.get(hours),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    queryFn:  async () => [],  // deprecated - používáme useIpAddresses
+    staleTime: 300_000,
   });
 }
 
-export function useIpDeviceMap() {
+export function useIpPresence(ip: string | null, hours = 24) {
   return useQuery({
-    queryKey: ["ip-device-map"],
-    queryFn:  () => hostsApi.getIpDeviceMap(),
-    staleTime: 60_000,  // 1 minuta cache
+    queryKey: ['ip-presence', ip, hours],
+    queryFn:  () => presenceApi.get(ip!, hours),
+    enabled:  !!ip,
+    staleTime: 60_000,
+  });
+}
+
+export function useUnknownNetworks() {
+  return useQuery({
+    queryKey: ['unknown-networks'],
+    queryFn:  () => unknownNetworksApi.getAll(),
+    staleTime: 120_000,
+    refetchInterval: 300_000,
+  });
+}
+
+export function useUnknownNetworkIps(subnet: string | null) {
+  return useQuery({
+    queryKey: ['unknown-network-ips', subnet],
+    queryFn:  () => unknownNetworksApi.getIps(subnet!),
+    enabled:  !!subnet,
+    staleTime: 60_000,
   });
 }
 

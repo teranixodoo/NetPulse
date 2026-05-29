@@ -9,11 +9,11 @@ import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Brush, Area,
 } from "recharts";
-import { useHosts, useRttTrend } from "@/hooks/useNetPulse";
+import { useHosts, useRttTrend, useIpPresence } from "@/hooks/useNetPulse";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
-import type { HostStats, RttTrendPoint } from "@/lib/types";
+import type { HostStats, RttTrendPoint , PresenceBlock } from "@/lib/types";
 import api from "@/lib/api";
 
 
@@ -462,6 +462,105 @@ function RttGraph({ ip, hostname, hours, limit, liveEnabled, liveIntervalMs }: {
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// PresenceTimeline — zobrazení přítomnosti z ARP/DHCP
+// ---------------------------------------------------------------------------
+function PresenceTimeline({ ip, hostname, blocks, hours }: {
+  ip:       string;
+  hostname: string;
+  blocks:   PresenceBlock[];
+  hours:    number;
+}) {
+  if (blocks.length === 0) {
+    return (
+      <div className="py-12 text-center text-sm text-muted-foreground">
+        <p className="text-lg mb-2">📭</p>
+        <p>Žádná ARP/DHCP data pro tuto IP adresu</p>
+        <p className="text-xs mt-1">Data se sbírají při pollu zařízení</p>
+      </div>
+    );
+  }
+
+  const now   = Date.now();
+  const start = now - hours * 3600 * 1000;
+  const total = now - start;
+
+  const srcColors: Record<string, string> = {
+    arp:  "bg-blue-500 dark:bg-blue-400",
+    dhcp: "bg-yellow-500 dark:bg-yellow-400",
+    ping: "bg-green-500 dark:bg-green-400",
+  };
+  const srcLabels: Record<string, string> = {
+    arp:  "🔵 ARP",
+    dhcp: "🟡 DHCP",
+    ping: "🟢 Ping",
+  };
+
+  const onlineMs = blocks.reduce((sum, b) => {
+    const f = Math.max(new Date(b.from).getTime(), start);
+    const t = Math.min(new Date(b.to).getTime(), now);
+    return sum + Math.max(0, t - f);
+  }, 0);
+  const uptimePct = ((onlineMs / total) * 100).toFixed(1);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">{hostname || ip}: Timeline přítomnosti</h3>
+          <p className="text-xs text-muted-foreground">{blocks.length} bloků · online {uptimePct}% za posledních {hours}h</p>
+        </div>
+        <div className="flex gap-3 text-xs">
+          {Object.entries(srcLabels).map(([src, label]) =>
+            blocks.some(b => b.source === src) ? <span key={src}>{label}</span> : null
+          )}
+        </div>
+      </div>
+
+      <div className="relative h-12 rounded-lg overflow-hidden bg-muted/30 border border-border">
+        {blocks.map((b, i) => {
+          const bStart = new Date(b.from).getTime();
+          const bEnd   = new Date(b.to).getTime();
+          const left   = Math.max(0, ((bStart - start) / total) * 100);
+          const width  = Math.min(100 - left, ((bEnd - bStart) / total) * 100);
+          return (
+            <div key={i}
+              className={`absolute top-0 h-full opacity-80 hover:opacity-100 ${srcColors[b.source] || "bg-gray-500"}`}
+              style={{ left: `${left}%`, width: `${Math.max(0.3, width)}%` }}
+              title={`${b.source.toUpperCase()}: ${new Date(b.from).toLocaleString("cs-CZ")} → ${new Date(b.to).toLocaleString("cs-CZ")}`}
+            />
+          );
+        })}
+        <div className="absolute bottom-0 left-0 right-0 flex justify-between px-2 text-[9px] text-muted-foreground/60 pointer-events-none">
+          <span>{new Date(start).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })}</span>
+          <span>nyní</span>
+        </div>
+      </div>
+
+      <div className="space-y-1 max-h-64 overflow-y-auto">
+        {[...blocks].reverse().map((b, i) => (
+          <div key={i} className="flex items-center gap-3 text-xs py-1 border-b border-border/50 last:border-0">
+            <span className={`inline-block h-2.5 w-2.5 rounded-full shrink-0 ${srcColors[b.source] || "bg-gray-400"}`} />
+            <span className="font-mono text-muted-foreground w-32 shrink-0">
+              {new Date(b.from).toLocaleString("cs-CZ", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            </span>
+            <span className="text-muted-foreground">→</span>
+            <span className="font-mono text-muted-foreground w-32 shrink-0">
+              {new Date(b.to).toLocaleString("cs-CZ", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            </span>
+            <span className={`font-medium ${b.source === "arp" ? "text-blue-600 dark:text-blue-400" : b.source === "dhcp" ? "text-yellow-600 dark:text-yellow-400" : "text-green-600"}`}>
+              {srcLabels[b.source] || b.source}
+            </span>
+            <span className="text-muted-foreground ml-auto">
+              {Math.round((new Date(b.to).getTime() - new Date(b.from).getTime()) / 60000)} min
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function GraphsPage() {
   const { data: hosts = [], isLoading: hostsLoading } = useHosts();
   const [selectedIp, setSelectedIp] = useState("");
@@ -471,6 +570,8 @@ export default function GraphsPage() {
 
   const range    = TIME_RANGES[rangeIdx];
   const selected = hosts.find((h) => h.ip.split("/")[0] === selectedIp);
+  const [activeTab, setActiveTab] = useState<"rtt" | "presence">("rtt");
+  const { data: presenceBlocks = [] } = useIpPresence(selectedIp || null, range.hours);
 
   // Zastavíme live při změně IP
   function handleSelectIp(ip: string) {
@@ -586,6 +687,24 @@ export default function GraphsPage() {
         )}
       </div>
 
+      {/* Záložky RTT / Přítomnost */}
+      {selectedIp && (
+        <div className="flex border-b border-border mb-0 -mt-2">
+          {(["rtt", "presence"] as const).map((tab) => (
+            <button key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                "px-4 py-2 text-sm transition-colors",
+                activeTab === tab
+                  ? "border-b-2 border-primary font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}>
+              {tab === "rtt" ? "📈 RTT graf" : "📅 Přítomnost"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Graf nebo placeholder */}
       {!selectedIp ? (
         <div className="rounded-xl border border-dashed border-border p-16 text-center">
@@ -597,7 +716,7 @@ export default function GraphsPage() {
             Zadejte IP nebo hostname do pole vyhledávání výše
           </p>
         </div>
-      ) : (
+      ) : activeTab === "rtt" ? (
         <div className="rounded-xl border border-border bg-card p-4">
           <RttGraph
             key={`${selectedIp}-${rangeIdx}`}
@@ -607,6 +726,15 @@ export default function GraphsPage() {
             limit={range.limit}
             liveEnabled={liveActive}
             liveIntervalMs={liveIntervalMs}
+          />
+        </div>
+      ) : (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <PresenceTimeline
+            ip={selectedIp}
+            hostname={(selected as any)?.hostname ?? selectedIp}
+            blocks={presenceBlocks}
+            hours={range.hours}
           />
         </div>
       )}

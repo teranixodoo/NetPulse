@@ -387,7 +387,24 @@ WHERE status = 'running'
   AND started_at < NOW() - INTERVAL '10 minutes';
 
 -- ===========================================================================
--- ip_addresses — zlatý zdroj IP adres (živý stav + stats)
+-- ip_presence_log — timeline přítomnosti IP (ARP/DHCP zdroje)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS ip_presence_log (
+    id         BIGSERIAL PRIMARY KEY,
+    ip         INET NOT NULL,
+    source     TEXT NOT NULL,        -- 'arp' | 'dhcp' | 'ping'
+    seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ           -- pro DHCP: lease expiry, pro ARP: seen_at + poll_interval
+);
+
+CREATE INDEX IF NOT EXISTS idx_ip_presence_ip      ON ip_presence_log (ip, seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_presence_seen_at ON ip_presence_log (seen_at DESC);
+
+-- Automatický cleanup — zachováme max 30 dní
+-- (spouštět přes scheduled job)
+
+-- ===========================================================================
+-- ip_addresses — živý stav IP adres
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS ip_addresses (
     id              SERIAL PRIMARY KEY,
@@ -396,24 +413,18 @@ CREATE TABLE IF NOT EXISTS ip_addresses (
     first_seen      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen       TIMESTAMPTZ,
     last_check      TIMESTAMPTZ,
-    -- Živý stav (aktualizuje se po každém scanu)
     is_alive        BOOLEAN,
     rtt_ms          FLOAT,
-    -- Předpočítané statistiky 24h
     uptime_pct_24h  FLOAT,
     avg_rtt_24h     FLOAT,
     min_rtt_24h     FLOAT,
     max_rtt_24h     FLOAT,
     checks_24h      INTEGER DEFAULT 0,
     online_24h      INTEGER DEFAULT 0,
-    -- Vazba na zařízení (denormalizace pro rychlost)
     device_id       INTEGER REFERENCES devices(id) ON DELETE SET NULL,
-    device_source   TEXT,           -- 'primary'|'api_address'|'api_arp'|'api_dhcp'
+    device_source   TEXT,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_ip_addresses_ip        ON ip_addresses (ip);
-CREATE INDEX IF NOT EXISTS idx_ip_addresses_range     ON ip_addresses (range_id);
-CREATE INDEX IF NOT EXISTS idx_ip_addresses_device    ON ip_addresses (device_id);
-CREATE INDEX IF NOT EXISTS idx_ip_addresses_alive     ON ip_addresses (is_alive, last_check DESC);
-CREATE INDEX IF NOT EXISTS idx_ip_addresses_uptime    ON ip_addresses (uptime_pct_24h DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_ip     ON ip_addresses (ip);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_device ON ip_addresses (device_id);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_alive  ON ip_addresses (is_alive, last_check DESC);

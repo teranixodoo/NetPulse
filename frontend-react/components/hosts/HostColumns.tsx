@@ -13,8 +13,9 @@ export interface HostRow extends HostStats {
   ipOwner?:     { device_id: number; hostname: string; alias: string | null;
                   vendor: string | null; model: string | null;
                   interface: string | null; source: string; };
-  device_name?: string | null;   // pro třídění a vyhledávání
-  device_source?: string | null; // zdroj vazby
+  device_name?:   string | null;   // pro třídění a vyhledávání
+  device_source?: string | null;   // zdroj vazby
+  range_label?:   string | null;   // název rozsahu
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,23 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       },
     },
 
+    // Rozsah
+    {
+      accessorKey: "range_label",
+      header: "Rozsah",
+      enableSorting: true,
+      cell: ({ row }) => {
+        const label = row.original.range_label;
+        if (!label) return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium
+            bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+            title={label}>
+            {label}
+          </span>
+        );
+      },
+    },
     // IP adresa
     {
       accessorKey: "ip",

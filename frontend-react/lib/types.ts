@@ -417,26 +417,13 @@ export interface DeviceAllData {
 }
 
 
-export interface HostEnriched {
-  ip:              string;
-  last_seen:       string;
-  currently_alive: boolean;
-  total_scans:     number;
-  online_count:    number;
-  avg_rtt_ms:      number | null;
-  first_seen:      string;
-  // Zařízení (z device_ips nebo primární IP)
-  device_id:       number | null;
-  device_hostname: string | null;
-  device_alias:    string | null;
-  device_vendor:   string | null;
-  device_model:    string | null;
-  device_source:   string | null;
+export interface PresenceBlock {
+  from:   string;
+  to:     string;
+  source: "arp" | "dhcp" | "ping";
+  online: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// IpAddress — živý přehled IP adres (ip_addresses tabulka)
-// ---------------------------------------------------------------------------
 export interface IpAddress {
   ip:              string;
   range_id:        number | null;
@@ -451,11 +438,24 @@ export interface IpAddress {
   max_rtt_24h:     number | null;
   checks_24h:      number;
   online_24h:      number;
-  // Zařízení
   device_id:       number | null;
   device_source:   string | null;
   device_hostname: string | null;
   device_alias:    string | null;
   device_vendor:   string | null;
   device_model:    string | null;
+}
+
+export interface UnknownNetwork {
+  subnet:    string;
+  ip_count:  number;
+  sources:   string[];
+  last_seen: string | null;
+}
+
+export interface UnknownNetworkIp {
+  ip:        string;
+  last_seen: string | null;
+  sources:   string[];
+  mac:       string | null;
 }

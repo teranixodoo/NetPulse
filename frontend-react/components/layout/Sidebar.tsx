@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Monitor, Network, KeyRound,
   ScrollText, Settings, Radio, Users, List, History, BarChart2,
-  HardDrive, Terminal } from "lucide-react";
+  HardDrive, Terminal, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { ScanStatusWidget } from "./ScanStatusWidget";
@@ -15,7 +15,8 @@ const NAV_ITEMS = [
   { href: "/devices",     label: "Zařízení",    icon: Monitor },
   { href: "/hosts",       label: "IP Adresy",   icon: List },
   { href: "/graphs",     label: "Grafy",       icon: BarChart2 },
-  { href: "/ranges",      label: "IP Rozsahy",  icon: Network },
+  { href: "/ranges",           label: "IP Rozsahy",     icon: Network },
+  { href: "/unknown-networks", label: "Neznámé sítě",   icon: AlertTriangle },
   { href: "/credentials", label: "Přihl. profily", icon: KeyRound },
   { href: "/logs",        label: "Log výpadků", icon: ScrollText },
   { href: "/scans",      label: "Historie scanů", icon: History },

@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { Download } from "lucide-react";
-import { useHosts, useDevices, useIpDeviceMap, useIpAddresses } from "@/hooks/useNetPulse";
+import { useHosts, useDevices, useIpDeviceMap, useIpAddresses, useRanges } from "@/hooks/useNetPulse";
 import type { IpAddress } from "@/lib/types";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getHostColumns, type HostRow } from "@/components/hosts/HostColumns";
@@ -16,6 +16,21 @@ export default function HostsPage() {
   const { data: devices = [], isLoading: devicesLoading } = useDevices();
   const { data: ipDevMap = {} }   = useIpDeviceMap();
   const { data: ipAddresses = [] } = useIpAddresses();
+  const { data: ranges = [] }      = useRanges();
+
+  // Mapa range_id → label
+  const rangeMap = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const r of ranges) if (r.id) m[r.id] = r.label;
+    return m;
+  }, [ranges]);
+
+  // Mapa IP → IpAddress data
+  const ipAddrMap = useMemo(() => {
+    const m: Record<string, typeof ipAddresses[0]> = {};
+    for (const a of ipAddresses) m[a.ip] = a;
+    return m;
+  }, [ipAddresses]);
 
   // Mapa IP → zařízení POUZE přes vlastní IP rozhraní (ne ARP)
   const deviceMap = useMemo(() => {
@@ -35,6 +50,7 @@ export default function HostsPage() {
   const [globalFilter,  setGlobalFilter]  = useState("");
   const [statusFilter,  setStatusFilter]  = useState("");
   const [deviceFilter,  setDeviceFilter]  = useState("");
+  const [rangeFilter,   setRangeFilter]   = useState("");
   const [expandedRowIp, setExpandedRowIp] = useState<string | null>(null);
 
   // Mapa IP → zařízení
@@ -48,16 +64,18 @@ export default function HostsPage() {
   const rows = useMemo<HostRow[]>(() => {
     return hosts.map((h) => {
       const cleanIp = h.ip.split("/")[0];
-      const devInfo = deviceMap[cleanIp];
+      const devInfo  = deviceMap[cleanIp];
+      const addrInfo = ipAddrMap[cleanIp];
       return {
         ...h,
         device:        deviceByIp.get(cleanIp),
         ipOwner:       ipDevMap[cleanIp] ?? undefined,
         device_name:   devInfo?.device_name ?? null,
         device_source: devInfo?.device_source ?? null,
+        range_label:   addrInfo?.range_id ? (rangeMap[addrInfo.range_id] ?? null) : null,
       };
     });
-  }, [hosts, deviceByIp, ipDevMap, deviceMap]);
+  }, [hosts, deviceByIp, ipDevMap, deviceMap, ipAddrMap, rangeMap]);
 
   // Filtrace
   const filteredRows = useMemo(() => {
@@ -67,6 +85,7 @@ export default function HostsPage() {
       if (statusFilter === "assigned" && !r.device_name)      return false;
       if (statusFilter === "free"     &&  r.device)           return false;
       if (deviceFilter === "assigned" && !r.device_name)      return false;
+    if (rangeFilter && r.range_label !== rangeFilter)        return false;
       if (deviceFilter === "free"     &&  r.device)           return false;
       return true;
     });
