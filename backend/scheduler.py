@@ -171,6 +171,10 @@ async def run_scan(
             ])
             await db.refresh_ip_stats_24h(pool)
             await db.refresh_ip_range_map(pool)
+            # Doplníme is_alive z ARP/DHCP pro IP kde ping nefunguje
+            updated = await db.refresh_alive_from_presence(pool)
+            if updated > 0:
+                log.info(f"ARP/DHCP alive: {updated} IP aktualizováno")
         except Exception as _ipe:
             log.warning(f"ip_addresses update: {_ipe}")
         _syslog().write_bg(
@@ -414,34 +418,27 @@ def _make_backup_trigger(interval_s: int, start_time: str):
 
 
 
+def _run_async(coro):
+    """Bezpečně spustí coroutine z APScheduler threadu."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        else:
+            loop.run_until_complete(coro)
+    except RuntimeError:
+        # Žádný event loop v threadu — použijeme hlavní loop
+        import threading
+        for thread in threading.enumerate():
+            if hasattr(thread, '_target') and 'uvicorn' in str(thread._target):
+                pass
+        asyncio.run_coroutine_threadsafe(coro, _main_loop)
+
 _main_loop = None
 
 def set_main_loop(loop):
     global _main_loop
     _main_loop = loop
-
-def _run_async(coro):
-    """Bezpečně spustí coroutine z APScheduler threadu."""
-    global _main_loop
-    # Preferujeme uložený hlavní loop
-    if _main_loop is not None and _main_loop.is_running():
-        asyncio.run_coroutine_threadsafe(coro, _main_loop)
-        return
-    # Záložka: zkusíme získat running loop z aktuálního threadu
-    try:
-        loop = asyncio.get_running_loop()
-        asyncio.run_coroutine_threadsafe(coro, loop)
-        return
-    except RuntimeError:
-        pass
-    # Poslední záložka: projdeme všechna vlákna a najdeme running loop
-    import threading
-    for thread in threading.enumerate():
-        loop = getattr(thread, "_asyncio_event_loop", None)
-        if loop is not None and loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, loop)
-            return
-    log.error("_run_async: nelze najít běžící event loop")
 
 def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
     global _scheduler

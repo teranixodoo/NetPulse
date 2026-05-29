@@ -57,12 +57,19 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
     {
       id: "status",
       header: "Stav",
-      size: 90,
+      size: 110,
       accessorFn: (row) => row.currently_alive,
       cell: ({ row }) => {
-        const status = getDeviceStatus(row.original.currently_alive);
+        const h        = row.original;
+        const status   = getDeviceStatus(h.currently_alive);
+        // alive_source z ip_addresses (ping/arp/dhcp)
+        const src      = (h as any).alive_source as string | null;
+        const srcLabel = src === "arp"  ? "ARP"
+                       : src === "dhcp" ? "DHCP"
+                       : src === "ping" ? null
+                       : null;
         return (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <StatusDot status={status} />
             <span className={cn(
               "text-xs",
@@ -72,6 +79,13 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
             )}>
               {status === "online" ? "online" : status === "offline" ? "offline" : "—"}
             </span>
+            {status === "online" && srcLabel && (
+              <span className={cn(
+                "text-[9px] font-medium rounded px-1 py-0.5",
+                src === "arp"  && "bg-blue-100 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400",
+                src === "dhcp" && "bg-yellow-100 text-yellow-600 dark:bg-yellow-950/40 dark:text-yellow-400",
+              )}>{srcLabel}</span>
+            )}
           </div>
         );
       },

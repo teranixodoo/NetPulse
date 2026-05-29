@@ -17,15 +17,12 @@ export default function HostsPage() {
   const { data: ipDevMap = {} }   = useIpDeviceMap();
   const { data: ipAddresses = [] } = useIpAddresses();
   const { data: ranges = [] }      = useRanges();
-
-  // Mapa range_id → label
   const rangeMap = useMemo(() => {
     const m: Record<number, string> = {};
     for (const r of ranges) if (r.id) m[r.id] = r.label;
     return m;
   }, [ranges]);
 
-  // Mapa IP → IpAddress data
   const ipAddrMap = useMemo(() => {
     const m: Record<string, typeof ipAddresses[0]> = {};
     for (const a of ipAddresses) m[a.ip] = a;
@@ -63,7 +60,7 @@ export default function HostsPage() {
   // Sloučená data
   const rows = useMemo<HostRow[]>(() => {
     return hosts.map((h) => {
-      const cleanIp = h.ip.split("/")[0];
+      const cleanIp  = h.ip.split("/")[0];
       const devInfo  = deviceMap[cleanIp];
       const addrInfo = ipAddrMap[cleanIp];
       return {
@@ -73,6 +70,7 @@ export default function HostsPage() {
         device_name:   devInfo?.device_name ?? null,
         device_source: devInfo?.device_source ?? null,
         range_label:   addrInfo?.range_id ? (rangeMap[addrInfo.range_id] ?? null) : null,
+        alive_source:  (addrInfo as any)?.alive_source ?? null,
       };
     });
   }, [hosts, deviceByIp, ipDevMap, deviceMap, ipAddrMap, rangeMap]);

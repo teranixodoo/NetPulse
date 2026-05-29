@@ -73,7 +73,6 @@ async def lifespan(app: FastAPI):
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
     sl.init(pool)
-    # Předáme hlavní event loop scheduleru pro _run_async
     scheduler.set_main_loop(asyncio.get_event_loop())   # inicializace systémového logu
 
     # Opravíme zombie joby z předchozího běhu při startu
@@ -1496,24 +1495,17 @@ async def refresh_ip_addresses(
     pool = Depends(get_db),
 ):
     await db.refresh_ip_stats_24h(pool)
-    await db.refresh_ip_range_map(pool)
     device_count = await db.refresh_ip_device_map(pool)
     count = await db.get_ip_address_count(pool)
     return {"status": "ok", "count": count, "devices_mapped": device_count}
 
-
-# ===========================================================================
-# NEZNÁMÉ SÍTĚ
-# ===========================================================================
 
 @app.get("/unknown-networks", tags=["Hosts"])
 async def get_unknown_networks(
     user = Depends(current_user),
     pool = Depends(get_db),
 ):
-    """Vrátí přehled privátních sítí viditelných v ARP/DHCP ale mimo ip_ranges."""
     return await db.get_unknown_networks(pool)
-
 
 @app.get("/unknown-networks/{subnet:path}", tags=["Hosts"])
 async def get_unknown_network_ips(
@@ -1521,5 +1513,4 @@ async def get_unknown_network_ips(
     user   = Depends(current_user),
     pool   = Depends(get_db),
 ):
-    """Vrátí detail IP adres v dané neznámé síti s MAC adresami."""
     return await db.get_unknown_network_ips(pool, subnet)

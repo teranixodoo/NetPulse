@@ -428,3 +428,6 @@ CREATE TABLE IF NOT EXISTS ip_addresses (
 CREATE INDEX IF NOT EXISTS idx_ip_addresses_ip     ON ip_addresses (ip);
 CREATE INDEX IF NOT EXISTS idx_ip_addresses_device ON ip_addresses (device_id);
 CREATE INDEX IF NOT EXISTS idx_ip_addresses_alive  ON ip_addresses (is_alive, last_check DESC);
+
+ALTER TABLE ip_addresses ADD COLUMN IF NOT EXISTS alive_source TEXT;
+-- 'ping' | 'arp' | 'dhcp' | NULL

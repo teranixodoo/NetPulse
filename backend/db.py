@@ -1751,19 +1751,41 @@ async def refresh_ip_device_map(pool) -> int:
 
 
 
-async def refresh_ip_range_map(pool) -> None:
-    """Přiřadí range_id k IP adresám podle ip_ranges (CIDR obsahuje IP)."""
+async def refresh_alive_from_presence(pool) -> int:
+    """
+    Aktualizuje is_alive v ip_addresses na základě ip_presence_log.
+    Logika:
+      - Ping alive    → is_alive=TRUE,  alive_source='ping'  (nejvyšší priorita)
+      - ARP/DHCP seen < 15 min → is_alive=TRUE, alive_source='arp'|'dhcp'
+      - Jinak         → is_alive zůstane jak je (ping výsledek)
+    """
     async with pool.acquire() as conn:
-        await conn.execute(
+        result = await conn.execute(
             """
             UPDATE ip_addresses ia
-            SET range_id = r.id
-            FROM ip_ranges r
-            WHERE ia.ip << r.network
-              AND r.active = TRUE
-              AND ia.range_id IS NULL
+            SET
+                is_alive     = TRUE,
+                alive_source = pl.best_source,
+                updated_at   = NOW()
+            FROM (
+                SELECT DISTINCT ON (ip)
+                    ip,
+                    source AS best_source
+                FROM ip_presence_log
+                WHERE seen_at > NOW() - INTERVAL '2 hours'
+                ORDER BY ip,
+                    CASE source
+                        WHEN 'ping' THEN 1
+                        WHEN 'arp'  THEN 2
+                        WHEN 'dhcp' THEN 3
+                        ELSE 4
+                    END
+            ) pl
+            WHERE ia.ip = pl.ip
+              -- Aktualizujeme vždy - ping má přednost přes bulk_upsert
             """
         )
+        return int(result.split()[-1]) if result else 0
 
 async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=10000, offset=0) -> list[dict]:
     """Vrátí IP adresy s live stats a vazbou na zařízení."""
@@ -1784,7 +1806,7 @@ async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=10000, o
                 ia.last_check, ia.last_seen, ia.first_seen,
                 ia.uptime_pct_24h, ia.avg_rtt_24h, ia.min_rtt_24h,
                 ia.max_rtt_24h, ia.checks_24h, ia.online_24h,
-                ia.device_id, ia.device_source,
+                ia.device_id, ia.device_source, ia.alive_source,
                 d.hostname AS device_hostname, d.alias AS device_alias,
                 d.vendor AS device_vendor, d.model AS device_model
             FROM ip_addresses ia
@@ -1831,50 +1853,52 @@ async def update_device_poll_result(pool, device_id: int, result) -> None:
         )
 
 
-# ===========================================================================
-# Neznámé sítě — IP z ARP/DHCP mimo evidované rozsahy
-# ===========================================================================
+async def refresh_ip_range_map(pool) -> None:
+    """Přiřadí range_id k IP adresám podle ip_ranges (CIDR)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE ip_addresses ia
+            SET range_id = r.id
+            FROM ip_ranges r
+            WHERE ia.ip << r.network
+              AND r.active = TRUE
+              AND ia.range_id IS NULL
+            """
+        )
+
 
 async def get_unknown_networks(pool) -> list[dict]:
-    """
-    Vrátí sítě viditelné v ARP/DHCP které nejsou v ip_ranges.
-    Seskupí po /24 pro privátní IP, ignoruje veřejné IP.
-    """
+    """Privátní sítě z ARP/DHCP mimo ip_ranges, seskupené po /24."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             WITH unknown_ips AS (
                 SELECT DISTINCT pl.ip AS ip
                 FROM ip_presence_log pl
-                WHERE
-                    (pl.ip << '10.0.0.0/8'::inet
-                     OR pl.ip << '172.16.0.0/12'::inet
-                     OR pl.ip << '192.168.0.0/16'::inet)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM ip_ranges r
-                        WHERE r.active = TRUE AND pl.ip << r.network
-                    )
+                WHERE (pl.ip << '10.0.0.0/8'::inet
+                       OR pl.ip << '172.16.0.0/12'::inet
+                       OR pl.ip << '192.168.0.0/16'::inet)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ip_ranges r
+                      WHERE r.active = TRUE AND pl.ip << r.network
+                  )
             ),
             grouped AS (
                 SELECT
-                    network(set_masklen(ui.ip, 24))   AS subnet,
-                    COUNT(DISTINCT ui.ip)              AS ip_count,
-                    array_agg(DISTINCT pl.source)      AS sources,
-                    MAX(pl.seen_at)                    AS last_seen
+                    network(set_masklen(ui.ip, 24))  AS subnet,
+                    COUNT(DISTINCT ui.ip)             AS ip_count,
+                    array_agg(DISTINCT pl.source)     AS sources,
+                    MAX(pl.seen_at)                   AS last_seen
                 FROM unknown_ips ui
                 JOIN ip_presence_log pl ON pl.ip = ui.ip
                 GROUP BY network(set_masklen(ui.ip, 24))
             )
-            SELECT
-                subnet::text,
-                ip_count,
-                sources,
-                last_seen
+            SELECT subnet::text, ip_count, sources, last_seen
             FROM grouped
             ORDER BY ip_count DESC, subnet
             """
         )
-
     result = []
     for r in rows:
         d = dict(r)
@@ -1885,9 +1909,7 @@ async def get_unknown_networks(pool) -> list[dict]:
 
 
 async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
-    """
-    Vrátí detailní seznam IP v dané neznámé síti s MAC adresami.
-    """
+    """Detail IP v dané neznámé síti s MAC adresami."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -1895,7 +1917,6 @@ async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
                 pl.ip::text                          AS ip,
                 MAX(pl.seen_at)                      AS last_seen,
                 array_agg(DISTINCT pl.source)        AS sources,
-                -- MAC z device_ips (ARP)
                 (SELECT di.mac FROM device_ips di
                  WHERE split_part(di.ip::text,'/',1) = host(pl.ip)
                    AND di.mac IS NOT NULL
@@ -1911,7 +1932,6 @@ async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
             """,
             subnet,
         )
-
     result = []
     for r in rows:
         d = dict(r)
