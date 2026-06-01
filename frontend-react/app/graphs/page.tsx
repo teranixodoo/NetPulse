@@ -9,7 +9,7 @@ import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Brush, Area,
 } from "recharts";
-import { useHosts, useRttTrend, useIpPresence } from "@/hooks/useNetPulse";
+import { useHosts, useRttTrend, useIpPresence, useIpAddresses } from "@/hooks/useNetPulse";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -563,6 +563,12 @@ function PresenceTimeline({ ip, hostname, blocks, hours }: {
 
 export default function GraphsPage() {
   const { data: hosts = [], isLoading: hostsLoading } = useHosts();
+  const { data: ipAddresses = [] }                    = useIpAddresses();
+  const ipAliveMap = useMemo(() => {
+    const m: Record<string, { is_alive: boolean | null; alive_source: string | null }> = {};
+    for (const a of ipAddresses) m[a.ip] = { is_alive: a.is_alive, alive_source: (a as any).alive_source };
+    return m;
+  }, [ipAddresses]);
   const [selectedIp, setSelectedIp] = useState("");
   const [rangeIdx,   setRangeIdx]   = useState(4);
   const [liveActive,    setLiveActive]    = useState(false);
@@ -667,13 +673,26 @@ export default function GraphsPage() {
         {selected && (
           <div className="flex items-center gap-5 text-xs text-muted-foreground
                           border-t border-border pt-3 flex-wrap">
-            <span className={cn("font-semibold",
-              selected.currently_alive
-                ? "text-green-600 dark:text-green-400"
-                : "text-red-600 dark:text-red-400"
-            )}>
-              {selected.currently_alive ? "● Online" : "○ Offline"}
-            </span>
+            {(() => {
+              const cleanIp = selected.ip.split("/")[0];
+              const ipInfo  = ipAliveMap[cleanIp];
+              const alive   = ipInfo?.is_alive ?? selected.currently_alive;
+              const src     = ipInfo?.alive_source;
+              return (
+                <span className={cn("font-semibold flex items-center gap-1",
+                  alive ? "text-green-600 dark:text-green-400"
+                        : "text-red-600 dark:text-red-400"
+                )}>
+                  {alive ? "● Online" : "○ Offline"}
+                  {alive && src && src !== "ping" && (
+                    <span className={cn("text-[9px] font-medium rounded px-1 py-0.5",
+                      src === "arp"  && "bg-blue-100 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400",
+                      src === "dhcp" && "bg-yellow-100 text-yellow-600 dark:bg-yellow-950/40 dark:text-yellow-400",
+                    )}>{src.toUpperCase()}</span>
+                  )}
+                </span>
+              );
+            })()}
             {[
               ["Uptime",  `${selected.uptime_pct?.toFixed(2)} %`],
               ["Avg RTT", `${selected.avg_rtt_ms?.toFixed(2)} ms`],

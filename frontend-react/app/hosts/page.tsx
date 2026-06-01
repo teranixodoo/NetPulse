@@ -65,6 +65,8 @@ export default function HostsPage() {
       const addrInfo = ipAddrMap[cleanIp];
       return {
         ...h,
+        // Preferujeme is_alive z ip_addresses (zahrnuje ARP/DHCP)
+        currently_alive: addrInfo?.is_alive ?? h.currently_alive,
         device:        deviceByIp.get(cleanIp),
         ipOwner:       ipDevMap[cleanIp] ?? undefined,
         device_name:   devInfo?.device_name ?? null,

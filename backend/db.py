@@ -245,14 +245,14 @@ async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel
     async with pool.acquire() as conn:
         if rng.id:
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id, rng.description,
+                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3, description=$5, site_id=$6 WHERE id=$4",
+                rng.label, rng.network, rng.active, rng.id, rng.description, rng.site_id,
             )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active, description) VALUES ($1, $2::cidr, $3, $4) RETURNING id",
-                rng.label, rng.network, rng.active, rng.description,
+                "INSERT INTO ip_ranges (label, network, active, description, site_id) VALUES ($1, $2::cidr, $3, $4, $5) RETURNING id",
+                rng.label, rng.network, rng.active, rng.description, rng.site_id,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -1668,22 +1668,32 @@ async def cleanup_ip_presence(pool, days: int = 30) -> None:
 # ===========================================================================
 
 async def bulk_upsert_ip_addresses(pool, results: list[dict]) -> None:
-    """Hromadný UPSERT výsledků scanu do ip_addresses."""
+    """
+    Hromadný UPSERT výsledků ping scanu do ip_addresses.
+    Ping má nejvyšší prioritu:
+      - alive=TRUE  → alive_source='ping'
+      - alive=FALSE → alive_source=NULL (reset - bude doplněno z ARP/DHCP)
+    """
     if not results:
         return
     async with pool.acquire() as conn:
         await conn.executemany(
             """
-            INSERT INTO ip_addresses (ip, is_alive, rtt_ms, last_check, last_seen, first_seen)
+            INSERT INTO ip_addresses (ip, is_alive, rtt_ms, last_check, last_seen, first_seen,
+                                      alive_source)
             VALUES (split_part($1,'/',1)::inet, $2, $3, NOW(),
-                    CASE WHEN $2 THEN NOW() ELSE NULL END, NOW())
+                    CASE WHEN $2 THEN NOW() ELSE NULL END, NOW(),
+                    CASE WHEN $2 THEN 'ping' ELSE NULL END)
             ON CONFLICT (ip) DO UPDATE SET
-                is_alive   = EXCLUDED.is_alive,
-                rtt_ms     = EXCLUDED.rtt_ms,
-                last_check = NOW(),
-                last_seen  = CASE WHEN EXCLUDED.is_alive THEN NOW()
-                                  ELSE ip_addresses.last_seen END,
-                updated_at = NOW()
+                is_alive     = EXCLUDED.is_alive,
+                rtt_ms       = EXCLUDED.rtt_ms,
+                last_check   = NOW(),
+                last_seen    = CASE WHEN EXCLUDED.is_alive THEN NOW()
+                                    ELSE ip_addresses.last_seen END,
+                -- Ping TRUE → source=ping, Ping FALSE → reset na NULL
+                -- (refresh_alive_from_presence pak doplní ARP/DHCP)
+                alive_source = CASE WHEN EXCLUDED.is_alive THEN 'ping' ELSE NULL END,
+                updated_at   = NOW()
             """,
             [(r["ip"], r["is_alive"], r.get("rtt_ms")) for r in results],
         )
@@ -1753,11 +1763,11 @@ async def refresh_ip_device_map(pool) -> int:
 
 async def refresh_alive_from_presence(pool) -> int:
     """
-    Aktualizuje is_alive v ip_addresses na základě ip_presence_log.
-    Logika:
-      - Ping alive    → is_alive=TRUE,  alive_source='ping'  (nejvyšší priorita)
-      - ARP/DHCP seen < 15 min → is_alive=TRUE, alive_source='arp'|'dhcp'
-      - Jinak         → is_alive zůstane jak je (ping výsledek)
+    Aktualizuje is_alive z ip_presence_log.
+    Zdroje (dle spolehlivosti):
+      - dhcp: DHCP lease (permanent+dhcp flag) → velmi spolehlivé
+      - arp:  ARP status=reachable → spolehlivé (aktivně ověřeno)
+    ARP status=permanent bez DHCP = cached, nespolehlivé → ignorujeme.
     """
     async with pool.acquire() as conn:
         result = await conn.execute(
@@ -1772,20 +1782,24 @@ async def refresh_alive_from_presence(pool) -> int:
                     ip,
                     source AS best_source
                 FROM ip_presence_log
-                WHERE seen_at > NOW() - INTERVAL '2 hours'
+                WHERE (
+                    (source = 'dhcp' AND seen_at > NOW() - INTERVAL '20 minutes')
+                    OR
+                    (source = 'arp'  AND seen_at > NOW() - INTERVAL '12 minutes')
+                )
                 ORDER BY ip,
                     CASE source
-                        WHEN 'ping' THEN 1
+                        WHEN 'dhcp' THEN 1
                         WHEN 'arp'  THEN 2
-                        WHEN 'dhcp' THEN 3
-                        ELSE 4
+                        ELSE 3
                     END
             ) pl
             WHERE ia.ip = pl.ip
-              -- Aktualizujeme vždy - ping má přednost přes bulk_upsert
+              AND (ia.is_alive = FALSE OR ia.is_alive IS NULL)
             """
         )
         return int(result.split()[-1]) if result else 0
+
 
 async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=10000, offset=0) -> list[dict]:
     """Vrátí IP adresy s live stats a vazbou na zařízení."""
@@ -1939,3 +1953,79 @@ async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
         d["sources"] = list(d["sources"]) if d.get("sources") else []
         result.append(d)
     return result
+
+
+# ===========================================================================
+# sites — logické sítě / infrastruktury
+# ===========================================================================
+
+async def get_sites(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT s.id, s.name, s.description, s.color, s.active, s.created_at,
+                   COUNT(r.id) AS range_count
+            FROM sites s
+            LEFT JOIN ip_ranges r ON r.site_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id
+            """
+        )
+    return [dict(r) | {"created_at": r["created_at"].isoformat()} for r in rows]
+
+
+async def create_site(pool, name: str, description: str | None, color: str) -> dict:
+    async with pool.acquire() as conn:
+        # Resetujeme sekvenci aby nedošlo ke konfliktu s manuálně vloženým id=1
+        await conn.execute(
+            "SELECT setval('sites_id_seq', GREATEST((SELECT MAX(id) FROM sites), 1))"
+        )
+        row = await conn.fetchrow(
+            """
+            INSERT INTO sites (name, description, color)
+            VALUES ($1, $2, $3)
+            RETURNING id, name, description, color, active, created_at
+            """,
+            name, description, color,
+        )
+    return dict(row) | {"created_at": row["created_at"].isoformat()}
+
+
+async def update_site(pool, site_id: int, name: str, description: str | None, color: str, active: bool) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE sites SET name=$2, description=$3, color=$4, active=$5
+            WHERE id=$1
+            RETURNING id, name, description, color, active, created_at
+            """,
+            site_id, name, description, color, active,
+        )
+    return dict(row) | {"created_at": row["created_at"].isoformat()}
+
+
+async def delete_site(pool, site_id: int) -> None:
+    """Smaže síť — rozsahy zůstanou ale site_id = NULL."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE ip_ranges SET site_id = NULL WHERE site_id = $1",
+            site_id,
+        )
+        await conn.execute("DELETE FROM sites WHERE id = $1 AND id != 1", site_id)
+
+
+async def get_ip_ranges_with_site(pool) -> list[dict]:
+    """Vrátí ip_ranges s informací o síti."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.label, r.network::text, r.active, r.scan_enabled,
+                   r.description, r.site_id,
+                   s.name  AS site_name,
+                   s.color AS site_color
+            FROM ip_ranges r
+            LEFT JOIN sites s ON s.id = r.site_id
+            ORDER BY r.id
+            """
+        )
+    return [dict(r) for r in rows]

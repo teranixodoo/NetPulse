@@ -46,7 +46,8 @@ class IpRangeModel(BaseModel):
     network:      str
     active:       bool = True
     scan_enabled: bool = True
-    description:  Optional[str] = None  # volitelný popis rozsahu
+    description:  Optional[str] = None
+    site_id:      Optional[int] = None  # volitelný popis rozsahu
 
 
 class AppConfigModel(BaseModel):
@@ -225,3 +226,10 @@ class DeviceWithCredentials(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SiteModel(BaseModel):
+    id:          Optional[int] = None
+    name:        str
+    description: Optional[str] = None
+    color:       str = "#6366f1"
+    active:      bool = True

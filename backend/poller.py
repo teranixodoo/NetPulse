@@ -94,12 +94,15 @@ def _collect_mikrotik_extended(api) -> dict:
                 "ip":        e.get("address", ""),
                 "mac":       e.get("mac-address", ""),
                 "interface": e.get("interface", ""),
-                "status":    "dynamic" if e.get("dynamic") == "true" else "static",
+                "dynamic":   e.get("dynamic", "false") == "true",
+                "dhcp":      e.get("dhcp", "false") == "true",
                 "complete":  e.get("complete", "false") == "true",
                 "invalid":   e.get("invalid", "false") == "true",
+                # status: reachable|permanent|delay|probe|failed|incomplete
+                "arp_status": e.get("status", ""),
             }
             for e in api.get_resource("/ip/arp").get()
-            if e.get("address")
+            if e.get("address") and e.get("invalid", "false") != "true"
         ]
     except Exception as e:
         log.debug(f"ARP sběr: {e}")

@@ -143,7 +143,7 @@ export function HostPanel({ host }: { host: HostRow }) {
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             RTT trend — posledních 24h
           </p>
-          <RttMiniChart ip={host.ip} />
+          <RttMiniChart ip={host.ip.split("/")[0]} />
         </div>
 
       </div>

@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -99,7 +99,7 @@ export function useOutages(limit = 50, hours = 24) {
 // Ranges
 // ---------------------------------------------------------------------------
 export function useRanges() {
-  return useQuery({
+  return useQuery<any[]>({
     queryKey: QK.ranges,
     queryFn:  rangesApi.getAll,
   });
@@ -527,6 +527,50 @@ export function useUnknownNetworkIps(subnet: string | null) {
     queryFn:  () => unknownNetworksApi.getIps(subnet!),
     enabled:  !!subnet,
     staleTime: 60_000,
+  });
+}
+
+export function useSites() {
+  return useQuery<import("@/lib/types").Site[]>({
+    queryKey: ['sites'],
+    queryFn:  () => sitesApi.getAll(),
+    staleTime: 60_000,
+  });
+}
+
+export function useCreateSite() {
+  const qc = useQueryClient();
+  return useMutation<
+    import("@/lib/types").Site,
+    Error,
+    { name: string; description?: string; color?: string }
+  >({
+    mutationFn: (data) => sitesApi.create(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sites'] }),
+  });
+}
+
+export function useUpdateSite() {
+  const qc = useQueryClient();
+  return useMutation<
+    import("@/lib/types").Site,
+    Error,
+    { id: number; name: string; description?: string; color?: string; active?: boolean }
+  >({
+    mutationFn: ({ id, name, description, color, active }) =>
+      sitesApi.update(id, { name, description, color, active }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sites'] }),
+  });
+}
+
+export function useDeleteSite() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, number>({
+    mutationFn: (id: number) => sitesApi.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sites'] });
+      qc.invalidateQueries({ queryKey: ['ranges'] });
+    },
   });
 }
 

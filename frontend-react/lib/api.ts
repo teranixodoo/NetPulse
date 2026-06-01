@@ -149,7 +149,7 @@ export const dataApi = {
 // ---------------------------------------------------------------------------
 export const rangesApi = {
   async getAll(): Promise<IpRange[]> {
-    const { data } = await api.get<IpRange[]>("/ranges");
+    const { data } = await api.get<any[]>("/ranges");  // any aby se zachovaly site_name, site_color
     return data;
   },
   async create(label: string, network: string, active = true): Promise<IpRange> {
@@ -417,5 +417,23 @@ export const unknownNetworksApi = {
   async getIps(subnet: string): Promise<import('./types').UnknownNetworkIp[]> {
     const { data } = await api.get(`/unknown-networks/${encodeURIComponent(subnet)}`);
     return data;
+  },
+};
+
+export const sitesApi = {
+  async getAll(): Promise<import('./types').Site[]> {
+    const { data } = await api.get('/sites');
+    return data;
+  },
+  async create(data: { name: string; description?: string; color?: string }): Promise<import('./types').Site> {
+    const { data: res } = await api.post('/sites', data);
+    return res;
+  },
+  async update(id: number, data: { name: string; description?: string; color?: string; active?: boolean }): Promise<import('./types').Site> {
+    const { data: res } = await api.put(`/sites/${id}`, data);
+    return res;
+  },
+  async remove(id: number): Promise<void> {
+    await api.delete(`/sites/${id}`);
   },
 };

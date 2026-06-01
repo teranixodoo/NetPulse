@@ -6,7 +6,7 @@ import {
   ChevronDown, Loader2, Network, AlertTriangle, Info,
 } from "lucide-react";
 import {
-  useRanges, useHosts, useCreateRange,
+  useRanges, useHosts, useIpAddresses, useCreateRange, useSites,
   useUpdateRange, useDeleteRange, useRangeImpact, getErrorMessage,
 } from "@/hooks/useNetPulse";
 import type { IpRange, HostStats } from "@/lib/types";
@@ -25,7 +25,7 @@ function ipInNetwork(ip: string, netAddr: string, prefix: number): boolean {
   return (ipToNum(ip) & mask) === (ipToNum(netAddr) & mask);
 }
 
-function IpMap({ hosts }: { hosts: HostStats[] }) {
+function IpMap({ hosts, ipAddrMap = {} }: { hosts: HostStats[]; ipAddrMap?: Record<string, boolean> }) {
   const sorted = [...hosts].sort((a, b) =>
     ipToNum(a.ip.split("/")[0]) - ipToNum(b.ip.split("/")[0])
   );
@@ -39,7 +39,9 @@ function IpMap({ hosts }: { hosts: HostStats[] }) {
           const ip      = h.ip.split("/")[0];
           const lastOct = ip.split(".").pop() ?? ip;
           const rtt     = h.avg_rtt_ms;
-          const bg = !h.currently_alive
+          const cleanIp2 = h.ip.split("/")[0];
+          const isAlive = cleanIp2 in ipAddrMap ? ipAddrMap[cleanIp2] : (h.currently_alive ?? false);
+          const bg = !isAlive
             ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200"
             : rtt && rtt > 50
             ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
@@ -122,6 +124,7 @@ interface FormData {
   active:       boolean;
   scan_enabled: boolean;
   description:  string;
+  site_id:      number | null;
 }
 
 function RangeForm({
@@ -129,16 +132,19 @@ function RangeForm({
   onSubmit,
   onCancel,
   isPending,
+  sites = [],
 }: {
   defaultValues?: Partial<FormData>;
   onSubmit: (data: FormData) => Promise<void>;
   onCancel: () => void;
   isPending: boolean;
+  sites?: import("@/lib/types").Site[];
 }) {
   const [label,       setLabel]       = useState(defaultValues?.label       ?? "");
   const [network,     setNetwork]     = useState(defaultValues?.network     ?? "");
   const [active,       setActive]       = useState(defaultValues?.active       ?? true);
   const [scanEnabled,  setScanEnabled]  = useState(defaultValues?.scan_enabled ?? true);
+  const [siteId,       setSiteId]       = useState<number | null>(defaultValues?.site_id ?? null);
   const [description,  setDescription]  = useState(defaultValues?.description  ?? "");
   const [error,       setError]       = useState<string | null>(null);
 
@@ -147,7 +153,7 @@ function RangeForm({
     setError(null);
     if (!label.trim())   { setError("Název rozsahu je povinný"); return; }
     if (!network.trim()) { setError("Síť (CIDR) je povinná"); return; }
-    await onSubmit({ label: label.trim(), network: network.trim(), active, scan_enabled: scanEnabled, description: description.trim() });
+    await onSubmit({ label: label.trim(), network: network.trim(), active, scan_enabled: scanEnabled, description: description.trim(), site_id: siteId });
   }
 
   return (
@@ -173,6 +179,18 @@ function RangeForm({
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Popis rozsahu..."
           />
+        </FormField>
+        <FormField label="Síť">
+          <select
+            value={siteId ?? ""}
+            onChange={(e) => setSiteId(e.target.value ? Number(e.target.value) : null)}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">— bez sítě (Default) —</option>
+            {sites.map((s: import("@/lib/types").Site) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
         </FormField>
         <FormField label="Stav">
           <div className="flex h-9 items-center gap-2">
@@ -224,9 +242,13 @@ function RangeForm({
 function RangeRow({
   range,
   hosts,
+  ipAddresses = [],
+  sites = [],
 }: {
   range: IpRange;
   hosts: HostStats[];
+  ipAddresses?: import("@/lib/types").IpAddress[];
+  sites?: import("@/lib/types").Site[];
 }) {
   const [expanded,    setExpanded]    = useState(false);
   const [editing,     setEditing]     = useState(false);
@@ -249,7 +271,20 @@ function RangeRow({
     } catch { return []; }
   }, [hosts, range.network]);
 
-  const aliveN = hostsInRange.filter((h) => h.currently_alive).length;
+  // Mapa IP → is_alive z ip_addresses (zahrnuje ARP/DHCP)
+  const ipAddrMap = useMemo(() => {
+    const m: Record<string, boolean> = {};
+    for (const a of ipAddresses) m[a.ip] = a.is_alive ?? false;
+    return m;
+  }, [ipAddresses]);
+
+  const aliveN = hostsInRange.filter((h) => {
+    const cleanIp = h.ip.split("/")[0];
+    // Pokud IP je v ip_addresses, použij její stav
+    // Pokud není (nový IP bez záznamu), fallback na ping
+    if (cleanIp in ipAddrMap) return ipAddrMap[cleanIp];
+    return h.currently_alive ?? false;
+  }).length;
   const deadN  = hostsInRange.length - aliveN;
   const rtts   = hostsInRange.filter((h) => h.avg_rtt_ms != null).map((h) => h.avg_rtt_ms!);
   const avgRtt = rtts.length ? (rtts.reduce((a, b) => a + b, 0) / rtts.length).toFixed(1) : null;
@@ -269,6 +304,9 @@ function RangeRow({
         active:       data.active,
         scan_enabled: data.scan_enabled,
         description:  data.description || null,
+        site_id:      data.site_id ?? null,
+        site_name:    null,
+        site_color:   null,
       });
       setEditing(false);
       // Upozornění při změně sítě
@@ -298,8 +336,16 @@ function RangeRow({
       >
         <span className="text-base">{icon}</span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <p className="font-medium">{range.label}</p>
+            {(range as any).site_name && (range as any).site_name !== "Default" && (
+              <span
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
+                style={{ backgroundColor: (range as any).site_color ?? "#6366f1" }}
+              >
+                {(range as any).site_name}
+              </span>
+            )}
             {!range.active && (
               <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                 neaktivní
@@ -432,7 +478,8 @@ function RangeRow({
             <div className="rounded-md border border-primary/30 bg-primary/5 p-4">
               <p className="mb-3 text-sm font-medium">Upravit rozsah</p>
               <RangeForm
-                defaultValues={{ label: range.label, network: range.network, active: range.active, scan_enabled: range.scan_enabled ?? true, description: range.description ?? "" }}
+                defaultValues={{ label: range.label, network: range.network, active: range.active, scan_enabled: range.scan_enabled ?? true, description: range.description ?? "", site_id: (range as any).site_id ?? null }}
+              sites={sites}
                 onSubmit={handleUpdate}
                 onCancel={() => setEditing(false)}
                 isPending={updateRange.isPending}
@@ -520,7 +567,7 @@ function RangeRow({
           )}
 
           {/* IP Mapa */}
-          <IpMap hosts={hostsInRange} />
+          <IpMap hosts={hostsInRange} ipAddrMap={ipAddrMap} />
         </div>
       )}
     </div>
@@ -533,6 +580,8 @@ function RangeRow({
 export default function RangesPage() {
   const { data: ranges = [], isLoading } = useRanges();
   const { data: hosts  = [] }            = useHosts();
+  const { data: sites  = [] }            = useSites();
+  const { data: ipAddresses = [] }       = useIpAddresses();
   const createRange = useCreateRange();
   const [showAdd, setShowAdd] = useState(false);
 
@@ -573,6 +622,7 @@ export default function RangesPage() {
               onSubmit={handleCreate}
               onCancel={() => setShowAdd(false)}
               isPending={createRange.isPending}
+              sites={sites}
             />
           </div>
         )}
@@ -597,7 +647,7 @@ export default function RangesPage() {
                 Aktivní rozsahy ({activeRanges.length})
               </p>
               {activeRanges.map((r) => (
-                <RangeRow key={r.id} range={r} hosts={hosts} />
+                <RangeRow key={r.id} range={r} hosts={hosts} ipAddresses={ipAddresses} sites={sites} />
               ))}
             </div>
           )}
@@ -607,7 +657,7 @@ export default function RangesPage() {
                 Neaktivní ({inactiveRanges.length})
               </p>
               {inactiveRanges.map((r) => (
-                <RangeRow key={r.id} range={r} hosts={hosts} />
+                <RangeRow key={r.id} range={r} hosts={hosts} ipAddresses={ipAddresses} sites={sites} />
               ))}
             </div>
           )}
