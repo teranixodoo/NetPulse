@@ -13,6 +13,7 @@ class DeviceBase(BaseModel):
     ip: Any
     hostname: Optional[str] = "unknown"
     device_type: Optional[str] = "unknown"
+    ownership:   Optional[str] = "isp"
     description: Optional[str] = ""
     alias: Optional[str] = None
     mac: Optional[str] = None

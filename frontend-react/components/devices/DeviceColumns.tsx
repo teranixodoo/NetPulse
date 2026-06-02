@@ -91,6 +91,24 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
       ),
     },
     {
+      accessorKey: "ownership",
+      header: "Uživatel",
+      size: 100,
+      cell: ({ row }) => {
+        const o = (row.original.ownership ?? "isp") as string;
+        return (
+          <span className={cn(
+            "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
+            o === "isp"     && "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300",
+            o === "client"  && "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+            o === "unknown" && "bg-muted text-muted-foreground",
+          )}>
+            {o === "isp" ? "ISP" : o === "client" ? "Klient" : "—"}
+          </span>
+        );
+      },
+    },
+    {
       accessorKey: "device_type",
       header: "Typ",
       size: 100,

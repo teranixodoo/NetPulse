@@ -329,17 +329,19 @@ async def add_device(pool, dev: DeviceCreate) -> dict:
 
         # 3. UPSERT do databáze
         row = await conn.fetchrow("""
-            INSERT INTO devices (device_uuid, ip, mac, hostname, device_type, description, alias)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO devices (device_uuid, ip, mac, hostname, device_type, description, alias, ownership)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (device_uuid) DO UPDATE 
             SET ip = EXCLUDED.ip,
                 mac = COALESCE(devices.mac, EXCLUDED.mac),
                 hostname = EXCLUDED.hostname,
                 device_type = EXCLUDED.device_type,
                 description = EXCLUDED.description,
-                alias = EXCLUDED.alias
+                alias = EXCLUDED.alias,
+                ownership = EXCLUDED.ownership
             RETURNING *
-        """, device_uuid, dev.ip, dev.mac, dev.hostname, dev.device_type, dev.description, dev.alias)
+        """, device_uuid, dev.ip, dev.mac, dev.hostname, dev.device_type, dev.description, dev.alias,
+             getattr(dev, "ownership", "isp") or "isp")
         
         return dict(row)
 
@@ -349,11 +351,22 @@ async def add_device(pool, dev: DeviceCreate) -> dict:
 
 async def get_credentials(pool: asyncpg.Pool) -> list[dict]:
     """Seznam všech profilů BEZ hesla."""
+    import json as _j
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, name, auth_type, username, port, extra_params FROM credentials ORDER BY name"
         )
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        ep = d.get("extra_params")
+        if isinstance(ep, str):
+            try: d["extra_params"] = _j.loads(ep)
+            except: d["extra_params"] = {}
+        elif ep is None:
+            d["extra_params"] = {}
+        result.append(d)
+    return result
 
 
 async def create_credential(
@@ -404,10 +417,11 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
             """
             SELECT
                 d.id, d.device_uuid, d.ip::text, d.hostname, d.mac::text,
-                d.device_type, d.description, d.alias,
+                d.device_type,
+                d.ownership, d.description, d.alias,
                 d.vendor, d.serial_number,
                 d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
-                d.created_at, d.updated_at,
+                d.created_at, d.updated_at, d.cron_poll,
                 COALESCE(
                     json_agg(
                         json_build_object(
@@ -431,6 +445,14 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
         d = dict(r)
         import json as _json
         d["credentials"] = _json.loads(d["credentials"]) if isinstance(d["credentials"], str) else d["credentials"]
+        # Deserializujeme extra_params v credentials
+        for cred in d["credentials"]:
+            ep = cred.get("extra_params")
+            if isinstance(ep, str):
+                try: cred["extra_params"] = _json.loads(ep)
+                except: cred["extra_params"] = {}
+            elif ep is None:
+                cred["extra_params"] = {}
         # Deserializujeme JSONB last_successful_auth — asyncpg může vrátit string nebo dict
         auth = d.get("last_successful_auth")
         if isinstance(auth, str):
@@ -474,6 +496,7 @@ async def update_device(pool: asyncpg.Pool, device_id: int, dev: "DeviceCreate")
             dev.alias,
             dev.vendor,
             dev.serial_number,
+            getattr(dev, "ownership", "isp") or "isp",
         )
         if not row:
             raise ValueError(f"Zařízení id={device_id} nenalezeno")
@@ -1031,3 +1054,608 @@ async def get_backup_stats(pool) -> dict:
             """
         )
     return dict(row) if row else {}
+
+
+# ===========================================================================
+# config_lists — uživatelsky definovatelné číselníky
+# ===========================================================================
+
+async def get_config_list(pool, category: str, active_only: bool = True) -> list[dict]:
+    """Vrátí položky daného číselníku."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, category, value, label, color, sort_order, active
+            FROM config_lists
+            WHERE category = $1
+              AND ($2 = FALSE OR active = TRUE)
+            ORDER BY sort_order, label
+            """,
+            category, active_only,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_all_config_lists(pool) -> dict[str, list[dict]]:
+    """Vrátí všechny číselníky seskupené podle kategorie."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, category, value, label, color, sort_order, active
+            FROM config_lists
+            ORDER BY category, sort_order, label
+            """
+        )
+    result: dict[str, list] = {}
+    for r in rows:
+        d = dict(r)
+        result.setdefault(d["category"], []).append(d)
+    return result
+
+
+async def create_config_item(
+    pool, category: str, value: str, label: str,
+    color: str | None = None, sort_order: int = 0
+) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO config_lists (category, value, label, color, sort_order)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, category, value, label, color, sort_order, active
+            """,
+            category, value, label, color, sort_order,
+        )
+    return dict(row)
+
+
+async def update_config_item(
+    pool, item_id: int, label: str, color: str | None,
+    sort_order: int, active: bool
+) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE config_lists
+            SET label=$2, color=$3, sort_order=$4, active=$5
+            WHERE id=$1
+            RETURNING id, category, value, label, color, sort_order, active
+            """,
+            item_id, label, color, sort_order, active,
+        )
+    return dict(row)
+
+
+async def delete_config_item(pool, item_id: int) -> bool:
+    """Smaže položku — pouze pokud se nepoužívá v zařízeních."""
+    async with pool.acquire() as conn:
+        # Zkontrolujeme jestli se hodnota používá
+        item = await conn.fetchrow(
+            "SELECT category, value FROM config_lists WHERE id=$1", item_id
+        )
+        if not item:
+            return False
+        if item["category"] == "device_type":
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM devices WHERE device_type=$1", item["value"]
+            )
+            if count > 0:
+                raise ValueError(f"Typ se používá u {count} zařízení, nelze smazat")
+        await conn.execute("DELETE FROM config_lists WHERE id=$1", item_id)
+    return True
+
+
+async def get_excluded_ips(pool) -> set[str]:
+    """Vrátí množinu IP adres vyloučených ze scanu."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT ip::text FROM scan_exclusions"
+        )
+    return {r["ip"] for r in rows}
+
+
+async def cleanup_zombie_jobs(pool) -> int:
+    """Označí jako zombie joby které se zasekly (heartbeat starší než 10 minut)."""
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE scan_jobs
+            SET status = 'zombie', updated_at = NOW()
+            WHERE status IN ('running', 'pending')
+              AND (
+                heartbeat_at IS NULL AND started_at < NOW() - INTERVAL '10 minutes'
+                OR
+                heartbeat_at < NOW() - INTERVAL '10 minutes'
+              )
+            """
+        )
+    return int(result.split()[-1]) if result else 0
+
+
+# ===========================================================================
+# DOPLNĚNÉ FUNKCE — ip_addresses, sites, presence, enriched, config
+# ===========================================================================
+
+async def bulk_upsert_ip_addresses(pool, results: list[dict]) -> None:
+    if not results: return
+    async with pool.acquire() as conn:
+        await conn.executemany("""
+            INSERT INTO ip_addresses (ip, is_alive, rtt_ms, last_check, last_seen, alive_source, updated_at)
+            VALUES ($1::inet, $2, $3, NOW(), CASE WHEN $2 IS TRUE THEN NOW() ELSE NULL END,
+                    CASE WHEN $2 IS TRUE THEN 'ping' ELSE NULL END, NOW())
+            ON CONFLICT (ip) DO UPDATE SET
+                is_alive=EXCLUDED.is_alive, rtt_ms=EXCLUDED.rtt_ms, last_check=NOW(),
+                last_seen=CASE WHEN EXCLUDED.is_alive THEN NOW() ELSE ip_addresses.last_seen END,
+                alive_source=CASE WHEN EXCLUDED.is_alive IS TRUE THEN 'ping' ELSE NULL END,
+                updated_at=NOW()
+        """, [(r["ip"], r["is_alive"], r.get("rtt_ms")) for r in results])
+
+
+async def bulk_log_ip_presence(pool, entries: list[dict]) -> int:
+    if not entries: return 0
+    async with pool.acquire() as conn:
+        await conn.executemany("""
+            INSERT INTO ip_presence_log (ip, source, seen_at, expires_at)
+            VALUES ($1::inet, $2, NOW(), $3) ON CONFLICT DO NOTHING
+        """, [(e["ip"], e["source"], e.get("expires_at")) for e in entries])
+    return len(entries)
+
+
+async def refresh_alive_from_presence(pool) -> int:
+    async with pool.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE ip_addresses ia SET is_alive=TRUE, alive_source=pl.best_source, updated_at=NOW()
+            FROM (SELECT DISTINCT ON (ip) ip, source AS best_source FROM ip_presence_log
+                  WHERE (source='dhcp' AND seen_at > NOW()-INTERVAL '20 minutes')
+                     OR (source='arp'  AND seen_at > NOW()-INTERVAL '12 minutes')
+                  ORDER BY ip, CASE source WHEN 'dhcp' THEN 1 WHEN 'arp' THEN 2 ELSE 3 END) pl
+            WHERE ia.ip=pl.ip AND (ia.is_alive=FALSE OR ia.is_alive IS NULL)
+        """)
+    return int(result.split()[-1]) if result else 0
+
+
+async def refresh_ip_stats_24h(pool) -> None:
+    pass
+
+
+async def refresh_ip_range_map(pool) -> int:
+    return await sync_ip_range_assignments(pool)
+
+
+async def sync_ip_range_assignments(pool, ips=None, network=None) -> int:
+    filters = []
+    params: list = []
+    n = 1
+    if ips:
+        filters.append(f"ia.ip = ANY(${n}::inet[])"); params.append(ips); n += 1
+    if network:
+        filters.append(f"ia.ip << ${n}::cidr"); params.append(network); n += 1
+    ia_where = (" AND " + " AND ".join(filters)) if filters else ""
+    async with pool.acquire() as conn:
+        result = await conn.execute(f"""
+            WITH best_range AS (
+                SELECT DISTINCT ON (ia.ip) ia.ip, ir.id AS range_id
+                FROM ip_addresses ia JOIN ip_ranges ir ON ia.ip<<ir.network AND ir.active
+                WHERE 1=1{ia_where}
+                ORDER BY ia.ip, masklen(ir.network::cidr) DESC
+            )
+            UPDATE ip_addresses ia SET range_id=br.range_id, updated_at=NOW()
+            FROM best_range br
+            WHERE ia.ip=br.ip AND ia.range_id IS DISTINCT FROM br.range_id
+        """, *params)
+    return int(result.split()[-1]) if result else 0
+
+
+async def sync_ip_addresses_after_ping(pool, results: list) -> None:
+    if not results: return
+    rows = [(str(r.ip), r.is_alive, r.rtt_ms, r.scanned_at) for r in results]
+    async with pool.acquire() as conn:
+        await conn.executemany("""
+            INSERT INTO ip_addresses (ip, is_alive, rtt_ms, last_check, last_seen, alive_source, updated_at)
+            VALUES ($1::inet, $2, $3, $4, $4,
+                    CASE WHEN $2 IS TRUE THEN 'ping' ELSE NULL END, NOW())
+            ON CONFLICT (ip) DO UPDATE SET
+                is_alive=EXCLUDED.is_alive, rtt_ms=EXCLUDED.rtt_ms,
+                last_check=EXCLUDED.last_check, last_seen=EXCLUDED.last_seen,
+                alive_source=CASE WHEN EXCLUDED.is_alive IS TRUE THEN 'ping' ELSE NULL END,
+                updated_at=NOW()
+        """, rows)
+    await sync_ip_range_assignments(pool, ips=[str(r.ip) for r in results])
+
+
+async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=5000) -> list[dict]:
+    conds = ["1=1"]
+    params: list = []
+    n = 1
+    if alive_only: conds.append("ia.is_alive IS TRUE")
+    if range_id is not None:
+        conds.append(f"ia.range_id=${n}"); params.append(range_id); n += 1
+    params.append(limit)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT host(ia.ip)||'/32' AS ip, ia.is_alive, ia.alive_source, ia.rtt_ms,
+                   ia.range_id, ia.device_id, ia.updated_at,
+                   r.label AS range_label, s.id AS site_id, s.name AS site_name, s.color AS site_color,
+                   d.hostname AS device_hostname, d.alias AS device_alias
+            FROM ip_addresses ia
+            LEFT JOIN ip_ranges r ON r.id=ia.range_id
+            LEFT JOIN sites s ON s.id=r.site_id
+            LEFT JOIN devices d ON d.id=ia.device_id
+            WHERE {' AND '.join(conds)}
+            ORDER BY ia.ip LIMIT ${n}
+        """, *params)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("updated_at"): d["updated_at"] = d["updated_at"].isoformat()
+        result.append(d)
+    return result
+
+
+async def refresh_ip_addresses(pool) -> None:
+    await sync_ip_range_assignments(pool)
+    await refresh_alive_from_presence(pool)
+
+
+async def get_ip_presence(pool, ip: str, hours: int = 24) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT ip::text, source, seen_at, expires_at FROM ip_presence_log
+            WHERE ip=$1::inet AND seen_at > NOW()-make_interval(hours=>$2)
+            ORDER BY seen_at DESC LIMIT 500
+        """, ip, hours)
+    return [dict(r) | {"seen_at": r["seen_at"].isoformat(),
+            "expires_at": r["expires_at"].isoformat() if r.get("expires_at") else None} for r in rows]
+
+
+async def get_ip_device_map(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT ia.ip::text, ia.device_id, d.hostname, d.alias, d.vendor, d.model
+            FROM ip_addresses ia JOIN devices d ON d.id=ia.device_id WHERE ia.device_id IS NOT NULL
+        """)
+    return [dict(r) for r in rows]
+
+
+async def get_ip_owner(pool, ip: str) -> dict | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT ia.device_id, d.hostname, d.alias FROM ip_addresses ia
+            JOIN devices d ON d.id=ia.device_id WHERE ia.ip=$1::inet
+        """, ip)
+    return dict(row) if row else None
+
+
+async def get_ip_changes_stats(pool, device_id: int | None = None, hours: int = 24) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT COUNT(*) FILTER (WHERE is_alive=TRUE) AS came_online,
+                   COUNT(*) FILTER (WHERE is_alive=FALSE) AS went_offline
+            FROM ip_addresses WHERE updated_at > NOW()-make_interval(hours=>$1)
+        """, hours)
+    return dict(row) if row else {"came_online": 0, "went_offline": 0}
+
+
+async def add_scan_exclusion(pool, ip: str, reason: str | None = None,
+                             added_by: str | None = None) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO scan_exclusions (ip, reason) VALUES ($1::inet, $2)
+            ON CONFLICT (ip) DO UPDATE SET reason=$2 RETURNING *
+        """, ip, reason)
+    return dict(row)
+
+
+async def remove_scan_exclusion(pool, exclusion_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM scan_exclusions WHERE id=$1", exclusion_id)
+
+
+async def mark_startup_zombies(pool) -> int:
+    async with pool.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE scan_jobs SET status='zombie', updated_at=NOW()
+            WHERE status IN ('running','pending') AND started_at < NOW()-INTERVAL '1 hour'
+        """)
+    return int(result.split()[-1]) if result else 0
+
+
+async def scan_job_heartbeat(pool, job_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE scan_jobs SET heartbeat_at=NOW() WHERE id=$1", job_id)
+
+
+async def update_device_poll_result(pool, device_id: int, result) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE devices SET
+                hostname=COALESCE($2,hostname), firmware=COALESCE($3,firmware),
+                model=COALESCE($4,model), last_polled_at=NOW(), last_poll_method=$5
+            WHERE id=$1
+        """, device_id, getattr(result,"hostname",None), getattr(result,"firmware",None),
+            getattr(result,"model",None), getattr(result,"method",None))
+
+
+async def get_device_ips(pool, device_id: int) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, device_id, ip::text, mac, interface, source,
+                   is_primary, first_seen, last_seen, change_count
+            FROM device_ips WHERE device_id=$1 ORDER BY last_seen DESC
+        """, device_id)
+    return [dict(r) | {
+        "last_seen":  r["last_seen"].isoformat()  if r.get("last_seen")  else None,
+        "first_seen": r["first_seen"].isoformat() if r.get("first_seen") else None,
+    } for r in rows]
+
+
+async def update_device_ips(pool, device_id: int, ips: list[dict], src_pfx: str = "arp") -> dict:
+    """Uloží device_ips a vrátí statistiky změn."""
+    if not ips:
+        return {"inserted": 0, "changes": False}
+    async with pool.acquire() as conn:
+        await conn.executemany("""
+            INSERT INTO device_ips (device_id, ip, mac, interface, source, last_seen)
+            VALUES ($1, $2::inet, $3, $4, $5, NOW())
+            ON CONFLICT (device_id, ip, source) DO UPDATE SET
+                mac=COALESCE(EXCLUDED.mac, device_ips.mac),
+                interface=EXCLUDED.interface,
+                last_seen=NOW(),
+                change_count=device_ips.change_count+1
+        """, [(device_id, e["ip"], e.get("mac"), e.get("interface"),
+               e.get("source", src_pfx)) for e in ips])
+    return {"inserted": len(ips), "changes": len(ips) > 0}
+
+
+async def get_device_ip_history(pool, device_id: int, limit: int = 100) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, device_id, ip::text, mac, interface, source, event,
+                   old_value, new_value, changed_at
+            FROM device_ip_history WHERE device_id=$1 ORDER BY changed_at DESC LIMIT $2
+        """, device_id, limit)
+    return [
+        dict(r) | {
+            "seen_at":    r["changed_at"].isoformat() if r.get("changed_at") else None,
+            "changed_at": r["changed_at"].isoformat() if r.get("changed_at") else None,
+        } for r in rows
+    ]
+
+
+async def get_device_data(pool, device_id: int, data_type: str) -> dict | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT * FROM device_data WHERE device_id=$1 AND data_type=$2
+            ORDER BY collected_at DESC LIMIT 1
+        """, device_id, data_type)
+    if not row: return None
+    d = dict(row)
+    if d.get("collected_at"): d["collected_at"] = d["collected_at"].isoformat()
+    return d
+
+
+async def get_all_device_data(pool, device_id: int) -> dict:
+    """Vrátí data zařízení jako dict {data_type: {data, collected_at, source}}."""
+    import json as _j
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT ON (data_type) data_type, data, collected_at, source
+            FROM device_data
+            WHERE device_id=$1 ORDER BY data_type, collected_at DESC
+        """, device_id)
+    result = {}
+    for r in rows:
+        data = r["data"]
+        if isinstance(data, str):
+            try: data = _j.loads(data)
+            except: pass
+        result[r["data_type"]] = {
+            "data": data,
+            "collected_at": r["collected_at"].isoformat() if r.get("collected_at") else None,
+            "source": r.get("source"),
+        }
+    return result
+
+
+async def save_device_data(pool, device_id: int, data_type: str, data: dict,
+                           source: str | None = None) -> None:
+    import json
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO device_data (device_id, data_type, data, collected_at)
+            VALUES ($1, $2, $3, NOW())
+        """, device_id, data_type, json.dumps(data))
+
+
+async def sync_ip_addresses_from_device_ips(pool, device_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE ip_addresses SET device_id=$1
+            WHERE ip IN (SELECT ip FROM device_ips WHERE device_id=$1)
+              AND (device_id IS NULL OR device_id=$1)
+        """, device_id)
+
+
+async def backfill_ip_range_assignments(pool) -> int:
+    return await sync_ip_range_assignments(pool)
+
+
+def _enriched_where(site_id, range_id, status, device, search):
+    conds = ["1=1"]
+    params: list = []
+    n = 1
+    if site_id is not None:
+        conds.append(f"r.site_id=${n}"); params.append(site_id); n += 1
+    if range_id is not None:
+        conds.append(f"ia.range_id=${n}"); params.append(range_id); n += 1
+    if status == "online": conds.append("ia.is_alive IS TRUE")
+    elif status == "offline": conds.append("ia.is_alive IS NOT TRUE")
+    if device == "assigned": conds.append("ia.device_id IS NOT NULL")
+    elif device == "free": conds.append("ia.device_id IS NULL")
+    if search:
+        conds.append(f"(host(ia.ip) ILIKE ${n} OR d.hostname ILIKE ${n} OR d.alias ILIKE ${n})")
+        params.append(f"%{search}%"); n += 1
+    return " AND ".join(conds), params, n
+
+
+async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
+                              device=None, search=None, limit=2000, offset=0) -> dict:
+    where, params, n = _enriched_where(site_id, range_id, status, device, search)
+    async with pool.acquire() as conn:
+        stats_row = await conn.fetchrow(f"""
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE ia.is_alive=TRUE) AS alive,
+                   COUNT(*) FILTER (WHERE ia.device_id IS NOT NULL) AS assigned,
+                   ROUND(AVG(h.avg_rtt_ms)::numeric,1) AS avg_rtt,
+                   ROUND(AVG(h.uptime_pct)::numeric,1) AS avg_uptime
+            FROM ip_addresses ia
+            LEFT JOIN ip_ranges r ON r.id=ia.range_id
+            LEFT JOIN sites s ON s.id=r.site_id
+            LEFT JOIN devices d ON d.id=ia.device_id
+            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
+            WHERE {where}
+        """, *params)
+        rows = await conn.fetch(f"""
+            SELECT host(ia.ip)||'/32' AS ip, ia.is_alive AS currently_alive, ia.alive_source,
+                   ia.range_id, r.label AS range_label, r.site_id,
+                   s.name AS site_name, s.color AS site_color,
+                   ia.device_id, d.hostname AS device_hostname, d.alias AS device_alias,
+                   d.vendor AS device_vendor, d.device_type,
+                   h.avg_rtt_ms, h.min_rtt_ms, h.max_rtt_ms, h.avg_loss_pct,
+                   h.checks AS measurements, h.uptime_pct, h.last_check
+            FROM ip_addresses ia
+            LEFT JOIN ip_ranges r ON r.id=ia.range_id
+            LEFT JOIN sites s ON s.id=r.site_id
+            LEFT JOIN devices d ON d.id=ia.device_id
+            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
+            WHERE {where}
+            ORDER BY ia.is_alive DESC NULLS LAST, host(ia.ip)::inet
+            LIMIT ${n} OFFSET ${n+1}
+        """, *params, limit, offset)
+    return {
+        "stats": {
+            "total": stats_row["total"], "alive": stats_row["alive"],
+            "offline": stats_row["total"]-stats_row["alive"],
+            "assigned": stats_row["assigned"],
+            "avg_rtt": float(stats_row["avg_rtt"]) if stats_row["avg_rtt"] else None,
+            "avg_uptime": float(stats_row["avg_uptime"]) if stats_row["avg_uptime"] else None,
+        },
+        "rows": [dict(r) | {"last_check": r["last_check"].isoformat() if r.get("last_check") else None}
+                 for r in rows],
+    }
+
+
+async def get_unknown_networks(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            WITH unknown_ips AS (
+                SELECT DISTINCT pl.ip FROM ip_presence_log pl
+                WHERE (pl.ip<<'10.0.0.0/8'::inet OR pl.ip<<'172.16.0.0/12'::inet OR pl.ip<<'192.168.0.0/16'::inet)
+                  AND NOT EXISTS (SELECT 1 FROM ip_ranges r WHERE r.active=TRUE AND pl.ip<<r.network)
+            ),
+            grouped AS (
+                SELECT network(set_masklen(ui.ip,24)) AS subnet,
+                       COUNT(DISTINCT ui.ip) AS ip_count,
+                       array_agg(DISTINCT pl.source) AS sources,
+                       MAX(pl.seen_at) AS last_seen
+                FROM unknown_ips ui JOIN ip_presence_log pl ON pl.ip=ui.ip
+                GROUP BY network(set_masklen(ui.ip,24))
+            )
+            SELECT subnet::text, ip_count, sources, last_seen FROM grouped ORDER BY ip_count DESC, subnet
+        """)
+    return [dict(r) | {"last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
+                       "sources": list(r["sources"])} for r in rows]
+
+
+async def get_unknown_network_ips(pool, subnet: str) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT pl.ip::text AS ip, MAX(pl.seen_at) AS last_seen,
+                   array_agg(DISTINCT pl.source) AS sources,
+                   (SELECT di.mac FROM device_ips di
+                    WHERE split_part(di.ip::text,'/',1)=host(pl.ip) AND di.mac IS NOT NULL
+                    ORDER BY di.last_seen DESC LIMIT 1) AS mac
+            FROM ip_presence_log pl
+            WHERE pl.ip<<$1::inet
+              AND NOT EXISTS (SELECT 1 FROM ip_ranges r WHERE r.active=TRUE AND pl.ip<<r.network)
+            GROUP BY pl.ip ORDER BY pl.ip
+        """, subnet)
+    return [dict(r) | {"last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
+                       "sources": list(r["sources"])} for r in rows]
+
+
+async def get_sites(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT s.id, s.name, s.description, s.color, s.active, s.created_at,
+                   COUNT(r.id) AS range_count
+            FROM sites s LEFT JOIN ip_ranges r ON r.site_id=s.id
+            GROUP BY s.id ORDER BY s.id
+        """)
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["range_count"] = int(d.get("range_count") or 0)
+        if d.get("created_at"): d["created_at"] = d["created_at"].isoformat()
+        result.append(d)
+    return result
+
+
+async def create_site(pool, name: str, description, color: str) -> dict:
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT setval('sites_id_seq', GREATEST((SELECT MAX(id) FROM sites),1))")
+        row = await conn.fetchrow("""
+            INSERT INTO sites (name, description, color) VALUES ($1,$2,$3)
+            RETURNING id, name, description, color, active, created_at
+        """, name, description, color)
+        rc = await conn.fetchval("SELECT COUNT(*) FROM ip_ranges WHERE site_id=$1", row["id"])
+    d = dict(row)
+    d["range_count"] = int(rc or 0)
+    if d.get("created_at"): d["created_at"] = d["created_at"].isoformat()
+    return d
+
+
+async def update_site(pool, site_id: int, name: str, description, color: str, active: bool) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE sites SET name=$2, description=$3, color=$4, active=$5 WHERE id=$1
+            RETURNING id, name, description, color, active, created_at
+        """, site_id, name, description, color, active)
+    d = dict(row)
+    if d.get("created_at"): d["created_at"] = d["created_at"].isoformat()
+    d["range_count"] = 0
+    return d
+
+
+async def delete_site(pool, site_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE ip_ranges SET site_id=NULL WHERE site_id=$1", site_id)
+        await conn.execute("DELETE FROM sites WHERE id=$1 AND id!=1", site_id)
+
+
+async def get_ip_ranges_with_site(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT r.id, r.label, r.network::text, r.active, r.scan_enabled,
+                   r.description, r.site_id, s.name AS site_name, s.color AS site_color
+            FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.id
+        """)
+    return [dict(r) for r in rows]
+
+
+async def delete_config_item(pool, item_id) -> bool:
+    async with pool.acquire() as conn:
+        item = await conn.fetchrow("SELECT category, value FROM config_lists WHERE id=$1", item_id)
+        if not item: return False
+        if item["category"] == "device_type":
+            count = await conn.fetchval("SELECT COUNT(*) FROM devices WHERE device_type=$1", item["value"])
+            if count > 0:
+                raise ValueError(f"Typ se používá u {count} zařízení")
+        await conn.execute("DELETE FROM config_lists WHERE id=$1", item_id)
+    return True
+
+
+async def get_scan_exclusions(pool) -> list[dict]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM scan_exclusions ORDER BY created_at DESC")
+    return [dict(r) for r in rows]

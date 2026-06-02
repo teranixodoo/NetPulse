@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -581,6 +581,64 @@ export function useHostsEnriched(params: {
     staleTime: 30_000,
     refetchInterval: 60_000,
     placeholderData: (prev: any) => prev,
+  });
+}
+
+export function useConfigList(category: string, activeOnly = true) {
+  return useQuery<import("@/lib/types").ConfigItem[]>({
+    queryKey: ['config-list', category, activeOnly],
+    queryFn:  () => configListsApi.getList(category, activeOnly),
+    staleTime: 300_000,
+  });
+}
+
+export function useAllConfigLists() {
+  return useQuery<Record<string, import("@/lib/types").ConfigItem[]>>({
+    queryKey: ['config-lists-all'],
+    queryFn:  () => configListsApi.getAll(),
+    staleTime: 300_000,
+  });
+}
+
+export function useCreateConfigItem() {
+  const qc = useQueryClient();
+  return useMutation<
+    import("@/lib/types").ConfigItem,
+    Error,
+    { category: string; value: string; label: string; color?: string; sort_order?: number }
+  >({
+    mutationFn: (data) => configListsApi.create(data),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
+      qc.invalidateQueries({ queryKey: ['config-lists-all'] });
+    },
+  });
+}
+
+export function useUpdateConfigItem() {
+  const qc = useQueryClient();
+  return useMutation<
+    import("@/lib/types").ConfigItem,
+    Error,
+    { id: number; category: string; label: string; color?: string; sort_order?: number; active?: boolean }
+  >({
+    mutationFn: ({ id, label, color, sort_order, active }) =>
+      configListsApi.update(id, { label, color, sort_order, active }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
+      qc.invalidateQueries({ queryKey: ['config-lists-all'] });
+    },
+  });
+}
+
+export function useDeleteConfigItem() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, { id: number; category: string }>({
+    mutationFn: ({ id }) => configListsApi.remove(id),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
+      qc.invalidateQueries({ queryKey: ['config-lists-all'] });
+    },
   });
 }
 

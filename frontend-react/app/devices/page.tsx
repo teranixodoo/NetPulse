@@ -22,6 +22,7 @@ export default function DevicesPage() {
   const [typeFilter,     setTypeFilter]     = useState("");
   const [statusFilter,   setStatusFilter]   = useState("");
   const [vendorFilter,   setVendorFilter]   = useState("");
+  const [ownershipFilter, setOwnershipFilter] = useState("");
   const [activeTabs, setActiveTabs] = useState<Record<number, string>>({});
   const [expandedRowId,  setExpandedRowId]  = useState<number | null>(null);
 
@@ -45,12 +46,13 @@ export default function DevicesPage() {
     return rows.filter((r) => {
       if (typeFilter   && r.device_type !== typeFilter) return false;
       if (vendorFilter && r.vendor !== vendorFilter)    return false;
+      if (ownershipFilter && (r.ownership ?? "isp") !== ownershipFilter) return false;
       if (statusFilter === "online"  && r.hostInfo?.currently_alive !== true)  return false;
       if (statusFilter === "offline" && r.hostInfo?.currently_alive !== false) return false;
       if (statusFilter === "unknown" && r.hostInfo?.currently_alive != null)   return false;
       return true;
     });
-  }, [rows, typeFilter, vendorFilter, statusFilter]);
+  }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter]);
 
   // Unikátní výrobci pro filtr
   const vendors = useMemo(
@@ -166,6 +168,16 @@ export default function DevicesPage() {
         <option value="">Vše — typ</option>
         {DEVICE_TYPES.map((t) => <option key={t}>{t}</option>)}
       </Select>
+      <Select
+        value={ownershipFilter}
+        onChange={(e) => setOwnershipFilter(e.target.value)}
+        className="w-36"
+      >
+        <option value="">Vše — uživatel</option>
+        <option value="isp">ISP</option>
+        <option value="client">Klientské</option>
+        <option value="unknown">Neznámé</option>
+      </Select>
       {vendors.length > 0 && (
         <Select
           value={vendorFilter}
@@ -186,7 +198,7 @@ export default function DevicesPage() {
         Export CSV
       </Button>
     </div>
-  ), [globalFilter, statusFilter, typeFilter, vendorFilter, vendors, filteredRows]);
+  ), [globalFilter, statusFilter, typeFilter, vendorFilter, ownershipFilter, vendors, filteredRows]);
 
   return (
     <div className="space-y-4">

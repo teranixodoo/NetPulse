@@ -1,5 +1,6 @@
 "use client";
 
+import { useConfigList } from "@/hooks/useNetPulse";
 import { useState, useMemo } from "react";
 import { Plus, ChevronDown, Loader2 } from "lucide-react";
 import { useCreateDevice, getErrorMessage } from "@/hooks/useNetPulse";
@@ -7,7 +8,6 @@ import type { HostStats, Device } from "@/lib/types";
 import { Button, FormField, Input } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","Jiné"];
 
 interface AddDeviceFormProps {
   hosts:   HostStats[];
@@ -24,7 +24,9 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   const [ip,           setIp]           = useState("");
   const [hostname,     setHostname]     = useState("");
   const [alias,        setAlias]        = useState("");
-  const [deviceType,   setDeviceType]   = useState("Jiné");
+  const { data: deviceTypes = [] } = useConfigList("device_type");
+  const [deviceType,   setDeviceType]   = useState("other");
+  const [ownership,    setOwnership]    = useState<"isp"|"client"|"unknown">("isp");
   const [vendor,       setVendor]       = useState("");
   const [mac,          setMac]          = useState("");
   const [serialNumber, setSerialNumber] = useState("");
@@ -54,7 +56,7 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   }, [hosts, assignedIps, statusFilter, ipSearch]);
 
   function reset() {
-    setIp(""); setHostname(""); setAlias(""); setDeviceType("Jiné");
+    setIp(""); setHostname(""); setAlias(""); setDeviceType("other"); setOwnership("isp"); setOwnership("isp");
     setVendor(""); setMac(""); setSerialNumber(""); setError(null);
     setIpSearch(""); setStatusFilter("all");
   }
@@ -70,6 +72,7 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
         ip,
         hostname:      hostname.trim(),
         device_type:   deviceType,
+        ownership:     ownership,
         alias:         alias.trim()        || undefined,
         vendor:        vendor.trim()       || undefined,
         mac:           mac.trim()          || undefined,
@@ -186,7 +189,15 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
                   className="h-9 w-full rounded-md border border-border bg-background
                              px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
-                  {DEVICE_TYPES.map((t) => <option key={t}>{t}</option>)}
+                  {deviceTypes.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </FormField>
+              <FormField label="Uživatel">
+                <select value={ownership} onChange={(e) => setOwnership(e.target.value as "isp"|"client"|"unknown")}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <option value="isp">ISP</option>
+                  <option value="client">Klientské</option>
+                  <option value="unknown">Neznámé</option>
                 </select>
               </FormField>
               <FormField label="Výrobce">

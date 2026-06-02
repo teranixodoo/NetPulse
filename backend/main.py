@@ -1608,3 +1608,71 @@ async def get_hosts_enriched(
         limit=limit,
         offset=offset,
     )
+
+
+# ===========================================================================
+# KONFIGURACE — číselníky
+# ===========================================================================
+
+@app.get("/config/lists", tags=["Config"])
+async def get_all_config_lists(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Vrátí všechny číselníky seskupené podle kategorie."""
+    return await db.get_all_config_lists(pool)
+
+
+@app.get("/config/lists/{category}", tags=["Config"])
+async def get_config_list(
+    category:    str,
+    active_only: bool = Query(True),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.get_config_list(pool, category, active_only)
+
+
+@app.post("/config/lists", tags=["Config"])
+async def create_config_item(
+    data: dict,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    return await db.create_config_item(
+        pool,
+        category   = data["category"],
+        value      = data["value"],
+        label      = data["label"],
+        color      = data.get("color"),
+        sort_order = data.get("sort_order", 0),
+    )
+
+
+@app.put("/config/lists/{item_id}", tags=["Config"])
+async def update_config_item(
+    item_id: int,
+    data:    dict,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    return await db.update_config_item(
+        pool, item_id,
+        label      = data["label"],
+        color      = data.get("color"),
+        sort_order = data.get("sort_order", 0),
+        active     = data.get("active", True),
+    )
+
+
+@app.delete("/config/lists/{item_id}", tags=["Config"])
+async def delete_config_item(
+    item_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    try:
+        await db.delete_config_item(pool, item_id)
+        return {"status": "ok"}
+    except ValueError as e:
+        raise HTTPException(400, str(e))

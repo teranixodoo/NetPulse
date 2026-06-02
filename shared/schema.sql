@@ -371,7 +371,7 @@ CREATE INDEX IF NOT EXISTS idx_device_ip_history_changed_at ON device_ip_history
 
 -- Migrace: change_count
 ALTER TABLE device_ips ADD COLUMN IF NOT EXISTS change_count INTEGER NOT NULL DEFAULT 0;
-
+ALTER TABLE device_ips ADD COLUMN IF NOT EXISTS arp_status TEXT;
 -- Index pro ping_results
 CREATE INDEX IF NOT EXISTS idx_ping_results_scanned_at
   ON ping_results (scanned_at DESC);
@@ -458,3 +458,46 @@ ALTER TABLE ip_ranges
     ADD COLUMN IF NOT EXISTS site_id INTEGER REFERENCES sites(id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ip_ranges_site ON ip_ranges (site_id);
+
+-- ===========================================================================
+-- config_lists — uživatelsky definovatelné číselníky
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS config_lists (
+    id         SERIAL PRIMARY KEY,
+    category   TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    color      TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    UNIQUE (category, value)
+);
+
+-- Výchozí typy zařízení
+INSERT INTO config_lists (category, value, label, sort_order) VALUES
+  ('device_type', 'router',   'Router',    1),
+  ('device_type', 'switch',   'Switch',    2),
+  ('device_type', 'ap',       'AP',        3),
+  ('device_type', 'server',   'Server',    4),
+  ('device_type', 'camera',   'IP Kamera', 5),
+  ('device_type', 'pc',       'Počítač',   6),
+  ('device_type', 'other',    'Jiné',      99)
+ON CONFLICT (category, value) DO NOTHING;
+
+-- Výchozí typy lokací (pro budoucí použití)
+INSERT INTO config_lists (category, value, label, sort_order) VALUES
+  ('location_type', 'region',    'Kraj/Oblast',      1),
+  ('location_type', 'city',      'Město',            2),
+  ('location_type', 'building',  'Budova',           3),
+  ('location_type', 'floor',     'Podlaží',          4),
+  ('location_type', 'apartment', 'Byt',              5),
+  ('location_type', 'office',    'Kancelář',         6),
+  ('location_type', 'rack',      'Rack',             7),
+  ('location_type', 'outdoor',   'Venkovní umístění',8),
+  ('location_type', 'other',     'Ostatní',          99)
+ON CONFLICT (category, value) DO NOTHING;
+
+-- Vlastnictví zařízení: ISP vs klientské
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS ownership TEXT NOT NULL DEFAULT 'isp'
+    CHECK (ownership IN ('isp', 'client', 'unknown'));
+CREATE INDEX IF NOT EXISTS idx_devices_ownership ON devices (ownership);

@@ -144,7 +144,8 @@ export interface Device {
   last_successful_credential_id: number | null;
   last_successful_auth: Record<string, unknown> | null;
   is_alive: boolean | null;
-  cron_poll: boolean;
+  cron_poll:  boolean;
+  ownership:  "isp" | "client" | "unknown";
 }
 
 export interface DeviceCreate {
@@ -156,6 +157,7 @@ export interface DeviceCreate {
   mac?: string;
   vendor?: string;
   serial_number?: string;
+  ownership?: "isp" | "client" | "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -471,4 +473,14 @@ export interface Site {
   active:      boolean;
   created_at:  string;
   range_count: number;
+}
+
+export interface ConfigItem {
+  id:         number;
+  category:   string;
+  value:      string;
+  label:      string;
+  color:      string | null;
+  sort_order: number;
+  active:     boolean;
 }

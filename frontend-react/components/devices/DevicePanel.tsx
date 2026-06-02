@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useConfigList } from "@/hooks/useNetPulse";
 import {
   Loader2, Save, Trash2, Search, RefreshCw,
   Link, Unlink, ChevronDown, Download, HardDrive, AlertCircle, CheckCircle2,
@@ -22,7 +23,6 @@ import { formatDateTime, cn } from "@/lib/utils";
 // Schéma formuláře
 // ---------------------------------------------------------------------------
 
-const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","Jiné"];
 
 // ---------------------------------------------------------------------------
 // Tab navigace
@@ -82,7 +82,11 @@ function BasicInfoTab({
 
   const [hostname,     setHostname]     = useState(device.hostname);
   const [alias,        setAlias]        = useState(device.alias ?? "");
+  const { data: deviceTypes = [] }      = useConfigList("device_type");
   const [deviceType,   setDeviceType]   = useState(device.device_type);
+  const [ownership,    setOwnership]    = useState<"isp"|"client"|"unknown">(
+    (device.ownership as "isp"|"client"|"unknown") ?? "isp"
+  );
   const [vendor,       setVendor]       = useState(device.vendor ?? "");
   const [serialNumber, setSerialNumber] = useState(device.serial_number ?? "");
   const [mac,          setMac]          = useState(device.mac ?? "");
@@ -100,6 +104,7 @@ function BasicInfoTab({
         hostname:      hostname.trim(),
         alias:         alias.trim()        || undefined,
         device_type:   deviceType,
+        ownership:     ownership,
         vendor:        vendor.trim()       || undefined,
         serial_number: serialNumber.trim() || undefined,
         mac:           mac.trim()          || undefined,
@@ -135,9 +140,21 @@ function BasicInfoTab({
             className="h-9 w-full rounded-md border border-border bg-background
                        px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
           >
-            {DEVICE_TYPES.map((t) => (
-              <option key={t} value={t}>{t}</option>
+            {deviceTypes.map((t: import("@/lib/types").ConfigItem) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
             ))}
+          </select>
+        </FormField>
+        <FormField label="Uživatel">
+          <select
+            value={ownership}
+            onChange={(e) => setOwnership(e.target.value as "isp"|"client"|"unknown")}
+            className="h-9 w-full rounded-md border border-input bg-background
+                       px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+          >
+            <option value="isp">ISP</option>
+            <option value="client">Klientské</option>
+            <option value="unknown">Neznámé</option>
           </select>
         </FormField>
         <FormField label="Výrobce / platforma">
