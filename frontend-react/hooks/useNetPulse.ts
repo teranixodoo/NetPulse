@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -639,6 +639,39 @@ export function useDeleteConfigItem() {
       qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
       qc.invalidateQueries({ queryKey: ['config-lists-all'] });
     },
+  });
+}
+
+export function useLocations(activeOnly = false) {
+  return useQuery<import("@/lib/types").Location[]>({
+    queryKey: ['locations', activeOnly],
+    queryFn:  () => locationsApi.getAll(activeOnly),
+    staleTime: 60_000,
+  });
+}
+
+export function useCreateLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<import("@/lib/types").Location>) => locationsApi.create(data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['locations'] }),
+  });
+}
+
+export function useUpdateLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: Partial<import("@/lib/types").Location> & { id: number }) =>
+      locationsApi.update(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['locations'] }),
+  });
+}
+
+export function useDeleteLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => locationsApi.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['locations'] }),
   });
 }
 

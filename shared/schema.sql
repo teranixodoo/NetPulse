@@ -501,3 +501,37 @@ ON CONFLICT (category, value) DO NOTHING;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ownership TEXT NOT NULL DEFAULT 'isp'
     CHECK (ownership IN ('isp', 'client', 'unknown'));
 CREATE INDEX IF NOT EXISTS idx_devices_ownership ON devices (ownership);
+
+-- ===========================================================================
+-- locations — fyzická umístění zařízení
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS locations (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT 'other',  -- z config_lists category='location_type'
+    parent_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+
+    -- Adresa
+    street      TEXT,
+    city        TEXT,
+    zip         TEXT,
+    country     TEXT DEFAULT 'CZ',
+    ruian_id    INTEGER,
+
+    -- GPS
+    lat         DOUBLE PRECISION,
+    lng         DOUBLE PRECISION,
+
+    -- Meta
+    description TEXT,
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_locations_parent ON locations (parent_id);
+CREATE INDEX IF NOT EXISTS idx_locations_type   ON locations (type);
+
+-- Vazba zařízení na lokaci
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS location_id INTEGER
+    REFERENCES locations(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_devices_location ON devices (location_id);

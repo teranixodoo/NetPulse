@@ -1676,3 +1676,75 @@ async def delete_config_item(
         return {"status": "ok"}
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ===========================================================================
+# LOKACE
+# ===========================================================================
+
+@app.get("/locations", tags=["Locations"])
+async def list_locations(
+    active_only: bool = Query(False),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.get_locations(pool, active_only)
+
+
+@app.get("/locations/map", tags=["Locations"])
+async def list_locations_map(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Lokace s GPS souřadnicemi pro mapu."""
+    return await db.get_locations_with_gps(pool)
+
+
+@app.get("/locations/{location_id}", tags=["Locations"])
+async def get_location(
+    location_id: int,
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    loc = await db.get_location(pool, location_id)
+    if not loc:
+        raise HTTPException(404, "Lokace nenalezena")
+    return loc
+
+
+@app.get("/locations/{location_id}/devices", tags=["Locations"])
+async def get_location_devices(
+    location_id: int,
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.get_location_devices(pool, location_id)
+
+
+@app.post("/locations", tags=["Locations"])
+async def create_location(
+    data: dict,
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.create_location(pool, data)
+
+
+@app.put("/locations/{location_id}", tags=["Locations"])
+async def update_location(
+    location_id: int,
+    data: dict,
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.update_location(pool, location_id, data)
+
+
+@app.delete("/locations/{location_id}", tags=["Locations"])
+async def delete_location(
+    location_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    await db.delete_location(pool, location_id)
+    return {"status": "ok"}

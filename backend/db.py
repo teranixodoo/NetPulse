@@ -421,7 +421,7 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d.ownership, d.description, d.alias,
                 d.vendor, d.serial_number,
                 d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
-                d.created_at, d.updated_at, d.cron_poll,
+                d.created_at, d.updated_at, d.cron_poll, d.location_id,
                 COALESCE(
                     json_agg(
                         json_build_object(
@@ -497,6 +497,7 @@ async def update_device(pool: asyncpg.Pool, device_id: int, dev: "DeviceCreate")
             dev.vendor,
             dev.serial_number,
             getattr(dev, "ownership", "isp") or "isp",
+            getattr(dev, "location_id", None),
         )
         if not row:
             raise ValueError(f"Zařízení id={device_id} nenalezeno")
@@ -1659,3 +1660,155 @@ async def get_scan_exclusions(pool) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM scan_exclusions ORDER BY created_at DESC")
     return [dict(r) for r in rows]
+
+
+# ===========================================================================
+# locations — fyzická umístění zařízení
+# ===========================================================================
+
+def _loc_row(r: dict) -> dict:
+    """Normalizuje časová razítka v lokaci."""
+    d = dict(r)
+    if d.get("created_at"):
+        d["created_at"] = d["created_at"].isoformat()
+    return d
+
+
+async def get_locations(pool, active_only: bool = False) -> list[dict]:
+    """Vrátí všechny lokace včetně breadcrumb cesty a počtu zařízení."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            WITH RECURSIVE loc_path AS (
+                SELECT id, name, parent_id, ARRAY[name] AS path
+                FROM locations WHERE parent_id IS NULL
+                UNION ALL
+                SELECT l.id, l.name, l.parent_id, lp.path || l.name
+                FROM locations l JOIN loc_path lp ON l.parent_id = lp.id
+            )
+            SELECT
+                l.id, l.name, l.type, l.parent_id,
+                l.street, l.city, l.zip, l.country, l.ruian_id,
+                l.lat, l.lng, l.description, l.active, l.created_at,
+                lp.path AS breadcrumb,
+                COUNT(d.id) AS device_count
+            FROM locations l
+            LEFT JOIN loc_path lp ON lp.id = l.id
+            LEFT JOIN devices d ON d.location_id = l.id
+            WHERE ($1 = FALSE OR l.active = TRUE)
+            GROUP BY l.id, l.name, l.type, l.parent_id,
+                     l.street, l.city, l.zip, l.country, l.ruian_id,
+                     l.lat, l.lng, l.description, l.active, l.created_at,
+                     lp.path
+            ORDER BY lp.path
+        """, active_only)
+    result = []
+    for r in rows:
+        d = _loc_row(r)
+        d["breadcrumb"] = list(r["breadcrumb"]) if r.get("breadcrumb") else [r["name"]]
+        d["device_count"] = int(d.get("device_count") or 0)
+        result.append(d)
+    return result
+
+
+async def get_location(pool, location_id: int) -> dict | None:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT l.*,
+                   COUNT(d.id) AS device_count
+            FROM locations l
+            LEFT JOIN devices d ON d.location_id = l.id
+            WHERE l.id = $1
+            GROUP BY l.id
+        """, location_id)
+    if not row:
+        return None
+    d = _loc_row(row)
+    d["device_count"] = int(d.get("device_count") or 0)
+    return d
+
+
+async def create_location(pool, data: dict) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO locations
+                (name, type, parent_id, street, city, zip, country,
+                 ruian_id, lat, lng, description, active)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            RETURNING *
+        """,
+        data["name"], data.get("type", "other"), data.get("parent_id"),
+        data.get("street"), data.get("city"), data.get("zip"),
+        data.get("country", "CZ"), data.get("ruian_id"),
+        data.get("lat"), data.get("lng"),
+        data.get("description"), data.get("active", True))
+    d = _loc_row(row)
+    d["device_count"] = 0
+    d["breadcrumb"] = [d["name"]]
+    return d
+
+
+async def update_location(pool, location_id: int, data: dict) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE locations SET
+                name        = $2,
+                type        = $3,
+                parent_id   = $4,
+                street      = $5,
+                city        = $6,
+                zip         = $7,
+                country     = $8,
+                ruian_id    = $9,
+                lat         = $10,
+                lng         = $11,
+                description = $12,
+                active      = $13
+            WHERE id = $1
+            RETURNING *
+        """,
+        location_id,
+        data["name"], data.get("type", "other"), data.get("parent_id"),
+        data.get("street"), data.get("city"), data.get("zip"),
+        data.get("country", "CZ"), data.get("ruian_id"),
+        data.get("lat"), data.get("lng"),
+        data.get("description"), data.get("active", True))
+    d = _loc_row(row)
+    d["device_count"] = 0
+    d["breadcrumb"] = [d["name"]]
+    return d
+
+
+async def delete_location(pool, location_id: int) -> None:
+    async with pool.acquire() as conn:
+        # Odpojíme podřízené lokace
+        await conn.execute(
+            "UPDATE locations SET parent_id=NULL WHERE parent_id=$1", location_id)
+        # Odpojíme zařízení
+        await conn.execute(
+            "UPDATE devices SET location_id=NULL WHERE location_id=$1", location_id)
+        await conn.execute("DELETE FROM locations WHERE id=$1", location_id)
+
+
+async def get_location_devices(pool, location_id: int) -> list[dict]:
+    """Zařízení přímo v dané lokaci."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, hostname, alias, ip::text, device_type, vendor, ownership
+            FROM devices WHERE location_id=$1 ORDER BY hostname
+        """, location_id)
+    return [dict(r) for r in rows]
+
+
+async def get_locations_with_gps(pool) -> list[dict]:
+    """Jen lokace s GPS souřadnicemi — pro mapu."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT l.id, l.name, l.type, l.lat, l.lng,
+                   l.street, l.city, l.zip,
+                   COUNT(d.id) AS device_count
+            FROM locations l
+            LEFT JOIN devices d ON d.location_id = l.id
+            WHERE l.lat IS NOT NULL AND l.lng IS NOT NULL AND l.active = TRUE
+            GROUP BY l.id ORDER BY l.name
+        """)
+    return [dict(r) | {"device_count": int(r["device_count"] or 0)} for r in rows]

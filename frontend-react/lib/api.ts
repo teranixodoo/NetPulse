@@ -522,3 +522,29 @@ export const configListsApi = {
     await api.delete(`/config/lists/${id}`);
   },
 };
+
+export const locationsApi = {
+  async getAll(activeOnly = false): Promise<import('./types').Location[]> {
+    const { data } = await api.get('/locations', { params: { active_only: activeOnly } });
+    return data;
+  },
+  async getMap(): Promise<import('./types').Location[]> {
+    const { data } = await api.get('/locations/map');
+    return data;
+  },
+  async get(id: number): Promise<import('./types').Location> {
+    const { data } = await api.get(`/locations/${id}`);
+    return data;
+  },
+  async create(loc: Partial<import('./types').Location>): Promise<import('./types').Location> {
+    const { data } = await api.post('/locations', loc);
+    return data;
+  },
+  async update(id: number, loc: Partial<import('./types').Location>): Promise<import('./types').Location> {
+    const { data } = await api.put(`/locations/${id}`, loc);
+    return data;
+  },
+  async remove(id: number): Promise<void> {
+    await api.delete(`/locations/${id}`);
+  },
+};

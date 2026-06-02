@@ -14,6 +14,7 @@ class DeviceBase(BaseModel):
     hostname: Optional[str] = "unknown"
     device_type: Optional[str] = "unknown"
     ownership:   Optional[str] = "isp"
+    location_id: Optional[int] = None
     description: Optional[str] = ""
     alias: Optional[str] = None
     mac: Optional[str] = None
@@ -253,7 +254,10 @@ class DeviceWithCredentials(BaseModel):
     backup_enabled:           Optional[bool] = True
     backup_schedule:          Optional[str]  = None
     last_successful_credential_id: Optional[int] = None
-    cron_poll:                Optional[bool] = False
+    cron_poll:                Optional[bool]  = False
+    ownership:                Optional[str]   = "isp"
+    location_id:              Optional[int]   = None
+    is_alive:                 Optional[bool]  = None
 
     class Config:
         from_attributes = True

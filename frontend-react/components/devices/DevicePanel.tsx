@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { useConfigList } from "@/hooks/useNetPulse";
+import { useConfigList, useLocations } from "@/hooks/useNetPulse";
 import {
   Loader2, Save, Trash2, Search, RefreshCw,
   Link, Unlink, ChevronDown, Download, HardDrive, AlertCircle, CheckCircle2,
@@ -87,6 +87,8 @@ function BasicInfoTab({
   const [ownership,    setOwnership]    = useState<"isp"|"client"|"unknown">(
     (device.ownership as "isp"|"client"|"unknown") ?? "isp"
   );
+  const [locationId,   setLocationId]   = useState<number | null>(device.location_id ?? null);
+  const { data: locations = [] }        = useLocations(false);
   const [vendor,       setVendor]       = useState(device.vendor ?? "");
   const [serialNumber, setSerialNumber] = useState(device.serial_number ?? "");
   const [mac,          setMac]          = useState(device.mac ?? "");
@@ -105,6 +107,7 @@ function BasicInfoTab({
         alias:         alias.trim()        || undefined,
         device_type:   deviceType,
         ownership:     ownership,
+        location_id:   locationId,
         vendor:        vendor.trim()       || undefined,
         serial_number: serialNumber.trim() || undefined,
         mac:           mac.trim()          || undefined,
@@ -155,6 +158,19 @@ function BasicInfoTab({
             <option value="isp">ISP</option>
             <option value="client">Klientské</option>
             <option value="unknown">Neznámé</option>
+          </select>
+        </FormField>
+        <FormField label="Lokace">
+          <select
+            value={locationId ?? ""}
+            onChange={(e) => setLocationId(e.target.value ? Number(e.target.value) : null)}
+            className="h-9 w-full rounded-md border border-input bg-background
+                       px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+          >
+            <option value="">— bez lokace —</option>
+            {(locations as import("@/lib/types").Location[]).map((l) => (
+              <option key={l.id} value={l.id}>{l.breadcrumb.join(" › ")}</option>
+            ))}
           </select>
         </FormField>
         <FormField label="Výrobce / platforma">

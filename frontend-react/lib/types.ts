@@ -145,7 +145,8 @@ export interface Device {
   last_successful_auth: Record<string, unknown> | null;
   is_alive: boolean | null;
   cron_poll:  boolean;
-  ownership:  "isp" | "client" | "unknown";
+  ownership:   "isp" | "client" | "unknown";
+  location_id: number | null;
 }
 
 export interface DeviceCreate {
@@ -157,7 +158,8 @@ export interface DeviceCreate {
   mac?: string;
   vendor?: string;
   serial_number?: string;
-  ownership?: "isp" | "client" | "unknown";
+  ownership?:   "isp" | "client" | "unknown";
+  location_id?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -483,4 +485,23 @@ export interface ConfigItem {
   color:      string | null;
   sort_order: number;
   active:     boolean;
+}
+
+export interface Location {
+  id:           number;
+  name:         string;
+  type:         string;
+  parent_id:    number | null;
+  street:       string | null;
+  city:         string | null;
+  zip:          string | null;
+  country:      string;
+  ruian_id:     number | null;
+  lat:          number | null;
+  lng:          number | null;
+  description:  string | null;
+  active:       boolean;
+  created_at:   string;
+  breadcrumb:   string[];
+  device_count: number;
 }
