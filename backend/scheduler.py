@@ -980,8 +980,18 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                             expiry = (_dt.datetime.now(_dt.timezone.utc)
                                       + _dt.timedelta(minutes=10))
                             for e in result.extended.get("arp", []):
-                                if e.get("ip"):
+                                if not e.get("ip"):
+                                    continue
+                                arp_st = e.get("arp_status", "")
+                                # Pouze spolehlivé stavy
+                                # reachable = aktivně ověřeno
+                                # permanent+dhcp = DHCP lease
+                                is_dhcp = e.get("dhcp", False)
+                                if arp_st == "reachable":
                                     presence.append({"ip": e["ip"], "source": "arp",
+                                                     "expires_at": expiry})
+                                elif arp_st == "permanent" and is_dhcp:
+                                    presence.append({"ip": e["ip"], "source": "dhcp",
                                                      "expires_at": expiry})
                             for l in result.extended.get("dhcp", []):
                                 if l.get("ip") and l.get("status") == "bound":
@@ -1006,6 +1016,11 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                 fail += 1
 
         log.info(f"Poll scheduler: dokončen — OK={ok} FAIL={fail}")
+        _syslog().write_bg(
+            "INFO", "netpulse.scheduler", "poll_done",
+            f"Poll scan: {ok}/{ok+fail} OK",
+            meta={"ok": ok, "fail": fail, "trigger": trigger_type},
+        )
 
         # Zaznamenáme dokončení do historie
         if "hb_task_poll" in dir() and hb_task_poll:

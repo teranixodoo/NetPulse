@@ -48,7 +48,7 @@ export interface HostStats {
   avg_rtt_ms: number | null;
   min_rtt_ms: number | null;
   max_rtt_ms: number | null;
-  avg_loss_pct: number;
+  avg_loss_pct: number | null;
   last_check: string | null;
   currently_alive: boolean;
 }
@@ -91,6 +91,9 @@ export interface IpRange {
   active:       boolean;
   scan_enabled: boolean;
   description:  string | null;
+  site_id:      number | null;
+  site_name:    string | null;
+  site_color:   string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,4 +461,14 @@ export interface UnknownNetworkIp {
   last_seen: string | null;
   sources:   string[];
   mac:       string | null;
+}
+
+export interface Site {
+  id:          number;
+  name:        string;
+  description: string | null;
+  color:       string;
+  active:      boolean;
+  created_at:  string;
+  range_count: number;
 }

@@ -16,6 +16,8 @@ export interface HostRow extends HostStats {
   device_name?:   string | null;   // pro třídění a vyhledávání
   device_source?: string | null;   // zdroj vazby
   range_label?:   string | null;   // název rozsahu
+  site_name?:     string | null;   // název sítě
+  site_color?:    string | null;   // barva sítě
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,25 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       },
     },
 
+    // Síť
+    {
+      accessorKey: "site_name",
+      header: "Síť",
+      enableSorting: true,
+      size: 90,
+      cell: ({ row }) => {
+        const name  = row.original.site_name;
+        const color = row.original.site_color ?? "#6366f1";
+        if (!name || name === "Default")
+          return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <span
+            className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium text-white"
+            style={{ backgroundColor: color }}
+          >{name}</span>
+        );
+      },
+    },
     // Rozsah
     {
       accessorKey: "range_label",
@@ -204,7 +225,12 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       accessorKey: "avg_loss_pct",
       header: "Packet loss",
       size: 90,
-      cell: ({ getValue }) => <LossCell value={getValue() as number} />,
+      cell: ({ getValue }) => {
+        const v = getValue() as number | null;
+        return v != null
+          ? <LossCell value={v} />
+          : <span className="text-muted-foreground">—</span>;
+      },
     },
 
     // Počet měření

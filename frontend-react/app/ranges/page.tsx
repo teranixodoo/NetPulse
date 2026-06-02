@@ -9,8 +9,8 @@ import {
   useRanges, useHosts, useIpAddresses, useCreateRange, useSites,
   useUpdateRange, useDeleteRange, useRangeImpact, getErrorMessage,
 } from "@/hooks/useNetPulse";
-import type { IpRange, HostStats } from "@/lib/types";
-import { Button, MetricCard, FormField, Input, EmptyState, Spinner } from "@/components/ui";
+import type { IpRange, HostStats, Site } from "@/lib/types";
+import { Button, MetricCard, FormField, Input, EmptyState, Spinner, Select } from "@/components/ui";
 import { cn, normalizeNetwork } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -274,7 +274,8 @@ function RangeRow({
   // Mapa IP → is_alive z ip_addresses (zahrnuje ARP/DHCP)
   const ipAddrMap = useMemo(() => {
     const m: Record<string, boolean> = {};
-    for (const a of ipAddresses) m[a.ip] = a.is_alive ?? false;
+    // Klíčujeme bez /prefix aby match fungoval s cleanIp
+    for (const a of ipAddresses) m[a.ip.split("/")[0]] = a.is_alive ?? false;
     return m;
   }, [ipAddresses]);
 
@@ -305,8 +306,8 @@ function RangeRow({
         scan_enabled: data.scan_enabled,
         description:  data.description || null,
         site_id:      data.site_id ?? null,
-        site_name:    null,
-        site_color:   null,
+        site_name:    null,   // backend doplní
+        site_color:   null,   // backend doplní
       });
       setEditing(false);
       // Upozornění při změně sítě
@@ -583,24 +584,76 @@ export default function RangesPage() {
   const { data: sites  = [] }            = useSites();
   const { data: ipAddresses = [] }       = useIpAddresses();
   const createRange = useCreateRange();
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd,     setShowAdd]     = useState(false);
+  const [siteFilter,  setSiteFilter]  = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   async function handleCreate(data: FormData) {
     try {
       await createRange.mutateAsync({
-        label:   data.label,
-        network: normalizeNetwork(data.network),
-        active:  data.active,
+        id:           null,
+        label:        data.label,
+        network:      normalizeNetwork(data.network),
+        active:       data.active,
+        scan_enabled: data.scan_enabled,
+        description:  data.description || null,
+        site_id:      data.site_id ?? null,
+        site_name:    null,
+        site_color:   null,
       });
       setShowAdd(false);
     } catch (err) { alert(getErrorMessage(err)); }
   }
 
-  const activeRanges   = ranges.filter((r) => r.active);
-  const inactiveRanges = ranges.filter((r) => !r.active);
+  const filteredRanges = useMemo(() => {
+    return (ranges as any[]).filter((r: any) => {
+      if (siteFilter && r.site_id !== siteFilter) return false;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        if (!r.label.toLowerCase().includes(q) && !r.network.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+  }, [ranges, siteFilter, searchQuery]);
+  const activeRanges   = filteredRanges.filter((r: any) => r.active);
+  const inactiveRanges = filteredRanges.filter((r: any) => !r.active);
 
   return (
     <div className="space-y-4">
+      {/* Toolbar — filtr + vyhledávání */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Hledat rozsah nebo síť…"
+          className="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <Select
+          value={siteFilter ?? ""}
+          onChange={(e) => setSiteFilter(e.target.value ? Number(e.target.value) : null)}
+          className="w-44"
+        >
+          <option value="">Vše — síť</option>
+          {(sites as Site[]).map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </Select>
+        {(siteFilter || searchQuery) && (
+          <button
+            onClick={() => { setSiteFilter(null); setSearchQuery(""); }}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            ✕ Zrušit filtr
+          </button>
+        )}
+        <div className="flex-1" />
+        <span className="text-xs text-muted-foreground">
+          {activeRanges.length} aktivních
+          {siteFilter || searchQuery ? ` (filtrováno z ${ranges.length})` : ""}
+        </span>
+      </div>
+
       {/* Přidat rozsah */}
       <div className="rounded-lg border border-border bg-card">
         <button

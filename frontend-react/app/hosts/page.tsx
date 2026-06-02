@@ -1,188 +1,184 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { Download } from "lucide-react";
-import { useHosts, useDevices, useIpDeviceMap, useIpAddresses, useRanges } from "@/hooks/useNetPulse";
-import type { IpAddress } from "@/lib/types";
+import { useHostsEnriched, useDevices, useRanges, useSites } from "@/hooks/useNetPulse";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getHostColumns, type HostRow } from "@/components/hosts/HostColumns";
 import { HostPanel } from "@/components/hosts/HostPanel";
 import { Button, Select, MetricCard, Spinner } from "@/components/ui";
 import type { Row } from "@tanstack/react-table";
-import type { Device } from "@/lib/types";
+import type { Device, Site } from "@/lib/types";
+import type { EnrichedRow } from "@/lib/api";
+import { useReactTable } from "@tanstack/react-table";
+
+const HOSTS_PAGE_SIZE = 100;
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
 
 export default function HostsPage() {
-  const { data: hosts   = [], isLoading: hostsLoading   } = useHosts();
-  const { data: devices = [], isLoading: devicesLoading } = useDevices();
-  const { data: ipDevMap = {} }   = useIpDeviceMap();
-  const { data: ipAddresses = [] } = useIpAddresses();
-  const { data: ranges = [] }      = useRanges();
-  const rangeMap = useMemo(() => {
-    const m: Record<number, string> = {};
-    for (const r of ranges) if (r.id) m[r.id] = r.label;
-    return m;
-  }, [ranges]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [siteFilter,   setSiteFilter]   = useState<number | null>(null);
+  const [rangeFilter,  setRangeFilter]  = useState<number | null>(null);
+  const [deviceFilter, setDeviceFilter] = useState("");
+  const [searchInput,  setSearchInput]  = useState("");
+  const [pageIndex,    setPageIndex]    = useState(0);
+  const debouncedSearch = useDebounce(searchInput, 400);
 
-  const ipAddrMap = useMemo(() => {
-    const m: Record<string, typeof ipAddresses[0]> = {};
-    for (const a of ipAddresses) m[a.ip] = a;
-    return m;
-  }, [ipAddresses]);
+  useEffect(() => {
+    setPageIndex(0);
+  }, [statusFilter, siteFilter, rangeFilter, deviceFilter, debouncedSearch]);
 
-  // Mapa IP → zařízení POUZE přes vlastní IP rozhraní (ne ARP)
+  const { data: enriched, isLoading } = useHostsEnriched({
+    site_id:  siteFilter,
+    range_id: rangeFilter,
+    status:   statusFilter || undefined,
+    device:   deviceFilter || undefined,
+    search:   debouncedSearch || undefined,
+    limit:    HOSTS_PAGE_SIZE,
+    offset:   pageIndex * HOSTS_PAGE_SIZE,
+  });
+
+  const { data: devices = [] } = useDevices();
+  const { data: ranges  = [] } = useRanges();
+  const { data: sites   = [] } = useSites();
+
   const deviceMap = useMemo(() => {
-    const m: Record<string, { device_name: string | null; device_source: string | null }> = {};
-    for (const a of ipAddresses) {
-      if ((a.device_hostname || a.device_alias) &&
-          (a.device_source === "primary" || a.device_source === "api_address" || a.device_source === "snmp_address")) {
-        m[a.ip] = {
-          device_name:   a.device_alias || a.device_hostname || null,
-          device_source: a.device_source || null,
-        };
-      }
-    }
-    return m;
-  }, [ipAddresses]);
-
-  const [globalFilter,  setGlobalFilter]  = useState("");
-  const [statusFilter,  setStatusFilter]  = useState("");
-  const [deviceFilter,  setDeviceFilter]  = useState("");
-  const [rangeFilter,   setRangeFilter]   = useState("");
-  const [expandedRowIp, setExpandedRowIp] = useState<string | null>(null);
-
-  // Mapa IP → zařízení
-  const deviceByIp = useMemo(() => {
-    const m = new Map<string, Device>();
-    for (const d of devices) m.set(d.ip.split("/")[0], d);
+    const m: Record<number, Device> = {};
+    for (const d of devices) if (d.id) m[d.id] = d;
     return m;
   }, [devices]);
 
-  // Sloučená data
   const rows = useMemo<HostRow[]>(() => {
-    return hosts.map((h) => {
-      const cleanIp  = h.ip.split("/")[0];
-      const devInfo  = deviceMap[cleanIp];
-      const addrInfo = ipAddrMap[cleanIp];
-      return {
-        ...h,
-        // Preferujeme is_alive z ip_addresses (zahrnuje ARP/DHCP)
-        currently_alive: addrInfo?.is_alive ?? h.currently_alive,
-        device:        deviceByIp.get(cleanIp),
-        ipOwner:       ipDevMap[cleanIp] ?? undefined,
-        device_name:   devInfo?.device_name ?? null,
-        device_source: devInfo?.device_source ?? null,
-        range_label:   addrInfo?.range_id ? (rangeMap[addrInfo.range_id] ?? null) : null,
-        alive_source:  (addrInfo as any)?.alive_source ?? null,
-      };
-    });
-  }, [hosts, deviceByIp, ipDevMap, deviceMap, ipAddrMap, rangeMap]);
+    if (!enriched?.rows) return [];
+    return enriched.rows.map((r: EnrichedRow) => ({
+      ip:              r.ip,
+      currently_alive: r.currently_alive ?? false,
+      alive_source:    r.alive_source,
+      avg_rtt_ms:      r.avg_rtt_ms,
+      min_rtt_ms:      r.min_rtt_ms,
+      max_rtt_ms:      r.max_rtt_ms,
+      avg_loss_pct:    r.avg_loss_pct,
+      checks:          r.measurements ?? 0,
+      uptime_pct:      r.uptime_pct ?? 0,
+      last_check:      r.last_check ?? "",
+      device_name:     r.device_alias ?? r.device_hostname ?? null,
+      device_source:   null,
+      range_label:     r.range_label,
+      site_name:       r.site_name,
+      site_color:      r.site_color,
+      device:          r.device_id ? deviceMap[r.device_id] : undefined,
+      ipOwner:         undefined,
+    }));
+  }, [enriched, deviceMap]);
 
-  // Filtrace
-  const filteredRows = useMemo(() => {
-    return rows.filter((r) => {
-      if (statusFilter === "online"   && !r.currently_alive)  return false;
-      if (statusFilter === "offline"  &&  r.currently_alive)  return false;
-      if (statusFilter === "assigned" && !r.device_name)      return false;
-      if (statusFilter === "free"     &&  r.device)           return false;
-      if (deviceFilter === "assigned" && !r.device_name)      return false;
-    if (rangeFilter && r.range_label !== rangeFilter)        return false;
-      if (deviceFilter === "free"     &&  r.device)           return false;
-      return true;
-    });
-  }, [rows, statusFilter, deviceFilter]);
+  const stats = useMemo(() => enriched?.stats ?? {
+    total: 0, alive: 0, offline: 0, assigned: 0, avg_rtt: null, avg_uptime: null,
+  }, [enriched]);
 
-  // Statistiky
-  const stats = useMemo(() => {
-    const alive    = rows.filter((r) => r.currently_alive).length;
-    const assigned = rows.filter((r) => !!r.device_name).length;
-    const rtts     = rows.filter((r) => r.avg_rtt_ms != null).map((r) => r.avg_rtt_ms!);
-    const avgRtt   = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
-    const ups      = rows.map((r) => r.uptime_pct);
-    const avgUp    = ups.length ? ups.reduce((a, b) => a + b, 0) / ups.length : null;
-    return { total: rows.length, alive, assigned, avgRtt, avgUp };
-  }, [rows]);
+  const columns  = useMemo(() => getHostColumns(), []);
 
-  // Sloupce
-  const columns = useMemo(() => getHostColumns(), []);
-
-  // Sub-row — detail panel
   const renderSubRow = useCallback(
     (row: Row<HostRow>) => <HostPanel host={row.original} />,
     []
   );
 
-  // Klik na řádek — toggle expand
-  const handleRowClick = useCallback((row: HostRow) => {
-    setExpandedRowIp((prev) => (prev === row.ip ? null : row.ip));
-  }, []);
+  const filteredRanges = useMemo(() =>
+    siteFilter
+      ? (ranges as any[]).filter((r: any) => r.site_id === siteFilter)
+      : ranges,
+    [ranges, siteFilter]
+  );
 
-  // Export CSV
   function exportCsv(data: HostRow[]) {
     const headers = [
-      "IP","Stav","Hostname","Alias","Typ","Výrobce","MAC",
-      "Uptime%","Avg_RTT_ms","Min_RTT_ms","Max_RTT_ms",
-      "Packet_loss%","Měření","Poslední_scan",
+      "IP", "Stav", "Síť", "Rozsah", "Hostname", "Alias",
+      "Uptime%", "Avg_RTT_ms", "Min_RTT_ms", "Max_RTT_ms", "Loss%", "Měření", "Poslední scan",
     ];
     const csvRows = data.map((r) => [
       r.ip,
       r.currently_alive ? "online" : "offline",
+      r.site_name ?? "",
+      r.range_label ?? "",
       r.device?.hostname ?? "",
       r.device?.alias ?? "",
-      r.device?.device_type ?? "",
-      r.device?.vendor ?? "",
-      r.device?.mac ?? "",
-      r.uptime_pct.toFixed(2),
+      r.uptime_pct?.toFixed(2) ?? "",
       r.avg_rtt_ms?.toFixed(2) ?? "",
       r.min_rtt_ms?.toFixed(2) ?? "",
       r.max_rtt_ms?.toFixed(2) ?? "",
-      r.avg_loss_pct.toFixed(2),
+      r.avg_loss_pct?.toFixed(2) ?? "",
       r.checks,
       r.last_check ?? "",
     ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
-    const csv  = [headers.join(","), ...csvRows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a"); a.href = url;
-    a.download = "netpulse_ip_adresy.csv"; a.click();
+    const blob = new Blob([headers.join(",") + "\n" + csvRows.join("\n")],
+      { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement("a");
+    a.href = url; a.download = "ip-adresy.csv"; a.click();
     URL.revokeObjectURL(url);
   }
 
-  // Toolbar
-  const renderToolbar = useCallback(() => (
-    <div className="flex flex-wrap items-center gap-2">
-      <TableSearch
-        value={globalFilter}
-        onChange={setGlobalFilter}
-        placeholder="IP adresa, hostname, MAC, výrobce…"
-        className="w-72"
-      />
-      <Select
-        value={statusFilter}
-        onChange={(e) => setStatusFilter(e.target.value)}
-        className="w-36"
-      >
-        <option value="">Vše — stav</option>
-        <option value="online">🟢 Online</option>
-        <option value="offline">🔴 Offline</option>
-      </Select>
-      <Select
-        value={deviceFilter}
-        onChange={(e) => setDeviceFilter(e.target.value)}
-        className="w-40"
-      >
-        <option value="">Vše — zařízení</option>
-        <option value="assigned">S zařízením</option>
-        <option value="free">Bez zařízení</option>
-      </Select>
-      <div className="flex-1" />
-      <Button size="sm" variant="outline" onClick={() => exportCsv(filteredRows)}>
-        <Download className="h-3.5 w-3.5" />
-        Export CSV
-      </Button>
-    </div>
-  ), [globalFilter, statusFilter, deviceFilter, filteredRows]);
+  // renderToolbar přijímá table parametr dle DataTableProps
+  const renderToolbar = useCallback(
+    (_table: ReturnType<typeof useReactTable<HostRow>>) => (
+      <div className="flex flex-wrap items-center gap-2">
+        <TableSearch
+          value={searchInput}
+          onChange={setSearchInput}
+          placeholder="IP adresa, hostname…"
+          className="w-64"
+        />
+        <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-36">
+          <option value="">Vše — stav</option>
+          <option value="online">🟢 Online</option>
+          <option value="offline">🔴 Offline</option>
+        </Select>
+        <Select
+          value={siteFilter ?? ""}
+          onChange={(e) => {
+            setSiteFilter(e.target.value ? Number(e.target.value) : null);
+            setRangeFilter(null);
+          }}
+          className="w-36"
+        >
+          <option value="">Vše — síť</option>
+          {(sites as Site[]).filter((s) => s.name !== "Default").map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </Select>
+        <Select
+          value={rangeFilter ?? ""}
+          onChange={(e) => setRangeFilter(e.target.value ? Number(e.target.value) : null)}
+          className="w-44"
+        >
+          <option value="">Vše — rozsah</option>
+          {(filteredRanges as any[]).map((r: any) => (
+            <option key={r.id} value={r.id}>{r.label}</option>
+          ))}
+        </Select>
+        <Select value={deviceFilter} onChange={(e) => setDeviceFilter(e.target.value)} className="w-40">
+          <option value="">Vše — zařízení</option>
+          <option value="assigned">S zařízením</option>
+          <option value="free">Bez zařízení</option>
+        </Select>
+        <div className="flex-1" />
+        <Button size="sm" variant="outline" onClick={() => exportCsv(rows)}>
+          <Download className="h-3.5 w-3.5 mr-1" />Export CSV
+        </Button>
+      </div>
+    ),
+    [searchInput, statusFilter, siteFilter, rangeFilter, deviceFilter,
+     sites, filteredRanges, rows]
+  );
 
-  if (hostsLoading || devicesLoading) {
+  if (isLoading && !enriched) {
     return (
       <div className="flex h-64 items-center justify-center">
         <Spinner className="h-6 w-6" />
@@ -191,41 +187,37 @@ export default function HostsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      {/* Metriky */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+    <div className="space-y-4 p-4">
+      <h1 className="text-xl font-semibold">Detailní výpis IP adres</h1>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <MetricCard label="Celkem IP"   value={stats.total} />
         <MetricCard label="Online"      value={stats.alive}
-          color={stats.alive > 0 ? "green" : "default"}
-          sub={`${stats.total - stats.alive} offline`} />
+          sub={`${stats.offline} offline`} color="green" />
         <MetricCard label="S zařízením" value={stats.assigned}
           sub={`${stats.total - stats.assigned} volných`} />
         <MetricCard label="Avg RTT"
-          value={stats.avgRtt != null ? `${stats.avgRtt.toFixed(1)} ms` : "—"}
-          color={stats.avgRtt && stats.avgRtt > 50 ? "amber" : "default"} />
+          value={stats.avg_rtt != null ? `${stats.avg_rtt} ms` : "—"} />
         <MetricCard label="Avg uptime"
-          value={stats.avgUp != null ? `${stats.avgUp.toFixed(1)} %` : "—"}
-          color={
-            !stats.avgUp ? "default" :
-            stats.avgUp >= 99 ? "green" :
-            stats.avgUp >= 90 ? "amber" : "red"
-          } />
+          value={stats.avg_uptime != null ? `${stats.avg_uptime} %` : "—"}
+          color="red" />
       </div>
 
-      {/* Tabulka */}
-      <DataTable<HostRow>
-        data={filteredRows}
+      <DataTable
+        data={rows}
         columns={columns}
-        isLoading={false}
-        globalFilter={globalFilter}
-        onGlobalFilterChange={setGlobalFilter}
-        getRowId={(row) => row.ip}
         renderSubRow={renderSubRow}
+        onRowClick={(row) => {}}
         renderToolbar={renderToolbar}
-        onRowClick={handleRowClick}
-        selectedRowId={expandedRowIp}
-        pageSize={100}
-        emptyMessage="Žádné IP adresy — spusťte scan."
+        getRowId={(r) => r.ip}
+        isLoading={isLoading}
+        pageSize={0}
+        serverPagination={{
+          pageIndex,
+          pageCount: enriched?.page_count ?? Math.max(1, Math.ceil(stats.total / HOSTS_PAGE_SIZE)),
+          total:     stats.total,
+          onPageChange: setPageIndex,
+        }}
       />
     </div>
   );

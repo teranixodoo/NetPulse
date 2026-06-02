@@ -29,6 +29,7 @@ from models import (
     LoginRequest, TokenResponse, UserModel, CreateUserRequest, UpdateUserRequest,
     OutageEvent, Device, DeviceCreate, DeviceWithCredentials,
     CredentialCreate, Credential,
+    SiteCreate, SiteUpdate, SiteModel, ScanExclusionCreate,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
@@ -72,8 +73,8 @@ async def lifespan(app: FastAPI):
     log.info(f"Připojuji se k DB: {db_url[:40]}...")
     pool = await db.init_pool(db_url)
     cfg  = await db.get_config_db(pool)
-    sl.init(pool)
-    scheduler.set_main_loop(asyncio.get_event_loop())   # inicializace systémového logu
+    sl.init(pool)   # inicializace systémového logu
+    scheduler.set_main_loop(asyncio.get_event_loop())
 
     # Opravíme zombie joby z předchozího běhu při startu
     try:
@@ -471,6 +472,7 @@ async def ping_single_host(
     sem    = asyncio.Semaphore(1)
     result = await sc.ping_host(ip, sem, count=3, timeout_ms=1000)
     await db.save_results(pool, [result])
+    await db.sync_ip_addresses_after_ping(pool, [result])
     return {
         "ip":          result.ip,
         "is_alive":    result.is_alive,
@@ -948,12 +950,16 @@ async def poll_device_data(
                 "interface": entry.get("interface"), "source": entry.get("source", "api_address"),
                 "is_primary": _strip_prefix(entry["ip"]) == ip_str})
         for entry in ext.get("arp", []):
-            if entry.get("ip"):
+            arp_status = str(entry.get("status", "")).strip().lower()
+            if entry.get("ip") and (not arp_status or arp_status == "reachable"):
                 ip_entries.append({"ip": _strip_prefix(entry["ip"]), "mac": entry.get("mac"),
                     "interface": entry.get("interface"), "source": entry.get("source", "api_arp"),
                     "is_primary": False})
         for lease in ext.get("dhcp", []):
-            if lease.get("ip") and lease.get("status") == "bound":
+            lease_status = str(lease.get("status", "")).strip().lower()
+            dynamic_raw = lease.get("dynamic")
+            is_permanent = dynamic_raw is False or str(dynamic_raw).strip().lower() in ("false", "0", "no")
+            if lease.get("ip") and lease_status == "bound" and is_permanent:
                 ip_entries.append({"ip": _strip_prefix(lease["ip"]), "mac": lease.get("mac"),
                     "interface": lease.get("server"), "source": "api_dhcp",
                     "is_primary": False})
@@ -965,35 +971,24 @@ async def poll_device_data(
                     log.info(f"device_ips {ip_str}: +{ip_stats['inserted']} "
                              f"~{ip_stats['updated']} -{ip_stats['released']} "
                              f"events={len(ip_stats['changes'])}")
+                try:
+                    sync_n = await db.sync_ip_addresses_from_device_ips(
+                        pool, device_id=device_id,
+                    )
+                    await db.sync_ip_range_assignments(
+                        pool,
+                        ips=[e["ip"] for e in ip_entries if e.get("ip")],
+                    )
+                    if sync_n.get("upserted"):
+                        log.info(
+                            f"ip_addresses sync z pollu {ip_str}: "
+                            f"{sync_n['upserted']} záznamů"
+                        )
+                except Exception as _se:
+                    log.warning(f"ip_addresses sync po pollu: {_se}")
             except Exception as _ie:
                 log.warning(f"device_ips update: {_ie}")
 
-
-    # Logujeme přítomnost IP z ARP/DHCP do ip_presence_log
-    if result.success and result.extended:
-        try:
-            import datetime as _dt2
-            presence_entries = []
-            poll_expiry = (_dt2.datetime.now(_dt2.timezone.utc)
-                          + _dt2.timedelta(minutes=10)).isoformat()
-            for entry in result.extended.get("arp", []):
-                if entry.get("ip"):
-                    presence_entries.append({
-                        "ip": entry["ip"], "source": "arp",
-                        "expires_at": poll_expiry,
-                    })
-            for lease in result.extended.get("dhcp", []):
-                if lease.get("ip") and lease.get("status") == "bound":
-                    presence_entries.append({
-                        "ip": lease["ip"], "source": "dhcp",
-                        "expires_at": lease.get("expires_at"),
-                    })
-            log.info(f"ip_presence_log: {len(presence_entries)} záznamů k zápisu")
-            if presence_entries:
-                await db.bulk_log_ip_presence(pool, presence_entries)
-                log.info(f"ip_presence_log: {len(presence_entries)} záznamů zapsáno")
-        except Exception as _pe:
-            log.warning(f"ip_presence_log chyba: {_pe}")
 
     # Uložíme rozšířená data (interfaces, ARP, DHCP) pokud byla sebrána
     if result.success and result.extended:
@@ -1458,35 +1453,89 @@ async def get_ip_device_map(
     return await db.get_ip_device_map(pool)
 
 
-# ===========================================================================
-# IP PRESENCE — timeline přítomnosti z ARP/DHCP
-# ===========================================================================
-
-@app.get("/ip-presence/{ip:path}", tags=["Hosts"])
-async def get_ip_presence(
-    ip:    str,
-    hours: int = 24,
-    user   = Depends(current_user),
-    pool   = Depends(get_db),
-):
-    """Vrátí timeline přítomnosti IP (ARP/DHCP záznamy) za posledních N hodin."""
-    return await db.get_ip_presence_timeline(pool, ip, hours)
-
-
-# ===========================================================================
-# IP ADDRESSES
-# ===========================================================================
-
-@app.get("/ip-addresses", tags=["Hosts"])
-async def get_ip_addresses(
-    alive_only: bool = False,
-    range_id:   int  = None,
-    limit:      int  = 10000,
-    offset:     int  = 0,
+# ---------------------------------------------------------------------------
+# Scan exclusions — IP vyloučené ze scanu
+# ---------------------------------------------------------------------------
+@app.get("/scan-exclusions", tags=["Scan"])
+async def list_scan_exclusions(
     user = Depends(current_user),
     pool = Depends(get_db),
 ):
-    return await db.get_ip_addresses(pool, alive_only, range_id, limit, offset)
+    return await db.get_scan_exclusions(pool)
+
+
+@app.post("/scan-exclusions", tags=["Scan"])
+async def add_scan_exclusion(
+    body: ScanExclusionCreate,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    return await db.add_scan_exclusion(pool, body.ip, body.reason, user.username)
+
+
+@app.delete("/scan-exclusions/{exclusion_id}", tags=["Scan"])
+async def remove_scan_exclusion(
+    exclusion_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    ok = await db.remove_scan_exclusion(pool, exclusion_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Výjimka nenalezena")
+    return {"status": "deleted", "id": exclusion_id}
+
+
+# ---------------------------------------------------------------------------
+# Sites — logické sítě
+# ---------------------------------------------------------------------------
+@app.get("/sites", response_model=List[SiteModel], tags=["Sites"])
+async def list_sites(user=Depends(current_user), pool=Depends(get_db)):
+    return await db.get_sites(pool)
+
+
+@app.post("/sites", response_model=SiteModel, tags=["Sites"])
+async def create_site(
+    body: SiteCreate,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    return await db.create_site(pool, body.name, body.description, body.color)
+
+
+@app.put("/sites/{site_id}", response_model=SiteModel, tags=["Sites"])
+async def update_site(
+    site_id: int,
+    body: SiteUpdate,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    row = await db.update_site(
+        pool, site_id, body.name, body.description, body.color, body.active,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Síť nenalezena")
+    return row
+
+
+@app.delete("/sites/{site_id}", tags=["Sites"])
+async def delete_site(
+    site_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    await db.delete_site(pool, site_id)
+    return {"status": "deleted", "id": site_id}
+
+
+@app.get("/ip-addresses", tags=["Hosts"])
+async def list_ip_addresses(
+    alive_only: bool = False,
+    range_id:   Optional[int] = None,
+    limit:      int = Query(5000, ge=1, le=20000),
+    user        = Depends(current_user),
+    pool        = Depends(get_db),
+):
+    return await db.get_ip_addresses(pool, alive_only, range_id, limit)
 
 
 @app.post("/ip-addresses/refresh", tags=["Hosts"])
@@ -1494,10 +1543,19 @@ async def refresh_ip_addresses(
     user = Depends(admin_only),
     pool = Depends(get_db),
 ):
-    await db.refresh_ip_stats_24h(pool)
-    device_count = await db.refresh_ip_device_map(pool)
-    count = await db.get_ip_address_count(pool)
-    return {"status": "ok", "count": count, "devices_mapped": device_count}
+    return await db.refresh_ip_addresses(pool)
+
+
+@app.post("/ip-addresses/sync-ranges", tags=["Hosts"])
+async def sync_ip_ranges(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """
+    Zpětně přiřadí ip_addresses.range_id podle ip_ranges (a tím síť/site).
+    Volat po migraci nebo změně rozsahů.
+    """
+    return await db.backfill_ip_range_assignments(pool)
 
 
 @app.get("/unknown-networks", tags=["Hosts"])
@@ -1507,6 +1565,7 @@ async def get_unknown_networks(
 ):
     return await db.get_unknown_networks(pool)
 
+
 @app.get("/unknown-networks/{subnet:path}", tags=["Hosts"])
 async def get_unknown_network_ips(
     subnet: str,
@@ -1514,3 +1573,38 @@ async def get_unknown_network_ips(
     pool   = Depends(get_db),
 ):
     return await db.get_unknown_network_ips(pool, subnet)
+
+
+@app.get("/ip-presence/{ip:path}", tags=["Hosts"])
+async def get_ip_presence(
+    ip:    str,
+    hours: int = Query(24, ge=1, le=168),
+    user   = Depends(current_user),
+    pool   = Depends(get_db),
+):
+    return await db.get_ip_presence(pool, ip, hours)
+
+
+@app.get("/hosts/enriched", tags=["Hosts"])
+async def get_hosts_enriched(
+    site_id:  Optional[int] = Query(None),
+    range_id: Optional[int] = Query(None),
+    status:   Optional[str] = Query(None),
+    device:   Optional[str] = Query(None),
+    search:   Optional[str] = Query(None),
+    limit:    int           = Query(100, ge=1, le=500),
+    offset:   int           = Query(0, ge=0),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """IP adresy se statistikami, filtrováním a agregovanými metrikami."""
+    return await db.get_hosts_enriched(
+        pool,
+        site_id=site_id,
+        range_id=range_id,
+        status=status,
+        device=device,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )

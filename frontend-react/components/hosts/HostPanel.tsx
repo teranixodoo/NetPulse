@@ -87,7 +87,7 @@ export function HostPanel({ host }: { host: HostRow }) {
               ["Avg RTT",      host.avg_rtt_ms ? `${host.avg_rtt_ms.toFixed(2)} ms` : "—"],
               ["Min RTT",      host.min_rtt_ms ? `${host.min_rtt_ms.toFixed(2)} ms` : "—"],
               ["Max RTT",      host.max_rtt_ms ? `${host.max_rtt_ms.toFixed(2)} ms` : "—"],
-              ["Packet loss",  `${host.avg_loss_pct.toFixed(2)} %`],
+              ["Packet loss",  host.avg_loss_pct != null ? `${host.avg_loss_pct.toFixed(2)} %` : "—"],
               ["Měření",       host.checks.toLocaleString()],
               ["Poslední scan",formatDateTime(host.last_check)],
             ].map(([label, val]) => (

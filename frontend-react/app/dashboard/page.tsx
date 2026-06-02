@@ -11,7 +11,7 @@ import {
   AlertTriangle, TrendingUp, TrendingDown, Minus,
 } from "lucide-react";
 import {
-  useHosts, useOutages, useDevices, useScanStatus,
+  useHosts, useOutages, useDevices, useScanStatus, useIpAddresses,
 } from "@/hooks/useNetPulse";
 import { Spinner } from "@/components/ui";
 import { formatDateShort, formatDateTime, cn, uptimeColor } from "@/lib/utils";
@@ -361,22 +361,28 @@ function AlertsPanel({ outages }: { outages: OutageEvent[] }) {
 // Hlavní stránka
 // ---------------------------------------------------------------------------
 export default function DashboardPage() {
-  const { data: hosts   = [], isLoading: hostsLoading   } = useHosts();
-  const { data: outages = [], isLoading: outagesLoading } = useOutages(200, 24);
-  const { data: devices = [] }                            = useDevices();
-  const { data: status  }                                 = useScanStatus();
+  const { data: hosts       = [], isLoading: hostsLoading   } = useHosts();
+  const { data: ipAddresses = [] }                           = useIpAddresses();
+  const { data: outages     = [], isLoading: outagesLoading } = useOutages(200, 24);
+  const { data: devices     = [] }                           = useDevices();
+  const { data: status      }                                 = useScanStatus();
 
   const stats = useMemo(() => {
-    const alive   = hosts.filter((h) => h.currently_alive);
-    const dead    = hosts.filter((h) => !h.currently_alive);
+    // Online/offline z ip_addresses (zahrnuje ARP/DHCP)
+    const ipAlive = ipAddresses.length > 0
+      ? ipAddresses.filter((a: import("@/lib/types").IpAddress) => a.is_alive).length
+      : hosts.filter((h) => h.currently_alive).length;
+    const ipTotal = ipAddresses.length > 0 ? ipAddresses.length : hosts.length;
+    const ipDead  = ipTotal - ipAlive;
+    // RTT + uptime z ping_results (host_stats_24h)
     const rtts    = hosts.filter((h) => h.avg_rtt_ms != null).map((h) => h.avg_rtt_ms!);
     const ups     = hosts.filter((h) => h.uptime_pct != null).map((h) => h.uptime_pct!);
     const avgRtt  = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
     const avgUp   = ups.length  ? ups.reduce((a, b) => a + b, 0)  / ups.length  : null;
     const highRtt = hosts.filter((h) => h.avg_rtt_ms != null && h.avg_rtt_ms > 50).length;
 
-    return { online: alive.length, offline: dead.length, total: hosts.length, avgRtt, avgUp, highRtt };
-  }, [hosts]);
+    return { online: ipAlive, offline: ipDead, total: ipTotal, avgRtt, avgUp, highRtt };
+  }, [hosts, ipAddresses]);
 
   const activeOutages = outages.filter((o) => !o.ended_at).length;
 

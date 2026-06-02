@@ -4,10 +4,11 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 
+// Backend běží na hostu (network_mode: host), ne uvnitř docker sítě „backend“.
 const BACKEND =
   process.env.API_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  "http://backend:8000";
+  "http://host.docker.internal:8000";
 
 async function handler(
   req: NextRequest,

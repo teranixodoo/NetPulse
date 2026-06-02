@@ -70,9 +70,13 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    # Backend: network_mode host → z kontejneru NE 127.0.0.1:8000, ale host-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      NEXT_PUBLIC_API_URL: http://10.221.0.65:8000
-      API_URL: http://10.221.0.65:8000
+      # Přepsat v .env: BACKEND_URL=http://VAŠE_IP:8000 (např. 10.221.0.65)
+      API_URL: ${BACKEND_URL:-http://host.docker.internal:8000}
+      NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://host.docker.internal:8000}
     ports:
       - "3000:3000"
 

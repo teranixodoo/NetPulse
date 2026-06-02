@@ -24,5 +24,7 @@ cryptography>=42.0.0
 python-dotenv>=1.0.0
 toml>=0.10.2
 
-# MikroTik RouterOS API
+# MikroTik RouterOS API + polling
 RouterOS-api>=0.15.0
+asyncssh>=2.14.0
+pysnmp>=6.0.0

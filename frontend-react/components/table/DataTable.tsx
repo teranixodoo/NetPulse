@@ -39,6 +39,13 @@ export interface DataTableProps<T> {
   emptyMessage?: string;
   stickyHeader?: boolean;
   pageSize?: number;        // počet řádků na stránku (0 = bez stránkování)
+  /** Stránkování na serveru — data = jedna stránka, footer řídí API */
+  serverPagination?: {
+    pageIndex:    number;
+    pageCount:    number;
+    total:        number;
+    onPageChange: (pageIndex: number) => void;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +75,7 @@ export function DataTable<T>({
   emptyMessage = "Žádná data",
   stickyHeader = true,
   pageSize = 100,
+  serverPagination,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -158,7 +166,7 @@ export function DataTable<T>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    ...(serverPagination ? {} : { getPaginationRowModel: getPaginationRowModel() }),
     getRowId,
     enableRowSelection: !!renderBulkActions,
     globalFilterFn: "includesString",
@@ -307,12 +315,35 @@ export function DataTable<T>({
       {/* Pagination / Footer */}
       <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          {pageSize > 0 && table.getPageCount() > 1
+          {serverPagination
+            ? `Stránka ${serverPagination.pageIndex + 1} z ${serverPagination.pageCount} · celkem ${serverPagination.total.toLocaleString("cs-CZ")} · na stránce ${rows.length}`
+            : pageSize > 0 && table.getPageCount() > 1
             ? `Stránka ${table.getState().pagination.pageIndex + 1} z ${table.getPageCount()} · celkem ${table.getFilteredRowModel().rows.length.toLocaleString("cs-CZ")}`
             : `Zobrazeno ${rows.length} z ${data.length} záznamů`}
           {selectedRows.length > 0 && ` · ${selectedRows.length} vybráno`}
         </span>
-        {pageSize > 0 && table.getPageCount() > 1 && (
+        {serverPagination && serverPagination.pageCount > 1 && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => serverPagination.onPageChange(serverPagination.pageIndex - 1)}
+              disabled={serverPagination.pageIndex <= 0}
+              className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40"
+            >
+              <ChevronLeft className="h-3 w-3" />
+            </button>
+            <span className="px-2 tabular-nums">
+              {serverPagination.pageIndex + 1} / {serverPagination.pageCount}
+            </span>
+            <button
+              onClick={() => serverPagination.onPageChange(serverPagination.pageIndex + 1)}
+              disabled={serverPagination.pageIndex >= serverPagination.pageCount - 1}
+              className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40"
+            >
+              <ChevronRight className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+        {!serverPagination && pageSize > 0 && table.getPageCount() > 1 && (
           <div className="flex items-center gap-1">
             <button onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}
               className="flex h-6 w-6 items-center justify-center rounded border border-border hover:bg-muted disabled:opacity-40">

@@ -566,7 +566,7 @@ export default function GraphsPage() {
   const { data: ipAddresses = [] }                    = useIpAddresses();
   const ipAliveMap = useMemo(() => {
     const m: Record<string, { is_alive: boolean | null; alive_source: string | null }> = {};
-    for (const a of ipAddresses) m[a.ip] = { is_alive: a.is_alive, alive_source: (a as any).alive_source };
+    for (const a of ipAddresses) m[a.ip.split("/")[0]] = { is_alive: a.is_alive, alive_source: (a as any).alive_source };
     return m;
   }, [ipAddresses]);
   const [selectedIp, setSelectedIp] = useState("");

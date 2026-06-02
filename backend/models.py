@@ -47,7 +47,37 @@ class IpRangeModel(BaseModel):
     active:       bool = True
     scan_enabled: bool = True
     description:  Optional[str] = None
-    site_id:      Optional[int] = None  # volitelný popis rozsahu
+    site_id:      Optional[int] = None
+    site_name:    Optional[str] = None
+    site_color:   Optional[str] = None
+
+
+class SiteCreate(BaseModel):
+    name:        str
+    description: Optional[str] = None
+    color:       str = "#6366f1"
+
+
+class SiteUpdate(BaseModel):
+    name:        str
+    description: Optional[str] = None
+    color:       str = "#6366f1"
+    active:      bool = True
+
+
+class SiteModel(BaseModel):
+    id:           int
+    name:         str
+    description:  Optional[str] = None
+    color:        str
+    active:       bool = True
+    created_at:   str
+    range_count:  int = 0
+
+
+class ScanExclusionCreate(BaseModel):
+    ip:     str
+    reason: str = ""  # volitelný popis rozsahu
 
 
 class AppConfigModel(BaseModel):
@@ -226,10 +256,3 @@ class DeviceWithCredentials(BaseModel):
 
     class Config:
         from_attributes = True
-
-class SiteModel(BaseModel):
-    id:          Optional[int] = None
-    name:        str
-    description: Optional[str] = None
-    color:       str = "#6366f1"
-    active:      bool = True

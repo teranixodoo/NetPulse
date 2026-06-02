@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi } from '@/lib/api';
+import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -108,8 +108,8 @@ export function useRanges() {
 export function useCreateRange() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ label, network, active }: { label: string; network: string; active: boolean }) =>
-      rangesApi.create(label, network, active),
+    mutationFn: (data: import("@/lib/types").IpRange) =>
+      rangesApi.create(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.ranges }),
   });
 }
@@ -495,14 +495,6 @@ export function useIpAddresses(params?: { alive_only?: boolean; range_id?: numbe
   });
 }
 
-export function useHostsEnriched(hours = 24) {
-  return useQuery({
-    queryKey: ['hosts-enriched', hours],
-    queryFn:  async () => [],  // deprecated - používáme useIpAddresses
-    staleTime: 300_000,
-  });
-}
-
 export function useIpPresence(ip: string | null, hours = 24) {
   return useQuery({
     queryKey: ['ip-presence', ip, hours],
@@ -571,6 +563,24 @@ export function useDeleteSite() {
       qc.invalidateQueries({ queryKey: ['sites'] });
       qc.invalidateQueries({ queryKey: ['ranges'] });
     },
+  });
+}
+
+export function useHostsEnriched(params: {
+  site_id?:  number | null;
+  range_id?: number | null;
+  status?:   string;
+  device?:   string;
+  search?:   string;
+  limit?:    number;
+  offset?:   number;
+}) {
+  return useQuery({
+    queryKey: ['hosts-enriched', params],
+    queryFn:  () => hostsEnrichedApi.get(params),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    placeholderData: (prev: any) => prev,
   });
 }
 

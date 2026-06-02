@@ -152,8 +152,8 @@ export const rangesApi = {
     const { data } = await api.get<any[]>("/ranges");  // any aby se zachovaly site_name, site_color
     return data;
   },
-  async create(label: string, network: string, active = true): Promise<IpRange> {
-    const { data } = await api.post<IpRange>("/ranges", { label, network, active });
+  async create(range: Omit<IpRange, "id"> & { id?: number | null }): Promise<IpRange> {
+    const { data } = await api.post<IpRange>("/ranges", range);
     return data;
   },
   async update(id: number, range: Omit<IpRange, "id">): Promise<IpRange> {
@@ -437,3 +437,66 @@ export const sitesApi = {
     await api.delete(`/sites/${id}`);
   },
 };
+
+export const hostsEnrichedApi = {
+  async get(params: {
+    site_id?:  number | null;
+    range_id?: number | null;
+    status?:   string;
+    device?:   string;
+    search?:   string;
+    limit?:    number;
+    offset?:   number;
+  }): Promise<EnrichedHostsResponse> {
+    const p: Record<string, string | number> = {};
+    if (params.site_id  != null) p.site_id  = params.site_id;
+    if (params.range_id != null) p.range_id = params.range_id;
+    if (params.status)           p.status   = params.status;
+    if (params.device)           p.device   = params.device;
+    if (params.search)           p.search   = params.search;
+    if (params.limit != null)  p.limit  = params.limit;
+    if (params.offset != null) p.offset = params.offset;
+    const { data } = await api.get("/hosts/enriched", { params: p });
+    return data;
+  },
+};
+
+export interface EnrichedStats {
+  total:      number;
+  alive:      number;
+  offline:    number;
+  assigned:   number;
+  avg_rtt:    number | null;
+  avg_uptime: number | null;
+}
+
+export interface EnrichedHostsResponse {
+  stats:      EnrichedStats;
+  rows:       EnrichedRow[];
+  limit:      number;
+  offset:     number;
+  page_count: number;
+}
+
+export interface EnrichedRow {
+  ip:               string;
+  currently_alive:  boolean | null;
+  alive_source:     string | null;
+  range_id:         number | null;
+  range_label:      string | null;
+  site_id:          number | null;
+  site_name:        string | null;
+  site_color:       string | null;
+  device_id:        number | null;
+  device_hostname:  string | null;
+  device_alias:     string | null;
+  device_vendor:    string | null;
+  device_type:      string | null;
+  avg_rtt_ms:       number | null;
+  min_rtt_ms:       number | null;
+  max_rtt_ms:       number | null;
+  avg_loss_pct:     number | null;
+  measurements:     number | null;
+  uptime_pct:       number | null;
+  last_check:       string | null;
+}
