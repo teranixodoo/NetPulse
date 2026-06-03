@@ -3,7 +3,7 @@
 import { useConfigList } from "@/hooks/useNetPulse";
 import { useState, useMemo } from "react";
 import { Plus, ChevronDown, Loader2 } from "lucide-react";
-import { useCreateDevice, getErrorMessage } from "@/hooks/useNetPulse";
+import { useCreateDevice, useLocations, getErrorMessage } from "@/hooks/useNetPulse";
 import type { HostStats, Device } from "@/lib/types";
 import { Button, FormField, Input } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,9 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   const [vendor,       setVendor]       = useState("");
   const [mac,          setMac]          = useState("");
   const [serialNumber, setSerialNumber] = useState("");
+  const [locationId,   setLocationId]   = useState<number | null>(null);
+  const [description,  setDescription]  = useState("");
+  const { data: locations = [] }        = useLocations(false);
   const [error,        setError]        = useState<string | null>(null);
 
   // Přiřazené IP
@@ -57,7 +60,7 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
 
   function reset() {
     setIp(""); setHostname(""); setAlias(""); setDeviceType("other"); setOwnership("isp"); setOwnership("isp");
-    setVendor(""); setMac(""); setSerialNumber(""); setError(null);
+    setVendor(""); setMac(""); setSerialNumber(""); setLocationId(null); setDescription(""); setError(null);
     setIpSearch(""); setStatusFilter("all");
   }
 
@@ -77,6 +80,8 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
         vendor:        vendor.trim()       || undefined,
         mac:           mac.trim()          || undefined,
         serial_number: serialNumber.trim() || undefined,
+        location_id:   locationId          || undefined,
+        description:   description.trim()  || undefined,
       });
       reset();
       setOpen(false);
@@ -220,7 +225,30 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
                   onChange={(e) => setSerialNumber(e.target.value)}
                 />
               </FormField>
+              <FormField label="Lokace">
+                <select
+                  value={locationId ?? ""}
+                  onChange={(e) => setLocationId(e.target.value ? Number(e.target.value) : null)}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">— bez lokace —</option>
+                  {(locations as import("@/lib/types").Location[]).map((l) => (
+                    <option key={l.id} value={l.id}>{l.breadcrumb?.join(" › ") ?? l.name}</option>
+                  ))}
+                </select>
+              </FormField>
             </div>
+            <FormField label="Poznámka">
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                className="w-full rounded-md border border-border bg-background px-3 py-2
+                           text-sm placeholder:text-muted-foreground
+                           focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                placeholder="Volitelná poznámka…"
+              />
+            </FormField>
 
             {error && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">

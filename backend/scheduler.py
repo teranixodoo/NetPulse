@@ -163,22 +163,6 @@ async def run_scan(
             f"Scan dokončen: {len(results)} výsledků — "
             f"{ok_count} online, {fail_count} offline"
         )
-        try:
-            await db.bulk_upsert_ip_addresses(pool, [
-                {"ip": r.ip.split("/")[0], "is_alive": r.is_alive,
-                 "rtt_ms": getattr(r, "rtt_ms", None)}
-                for r in results
-            ])
-            await db.refresh_ip_stats_24h(pool)
-            await db.refresh_ip_range_map(pool)
-            # Doplníme is_alive z ARP/DHCP pro IP kde ping nefunguje
-            updated = await db.refresh_alive_from_presence(pool)
-            if updated > 0:
-                log.info(f"ARP/DHCP alive: {updated} IP aktualizováno")
-            # Detekce změn stavu → výpadky a log změn
-            await _process_state_changes(pool)
-        except Exception as _ipe:
-            log.warning(f"ip_addresses update: {_ipe}")
         _syslog().write_bg(
             "INFO", "netpulse.scanner", "scan_done",
             f"Ping scan: {ok_count}/{len(results)} online",
@@ -973,42 +957,6 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                     await db.update_device_poll_result(pool, dev["id"], result)
                     ok += 1
                     log.info(f"Poll scheduler: {dev['ip']} OK ({result.method})")
-
-                    # Logujeme ARP/DHCP přítomnost
-                    if result.extended:
-                        try:
-                            import datetime as _dt
-                            presence = []
-                            expiry = (_dt.datetime.now(_dt.timezone.utc)
-                                      + _dt.timedelta(minutes=10))
-                            for e in result.extended.get("arp", []):
-                                if not e.get("ip"):
-                                    continue
-                                arp_st = e.get("arp_status", "")
-                                # Pouze spolehlivé stavy
-                                # reachable = aktivně ověřeno
-                                # permanent+dhcp = DHCP lease
-                                is_dhcp = e.get("dhcp", False)
-                                if arp_st == "reachable":
-                                    presence.append({"ip": e["ip"], "source": "arp",
-                                                     "expires_at": expiry})
-                                elif arp_st == "permanent" and is_dhcp:
-                                    presence.append({"ip": e["ip"], "source": "dhcp",
-                                                     "expires_at": expiry})
-                            for l in result.extended.get("dhcp", []):
-                                if l.get("ip") and l.get("status") == "bound":
-                                    # DHCP expires_at může být string — převedeme
-                                    exp = l.get("expires_at")
-                                    if isinstance(exp, str):
-                                        try: exp = _dt.datetime.fromisoformat(exp)
-                                        except: exp = expiry
-                                    presence.append({"ip": l["ip"], "source": "dhcp",
-                                                     "expires_at": exp or expiry})
-                            if presence:
-                                await db.bulk_log_ip_presence(pool, presence)
-                                log.info(f"ip_presence_log: {dev['ip']} → {len(presence)} záznamů")
-                        except Exception as _pe:
-                            log.warning(f"ip_presence_log: {_pe}")
                 else:
                     fail += 1
                     log.warning(f"Poll scheduler: {dev['ip']} FAIL")
@@ -1018,11 +966,6 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                 fail += 1
 
         log.info(f"Poll scheduler: dokončen — OK={ok} FAIL={fail}")
-        _syslog().write_bg(
-            "INFO", "netpulse.scheduler", "poll_done",
-            f"Poll scan: {ok}/{ok+fail} OK",
-            meta={"ok": ok, "fail": fail, "trigger": trigger_type},
-        )
 
         # Zaznamenáme dokončení do historie
         if "hb_task_poll" in dir() and hb_task_poll:
@@ -1071,44 +1014,3 @@ def setup_poll_scheduler(pool, config: dict) -> None:
         log.info(f"Poll scheduler: interval {interval}s, zapnutý")
     else:
         log.info("Poll scheduler: vypnutý")
-
-
-async def _process_state_changes(pool) -> None:
-    """
-    Detekuje přechody is_alive TRUE↔FALSE v ip_addresses
-    a zapisuje výpadky + logy změn.
-    Porovnává aktuální stav s předchozím (ukládáme do ip_addresses.prev_alive).
-    """
-    try:
-        async with pool.acquire() as conn:
-            # Najdeme IP kde se stav změnil od posledního scanu
-            rows = await conn.fetch("""
-                SELECT ia.ip::text, ia.is_alive, ia.prev_alive,
-                       ia.device_id, ia.alive_source
-                FROM ip_addresses ia
-                WHERE ia.is_alive IS DISTINCT FROM ia.prev_alive
-                  AND ia.updated_at > NOW() - INTERVAL '5 minutes'
-            """)
-
-        for r in rows:
-            if r["is_alive"] == r["prev_alive"]:
-                continue
-            await db.process_ip_state_change(
-                pool,
-                ip        = r["ip"],
-                is_alive  = bool(r["is_alive"]),
-                device_id = r["device_id"],
-                source    = r["alive_source"] or "ping"
-            )
-
-        # Aktualizujeme prev_alive pro příští scan
-        if rows:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE ip_addresses SET prev_alive = is_alive "
-                    "WHERE is_alive IS DISTINCT FROM prev_alive"
-                )
-            log.debug(f"State changes: {len(rows)} IP zpracováno")
-
-    except Exception as e:
-        log.warning(f"_process_state_changes chyba: {e}")

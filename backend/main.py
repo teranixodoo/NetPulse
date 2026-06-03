@@ -29,7 +29,6 @@ from models import (
     LoginRequest, TokenResponse, UserModel, CreateUserRequest, UpdateUserRequest,
     OutageEvent, Device, DeviceCreate, DeviceWithCredentials,
     CredentialCreate, Credential,
-    SiteCreate, SiteUpdate, SiteModel, ScanExclusionCreate,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
@@ -472,7 +471,6 @@ async def ping_single_host(
     sem    = asyncio.Semaphore(1)
     result = await sc.ping_host(ip, sem, count=3, timeout_ms=1000)
     await db.save_results(pool, [result])
-    await db.sync_ip_addresses_after_ping(pool, [result])
     return {
         "ip":          result.ip,
         "is_alive":    result.is_alive,
@@ -483,17 +481,13 @@ async def ping_single_host(
     }
 
 
-@app.get("/outages", tags=["Logs"])
+@app.get("/outages", response_model=List[OutageEvent], tags=["Data"])
 async def get_outages(
-    hours:           int  = Query(24, ge=1, le=720),
-    active_only:     bool = Query(False),
-    limit:           int  = Query(200, ge=1, le=1000),
-    min_duration_s:  int  = Query(0, ge=0),
+    hours: int = Query(24, ge=1, le=168),
     user = Depends(current_user),
     pool = Depends(get_db),
 ):
-    """Výpadky z dedikované tabulky — rychlé."""
-    return await db.get_outages_new(pool, hours, active_only, limit, min_duration_s)
+    return await db.get_outages(pool, hours)
 
 @app.delete("/results/orphaned", tags=["Data"])
 async def delete_orphaned_logs(user=Depends(admin_only), pool=Depends(get_db)):
@@ -607,6 +601,75 @@ async def get_range_impact(range_id: int, user=Depends(admin_only), pool=Depends
         "devices":      [dict(d) for d in devices_in],
         "outage_count": int(outage_count),
     }
+
+# ===========================================================================
+# KONFIGURACE — číselníky (config_lists)
+# ===========================================================================
+
+@app.get("/config/lists", tags=["Config"])
+async def get_all_config_lists(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Všechny číselníky seskupené podle kategorie."""
+    return await db.get_all_config_lists(pool)
+
+
+@app.get("/config/lists/{category}", tags=["Config"])
+async def get_config_list(
+    category:    str,
+    active_only: bool = Query(True),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Položky daného číselníku."""
+    return await db.get_config_list(pool, category, active_only)
+
+
+@app.post("/config/lists", tags=["Config"])
+async def create_config_list_item(
+    item: dict,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Vytvoří novou položku číselníku."""
+    return await db.create_config_list_item(
+        pool,
+        category   = item["category"],
+        value      = item["value"],
+        label      = item["label"],
+        color      = item.get("color"),
+        sort_order = item.get("sort_order", 0),
+    )
+
+
+@app.put("/config/lists/{item_id}", tags=["Config"])
+async def update_config_list_item(
+    item_id: int,
+    item:    dict,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Aktualizuje položku číselníku."""
+    return await db.update_config_list_item(
+        pool, item_id,
+        label      = item["label"],
+        color      = item.get("color"),
+        sort_order = item.get("sort_order", 0),
+        active     = item.get("active", True),
+    )
+
+
+@app.delete("/config/lists/{item_id}", tags=["Config"])
+async def delete_config_list_item(
+    item_id: int,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Smaže položku číselníku."""
+    await db.delete_config_list_item(pool, item_id)
+    return {"ok": True}
+
 
 
 @app.delete("/ranges/{range_id}", tags=["Ranges"])
@@ -954,16 +1017,12 @@ async def poll_device_data(
                 "interface": entry.get("interface"), "source": entry.get("source", "api_address"),
                 "is_primary": _strip_prefix(entry["ip"]) == ip_str})
         for entry in ext.get("arp", []):
-            arp_status = str(entry.get("status", "")).strip().lower()
-            if entry.get("ip") and (not arp_status or arp_status == "reachable"):
+            if entry.get("ip"):
                 ip_entries.append({"ip": _strip_prefix(entry["ip"]), "mac": entry.get("mac"),
                     "interface": entry.get("interface"), "source": entry.get("source", "api_arp"),
                     "is_primary": False})
         for lease in ext.get("dhcp", []):
-            lease_status = str(lease.get("status", "")).strip().lower()
-            dynamic_raw = lease.get("dynamic")
-            is_permanent = dynamic_raw is False or str(dynamic_raw).strip().lower() in ("false", "0", "no")
-            if lease.get("ip") and lease_status == "bound" and is_permanent:
+            if lease.get("ip") and lease.get("status") == "bound":
                 ip_entries.append({"ip": _strip_prefix(lease["ip"]), "mac": lease.get("mac"),
                     "interface": lease.get("server"), "source": "api_dhcp",
                     "is_primary": False})
@@ -975,21 +1034,6 @@ async def poll_device_data(
                     log.info(f"device_ips {ip_str}: +{ip_stats['inserted']} "
                              f"~{ip_stats['updated']} -{ip_stats['released']} "
                              f"events={len(ip_stats['changes'])}")
-                try:
-                    sync_n = await db.sync_ip_addresses_from_device_ips(
-                        pool, device_id=device_id,
-                    )
-                    await db.sync_ip_range_assignments(
-                        pool,
-                        ips=[e["ip"] for e in ip_entries if e.get("ip")],
-                    )
-                    if sync_n.get("upserted"):
-                        log.info(
-                            f"ip_addresses sync z pollu {ip_str}: "
-                            f"{sync_n['upserted']} záznamů"
-                        )
-                except Exception as _se:
-                    log.warning(f"ip_addresses sync po pollu: {_se}")
             except Exception as _ie:
                 log.warning(f"device_ips update: {_ie}")
 
@@ -1457,329 +1501,11 @@ async def get_ip_device_map(
     return await db.get_ip_device_map(pool)
 
 
-# ---------------------------------------------------------------------------
-# Scan exclusions — IP vyloučené ze scanu
-# ---------------------------------------------------------------------------
-@app.get("/scan-exclusions", tags=["Scan"])
-async def list_scan_exclusions(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_scan_exclusions(pool)
-
-
-@app.post("/scan-exclusions", tags=["Scan"])
-async def add_scan_exclusion(
-    body: ScanExclusionCreate,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    return await db.add_scan_exclusion(pool, body.ip, body.reason, user.username)
-
-
-@app.delete("/scan-exclusions/{exclusion_id}", tags=["Scan"])
-async def remove_scan_exclusion(
-    exclusion_id: int,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    ok = await db.remove_scan_exclusion(pool, exclusion_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Výjimka nenalezena")
-    return {"status": "deleted", "id": exclusion_id}
-
-
-# ---------------------------------------------------------------------------
-# Sites — logické sítě
-# ---------------------------------------------------------------------------
-@app.get("/sites", response_model=List[SiteModel], tags=["Sites"])
-async def list_sites(user=Depends(current_user), pool=Depends(get_db)):
-    return await db.get_sites(pool)
-
-
-@app.post("/sites", response_model=SiteModel, tags=["Sites"])
-async def create_site(
-    body: SiteCreate,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    return await db.create_site(pool, body.name, body.description, body.color)
-
-
-@app.put("/sites/{site_id}", response_model=SiteModel, tags=["Sites"])
-async def update_site(
-    site_id: int,
-    body: SiteUpdate,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    row = await db.update_site(
-        pool, site_id, body.name, body.description, body.color, body.active,
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Síť nenalezena")
-    return row
-
-
-@app.delete("/sites/{site_id}", tags=["Sites"])
-async def delete_site(
-    site_id: int,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    await db.delete_site(pool, site_id)
-    return {"status": "deleted", "id": site_id}
-
-
-@app.get("/ip-addresses", tags=["Hosts"])
-async def list_ip_addresses(
-    alive_only: bool = False,
-    range_id:   Optional[int] = None,
-    limit:      int = Query(5000, ge=1, le=20000),
-    user        = Depends(current_user),
-    pool        = Depends(get_db),
-):
-    return await db.get_ip_addresses(pool, alive_only, range_id, limit)
-
-
-@app.post("/ip-addresses/refresh", tags=["Hosts"])
-async def refresh_ip_addresses(
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    return await db.refresh_ip_addresses(pool)
-
-
-@app.post("/ip-addresses/sync-ranges", tags=["Hosts"])
-async def sync_ip_ranges(
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    """
-    Zpětně přiřadí ip_addresses.range_id podle ip_ranges (a tím síť/site).
-    Volat po migraci nebo změně rozsahů.
-    """
-    return await db.backfill_ip_range_assignments(pool)
-
-
-@app.get("/unknown-networks", tags=["Hosts"])
-async def get_unknown_networks(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_unknown_networks(pool)
-
-
-@app.get("/unknown-networks/{subnet:path}", tags=["Hosts"])
-async def get_unknown_network_ips(
-    subnet: str,
-    user   = Depends(current_user),
-    pool   = Depends(get_db),
-):
-    return await db.get_unknown_network_ips(pool, subnet)
-
-
-@app.get("/ip-presence/{ip:path}", tags=["Hosts"])
-async def get_ip_presence(
-    ip:    str,
-    hours: int = Query(24, ge=1, le=168),
-    user   = Depends(current_user),
-    pool   = Depends(get_db),
-):
-    return await db.get_ip_presence(pool, ip, hours)
-
-
 @app.get("/hosts/enriched", tags=["Hosts"])
 async def get_hosts_enriched(
-    site_id:  Optional[int] = Query(None),
-    range_id: Optional[int] = Query(None),
-    status:   Optional[str] = Query(None),
-    device:   Optional[str] = Query(None),
-    search:   Optional[str] = Query(None),
-    limit:    int           = Query(100, ge=1, le=500),
-    offset:   int           = Query(0, ge=0),
-    sort_by:  str           = Query("ip"),
-    sort_dir: str           = Query("asc"),
-    user = Depends(current_user),
-    pool = Depends(get_db),
+    hours: int = 24,
+    user  = Depends(current_user),
+    pool  = Depends(get_db),
 ):
-    """IP adresy se statistikami, filtrováním a agregovanými metrikami."""
-    return await db.get_hosts_enriched(
-        pool,
-        site_id=site_id,
-        range_id=range_id,
-        status=status,
-        device=device,
-        search=search,
-        limit=limit,
-        offset=offset,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-    )
-
-
-# ===========================================================================
-# KONFIGURACE — číselníky
-# ===========================================================================
-
-@app.get("/config/lists", tags=["Config"])
-async def get_all_config_lists(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    """Vrátí všechny číselníky seskupené podle kategorie."""
-    return await db.get_all_config_lists(pool)
-
-
-@app.get("/config/lists/{category}", tags=["Config"])
-async def get_config_list(
-    category:    str,
-    active_only: bool = Query(True),
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_config_list(pool, category, active_only)
-
-
-@app.post("/config/lists", tags=["Config"])
-async def create_config_item(
-    data: dict,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    return await db.create_config_item(
-        pool,
-        category   = data["category"],
-        value      = data["value"],
-        label      = data["label"],
-        color      = data.get("color"),
-        sort_order = data.get("sort_order", 0),
-    )
-
-
-@app.put("/config/lists/{item_id}", tags=["Config"])
-async def update_config_item(
-    item_id: int,
-    data:    dict,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    return await db.update_config_item(
-        pool, item_id,
-        label      = data["label"],
-        color      = data.get("color"),
-        sort_order = data.get("sort_order", 0),
-        active     = data.get("active", True),
-    )
-
-
-@app.delete("/config/lists/{item_id}", tags=["Config"])
-async def delete_config_item(
-    item_id: int,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    try:
-        await db.delete_config_item(pool, item_id)
-        return {"status": "ok"}
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-# ===========================================================================
-# LOKACE
-# ===========================================================================
-
-@app.get("/locations", tags=["Locations"])
-async def list_locations(
-    active_only: bool = Query(False),
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_locations(pool, active_only)
-
-
-@app.get("/locations/map", tags=["Locations"])
-async def list_locations_map(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    """Lokace s GPS souřadnicemi pro mapu."""
-    return await db.get_locations_with_gps(pool)
-
-
-@app.get("/locations/{location_id}", tags=["Locations"])
-async def get_location(
-    location_id: int,
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    loc = await db.get_location(pool, location_id)
-    if not loc:
-        raise HTTPException(404, "Lokace nenalezena")
-    return loc
-
-
-@app.get("/locations/{location_id}/devices", tags=["Locations"])
-async def get_location_devices(
-    location_id: int,
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_location_devices(pool, location_id)
-
-
-@app.post("/locations", tags=["Locations"])
-async def create_location(
-    data: dict,
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.create_location(pool, data)
-
-
-@app.put("/locations/{location_id}", tags=["Locations"])
-async def update_location(
-    location_id: int,
-    data: dict,
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.update_location(pool, location_id, data)
-
-
-@app.delete("/locations/{location_id}", tags=["Locations"])
-async def delete_location(
-    location_id: int,
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    await db.delete_location(pool, location_id)
-    return {"status": "ok"}
-
-
-# ===========================================================================
-# LOG VÝPADKŮ + LOG ZMĚN
-# ===========================================================================
-
-@app.get("/outages/stats", tags=["Logs"])
-async def get_outage_stats(
-    hours: int = Query(24, ge=1, le=720),
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_outage_stats(pool, hours)
-
-
-@app.get("/change-log", tags=["Logs"])
-async def get_change_log(
-    hours:       int            = Query(24, ge=1, le=720),
-    device_id:   int | None     = Query(None),
-    event_types: str | None     = Query(None),  # čárkou oddělené
-    limit:       int            = Query(200, ge=1, le=1000),
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    """Unified log změn IP + zařízení."""
-    types = event_types.split(",") if event_types else None
-    return await db.get_change_log(pool, hours, device_id, types, limit)
+    """Vrátí IP adresy s přiřazenými zařízeními (JOIN přes device_ips i primární IP)."""
+    return await db.get_hosts_enriched(pool, hours)

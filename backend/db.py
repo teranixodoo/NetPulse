@@ -329,19 +329,26 @@ async def add_device(pool, dev: DeviceCreate) -> dict:
 
         # 3. UPSERT do databáze
         row = await conn.fetchrow("""
-            INSERT INTO devices (device_uuid, ip, mac, hostname, device_type, description, alias, ownership)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (device_uuid) DO UPDATE 
-            SET ip = EXCLUDED.ip,
-                mac = COALESCE(devices.mac, EXCLUDED.mac),
-                hostname = EXCLUDED.hostname,
-                device_type = EXCLUDED.device_type,
-                description = EXCLUDED.description,
-                alias = EXCLUDED.alias,
-                ownership = EXCLUDED.ownership
+            INSERT INTO devices (device_uuid, ip, mac, hostname, device_type, description, alias,
+                                 ownership, vendor, serial_number, location_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (device_uuid) DO UPDATE
+            SET ip            = EXCLUDED.ip,
+                mac           = COALESCE(devices.mac, EXCLUDED.mac),
+                hostname      = EXCLUDED.hostname,
+                device_type   = EXCLUDED.device_type,
+                description   = EXCLUDED.description,
+                alias         = EXCLUDED.alias,
+                ownership     = COALESCE(devices.ownership, EXCLUDED.ownership),
+                vendor        = COALESCE(EXCLUDED.vendor, devices.vendor),
+                serial_number = COALESCE(EXCLUDED.serial_number, devices.serial_number),
+                location_id   = COALESCE(EXCLUDED.location_id, devices.location_id)
             RETURNING *
         """, device_uuid, dev.ip, dev.mac, dev.hostname, dev.device_type, dev.description, dev.alias,
-             getattr(dev, "ownership", "isp") or "isp")
+             getattr(dev, "ownership", "isp") or "isp",
+             getattr(dev, "vendor", None),
+             getattr(dev, "serial_number", None),
+             getattr(dev, "location_id", None))
         
         return dict(row)
 
@@ -481,11 +488,13 @@ async def update_device(pool: asyncpg.Pool, device_id: int, dev: "DeviceCreate")
                 alias         = $7,
                 vendor        = $8,
                 serial_number = $9,
+                ownership     = $10,
+                location_id   = $11,
                 updated_at    = NOW()
             WHERE id = $1
             RETURNING id, device_uuid, ip::text, hostname, mac::text,
                       device_type, description, alias, vendor, serial_number,
-                      created_at, updated_at
+                      ownership, location_id, created_at, updated_at
             """,
             device_id,
             str(dev.ip),
