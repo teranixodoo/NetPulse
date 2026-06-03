@@ -19,13 +19,14 @@ const NAV_ITEMS = [
   { href: "/ranges",           label: "IP Rozsahy",     icon: Network },
   { href: "/unknown-networks", label: "Neznámé sítě",   icon: AlertTriangle },
   { href: "/credentials", label: "Přihl. profily", icon: KeyRound },
-  { href: "/logs",        label: "Log výpadků", icon: ScrollText },
   { href: "/scans",      label: "Historie scanů", icon: History },
   { href: "/backups",    label: "Zálohy",         icon: HardDrive },
   { href: "/users",       label: "Uživatelé",   icon: Users },
   { href: "/settings",    label: "Nastavení",   icon: Settings },
   { href: "/config",      label: "Konfigurace", icon: Settings2 },
   { href: "/locations",   label: "Lokace",      icon: MapPin },
+  { href: "/outages",     label: "Log výpadků", icon: AlertTriangle },
+  { href: "/change-log",  label: "Log změn",    icon: History },
 ];
 
 const ADMIN_ITEMS = [

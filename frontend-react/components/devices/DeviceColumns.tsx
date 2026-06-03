@@ -2,7 +2,7 @@
 
 import { type ColumnDef } from "@tanstack/react-table";
 import type { Device, HostStats } from "@/lib/types";
-import { cn, formatDateShort, getDeviceStatus } from "@/lib/utils";
+import { cn, inetSortingFn, formatDateShort, getDeviceStatus } from "@/lib/utils";
 import { StatusDot, Badge } from "@/components/ui";
 
 // ---------------------------------------------------------------------------
@@ -85,6 +85,7 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
     {
       accessorKey: "ip",
       header: "IP adresa",
+      sortingFn: inetSortingFn,
       size: 130,
       cell: ({ getValue }) => (
         <span className="font-mono text-xs">{getValue() as string}</span>

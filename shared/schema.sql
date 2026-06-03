@@ -535,3 +535,64 @@ CREATE INDEX IF NOT EXISTS idx_locations_type   ON locations (type);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS location_id INTEGER
     REFERENCES locations(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_devices_location ON devices (location_id);
+
+-- ===========================================================================
+-- outages — výpadky zařízení (skutečné výpadky i změny IP)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS outages (
+    id          BIGSERIAL PRIMARY KEY,
+    ip          INET NOT NULL,
+    device_id   INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at    TIMESTAMPTZ,
+    duration_s  INTEGER,
+    resolution  TEXT,
+    -- 'recovered'  = IP zase pinguje
+    -- 'ip_changed' = zařízení dostalo novou IP
+    -- 'unknown'    = zařízení zmizelo
+    source      TEXT NOT NULL DEFAULT 'ping'
+);
+CREATE INDEX IF NOT EXISTS idx_outages_ip         ON outages (ip, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outages_device     ON outages (device_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outages_started    ON outages (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outages_open       ON outages (started_at DESC) WHERE ended_at IS NULL;
+
+-- ===========================================================================
+-- ip_events — log událostí IP adres
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS ip_events (
+    id          BIGSERIAL PRIMARY KEY,
+    ip          INET NOT NULL,
+    device_id   INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    event_type  TEXT NOT NULL,
+    -- 'online' | 'offline' | 'new_ip' | 'ip_disappeared' | 'ip_changed'
+    source      TEXT,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    meta        JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_ip_events_ip       ON ip_events (ip, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_events_occurred ON ip_events (occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_events_device   ON ip_events (device_id, occurred_at DESC);
+
+-- ===========================================================================
+-- device_events — log změn zařízení
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS device_events (
+    id          BIGSERIAL PRIMARY KEY,
+    device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    event_type  TEXT NOT NULL,
+    -- 'online' | 'offline' | 'ip_changed' | 'hostname_changed' | 'mac_seen'
+    old_value   JSONB,
+    new_value   JSONB,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_device_events_device   ON device_events (device_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_events_occurred ON device_events (occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_events_type     ON device_events (event_type, occurred_at DESC);
+
+-- last_online sloupce
+ALTER TABLE ip_addresses ADD COLUMN IF NOT EXISTS last_online TIMESTAMPTZ;
+ALTER TABLE devices       ADD COLUMN IF NOT EXISTS last_online TIMESTAMPTZ;
+
+-- prev_alive pro detekci změn stavu
+ALTER TABLE ip_addresses ADD COLUMN IF NOT EXISTS prev_alive BOOLEAN;

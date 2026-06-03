@@ -505,3 +505,48 @@ export interface Location {
   breadcrumb:   string[];
   device_count: number;
 }
+
+export interface Outage {
+  id:          number;
+  ip:          string;
+  device_id:   number | null;
+  hostname:    string | null;
+  alias:       string | null;
+  started_at:  string;
+  ended_at:    string | null;
+  duration_s:  number | null;
+  resolution:  string | null;
+  source:      string;
+  is_active:   boolean;
+  last_online: string | null;
+  mac:         string | null;
+  range_label: string | null;
+  site_name:   string | null;
+}
+
+export interface ChangeEvent {
+  log_type:    "ip" | "device";
+  id:          number;
+  ip:          string | null;
+  device_id:   number | null;
+  hostname:    string | null;
+  alias:       string | null;
+  event_type:  string;
+  source:      string | null;
+  occurred_at: string;
+  meta:        Record<string, unknown> | null;
+  old_value:   Record<string, unknown> | null;
+  new_value:   Record<string, unknown> | null;
+  last_online: string | null;
+  mac:         string | null;
+  range_label: string | null;
+  site_name:   string | null;
+}
+
+export interface OutageStats {
+  active:       number;
+  recovered:    number;
+  ip_changes:   number;
+  avg_duration_s: number | null;
+  max_duration_s: number | null;
+}

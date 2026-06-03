@@ -226,7 +226,7 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active FROM ip_ranges ORDER BY id"
+            "SELECT id, label, network::text, active, scan_enabled, description, site_id FROM ip_ranges ORDER BY network::inet"
         )
     return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
             for r in rows]
@@ -1494,14 +1494,49 @@ def _enriched_where(site_id, range_id, status, device, search):
     if device == "assigned": conds.append("ia.device_id IS NOT NULL")
     elif device == "free": conds.append("ia.device_id IS NULL")
     if search:
-        conds.append(f"(host(ia.ip) ILIKE ${n} OR d.hostname ILIKE ${n} OR d.alias ILIKE ${n})")
-        params.append(f"%{search}%"); n += 1
+        # Detekujeme jestli search vypadá jako CIDR (10.1.1.0/24), IP prefix nebo text
+        import re as _re
+        if _re.match(r'^\d+\.\d+\.\d+\.\d+/\d+$', search):
+            # Přesná CIDR notace - hledáme IP patřící do sítě
+            conds.append(f"ia.ip <<= ${n}::inet")
+            params.append(search); n += 1
+        elif _re.match(r'^[\d.]+$', search) and search.count('.') < 4:
+            # IP prefix (10.1 nebo 10.1.1) - použijeme inet operátory
+            conds.append(f"(host(ia.ip) LIKE ${n} OR d.hostname ILIKE ${n+1} OR d.alias ILIKE ${n+1})")
+            params.append(f"{search}%"); params.append(f"%{search}%"); n += 2
+        else:
+            # Textové vyhledávání
+            conds.append(f"(host(ia.ip) ILIKE ${n} OR d.hostname ILIKE ${n} OR d.alias ILIKE ${n})")
+            params.append(f"%{search}%"); n += 1
     return " AND ".join(conds), params, n
 
 
 async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
-                              device=None, search=None, limit=2000, offset=0) -> dict:
+                              device=None, search=None, limit=2000, offset=0,
+                              sort_by: str = "ip", sort_dir: str = "asc") -> dict:
     where, params, n = _enriched_where(site_id, range_id, status, device, search)
+    # Whitelist pro sort_by - bezpečné vložení do SQL
+    _sort_map = {
+        "ip":          "ia.ip",
+        "hostname":    "d.hostname",
+        "device_type": "d.device_type",
+        "uptime_pct":  "h.uptime_pct",
+        "avg_rtt_ms":  "h.avg_rtt_ms",
+        "avg_loss_pct":"h.avg_loss_pct",
+        "is_alive":    "ia.is_alive",
+        "site_name":   "s.name",
+        "range_label": "r.label",
+        "measurements":"h.checks",
+    }
+    _dir = "DESC" if sort_dir.lower() == "desc" else "ASC"
+    # NULLS LAST musí být za směrem: "col ASC NULLS LAST"
+    _col = _sort_map.get(sort_by, "ia.ip")
+    _nulls = "" if sort_by == "ip" else " NULLS LAST"
+    order_clause = f"{_col} {_dir}{_nulls}"
+    # Vždy přidáme ia.ip jako sekundární řazení
+    if sort_by != "ip":
+        order_clause += ", ia.ip ASC"
+
     async with pool.acquire() as conn:
         stats_row = await conn.fetchrow(f"""
             SELECT COUNT(*) AS total,
@@ -1530,7 +1565,7 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             LEFT JOIN devices d ON d.id=ia.device_id
             LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
             WHERE {where}
-            ORDER BY ia.is_alive DESC NULLS LAST, host(ia.ip)::inet
+            ORDER BY {order_clause}
             LIMIT ${n} OFFSET ${n+1}
         """, *params, limit, offset)
     return {
@@ -1639,7 +1674,7 @@ async def get_ip_ranges_with_site(pool) -> list[dict]:
         rows = await conn.fetch("""
             SELECT r.id, r.label, r.network::text, r.active, r.scan_enabled,
                    r.description, r.site_id, s.name AS site_name, s.color AS site_color
-            FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.id
+            FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.network::inet
         """)
     return [dict(r) for r in rows]
 
@@ -1812,3 +1847,276 @@ async def get_locations_with_gps(pool) -> list[dict]:
             GROUP BY l.id ORDER BY l.name
         """)
     return [dict(r) | {"device_count": int(r["device_count"] or 0)} for r in rows]
+
+
+# ===========================================================================
+# OUTAGES — výpadky a log změn
+# ===========================================================================
+
+async def open_outage(pool, ip: str, device_id: int | None, source: str = "ping") -> int:
+    """Otevře nový výpadek. Vrátí ID."""
+    async with pool.acquire() as conn:
+        # Nezakládáme duplicitní otevřený výpadek pro stejnou IP
+        existing = await conn.fetchval(
+            "SELECT id FROM outages WHERE ip=$1::inet AND ended_at IS NULL", ip
+        )
+        if existing:
+            return existing
+        return await conn.fetchval(
+            "INSERT INTO outages (ip, device_id, source) VALUES ($1::inet,$2,$3) RETURNING id",
+            ip, device_id, source
+        )
+
+
+async def close_outage(pool, ip: str, resolution: str = "recovered") -> int | None:
+    """Uzavře otevřený výpadek. Vrátí duration_s nebo None."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, started_at FROM outages WHERE ip=$1::inet AND ended_at IS NULL",
+            ip
+        )
+        if not row:
+            return None
+        duration = int((
+            __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            - row["started_at"]
+        ).total_seconds())
+        await conn.execute(
+            """UPDATE outages SET ended_at=NOW(), duration_s=$2, resolution=$3
+               WHERE id=$1""",
+            row["id"], duration, resolution
+        )
+        return duration
+
+
+async def check_device_has_other_ip(pool, device_id: int, exclude_ip: str) -> str | None:
+    """
+    Vrátí jinou IP stejného zařízení (stejná síť/range) viděnou v posledních 10 min.
+    Filtrujeme podle range_id aby nedošlo k záměně stejných IP v různých sítích.
+    """
+    if not device_id:
+        return None
+    async with pool.acquire() as conn:
+        # Zjistíme range_id původní IP
+        orig_range = await conn.fetchval(
+            "SELECT range_id FROM ip_addresses WHERE ip=$1::inet", exclude_ip
+        )
+        row = await conn.fetchrow(
+            """SELECT ia.ip::text FROM ip_addresses ia
+               WHERE ia.device_id = $1
+                 AND ia.ip != $2::inet
+                 AND ia.is_alive = TRUE
+                 AND ia.updated_at > NOW() - INTERVAL '10 minutes'
+                 AND ($3::int IS NULL OR ia.range_id = $3)
+               ORDER BY ia.updated_at DESC LIMIT 1""",
+            device_id, exclude_ip, orig_range
+        )
+    return row["ip"] if row else None
+
+
+async def log_ip_event(pool, ip: str, event_type: str, device_id: int | None = None,
+                       source: str | None = None, meta: dict | None = None) -> None:
+    import json as _j
+    async with pool.acquire() as conn:
+        # Přidáme snapshot last_online do meta
+        lo = await conn.fetchval(
+            "SELECT last_online FROM ip_addresses WHERE ip=$1::inet", ip
+        )
+        full_meta = meta or {}
+        if lo:
+            full_meta["snap_last_online"] = lo.isoformat()
+        await conn.execute(
+            """INSERT INTO ip_events (ip, device_id, event_type, source, meta)
+               VALUES ($1::inet, $2, $3, $4, $5)""",
+            ip, device_id, event_type, source,
+            _j.dumps(full_meta) if full_meta else None
+        )
+
+
+async def log_device_event(pool, device_id: int, event_type: str,
+                           old_value: dict | None = None,
+                           new_value: dict | None = None) -> None:
+    import json as _j
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO device_events (device_id, event_type, old_value, new_value)
+               VALUES ($1, $2, $3, $4)""",
+            device_id, event_type,
+            _j.dumps(old_value) if old_value else None,
+            _j.dumps(new_value) if new_value else None
+        )
+
+
+async def process_ip_state_change(pool, ip: str, is_alive: bool,
+                                  device_id: int | None, source: str = "ping") -> None:
+    """
+    Hlavní funkce volaná při každé změně stavu IP.
+    Rozhoduje: výpadek vs změna IP, zapisuje události.
+    """
+    if is_alive:
+        # IP se vrátila online
+        duration = await close_outage(pool, ip, resolution="recovered")
+        await log_ip_event(pool, ip, "online", device_id, source)
+        # Aktualizujeme last_online
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE ip_addresses SET last_online=NOW() WHERE ip=$1::inet", ip
+            )
+            if device_id:
+                await conn.execute(
+                    "UPDATE devices SET last_online=NOW() WHERE id=$1", device_id
+                )
+    else:
+        # IP přestala pingovat — je to výpadek nebo změna IP?
+        other_ip = await check_device_has_other_ip(pool, device_id, ip)
+
+        if other_ip:
+            # Zařízení je vidět na jiné IP → změna IP, ne výpadek
+            await close_outage(pool, ip, resolution="ip_changed")
+            await log_ip_event(pool, ip, "ip_changed", device_id, source,
+                               meta={"new_ip": other_ip})
+            if device_id:
+                await log_device_event(pool, device_id, "ip_changed",
+                                       old_value={"ip": ip},
+                                       new_value={"ip": other_ip})
+                # last_online se aktualizuje — zařízení je stále online
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE devices SET last_online=NOW() WHERE id=$1", device_id
+                    )
+        else:
+            # Skutečný výpadek
+            await open_outage(pool, ip, device_id, source)
+            await log_ip_event(pool, ip, "offline", device_id, source)
+
+
+async def get_outages_new(pool, hours: int = 24, active_only: bool = False,
+                          limit: int = 200, min_duration_s: int = 0) -> list[dict]:
+    """Vrátí výpadky z nové tabulky — rychlé."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT o.id, o.ip::text, o.device_id, o.started_at, o.ended_at,
+                   o.duration_s, o.resolution, o.source,
+                   d.hostname, d.alias, d.mac::text AS mac,
+                   CASE WHEN o.ended_at IS NULL THEN TRUE ELSE FALSE END AS is_active,
+                   ia.last_online,
+                   r.label AS range_label, s.name AS site_name
+            FROM outages o
+            LEFT JOIN devices d ON d.id = o.device_id
+            LEFT JOIN ip_addresses ia ON ia.ip = o.ip
+            LEFT JOIN ip_ranges r ON r.id = ia.range_id
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE ($1 = FALSE OR o.ended_at IS NULL)
+              AND o.started_at > NOW() - make_interval(hours=>$2)
+              AND (o.duration_s IS NULL OR o.duration_s >= $4)
+            ORDER BY o.started_at DESC
+            LIMIT $3
+        """, active_only, hours, limit, min_duration_s)
+    return [
+        dict(r) | {
+            "started_at":  r["started_at"].isoformat(),
+            "ended_at":    r["ended_at"].isoformat() if r["ended_at"] else None,
+            "last_online": r["last_online"].isoformat() if r.get("last_online") else None,
+            "mac":         r.get("mac"),
+            "range_label": r.get("range_label"),
+            "site_name":   r.get("site_name"),
+        }
+        for r in rows
+    ]
+
+
+async def get_change_log(pool, hours: int = 24, device_id: int | None = None,
+                         event_types: list | None = None, limit: int = 200) -> list[dict]:
+    """
+    Unified log změn — IP události + Device události chronologicky.
+    """
+    import json as _j
+    conds_ip  = ["occurred_at > NOW() - make_interval(hours=>$1)"]
+    conds_dev = ["occurred_at > NOW() - make_interval(hours=>$1)"]
+    params    = [hours]
+    n = 2
+
+    if device_id:
+        conds_ip.append(f"device_id = ${n}")
+        conds_dev.append(f"device_id = ${n}")
+        params.append(device_id)
+        n += 1
+
+    if event_types:
+        conds_ip.append(f"event_type = ANY(${n}::text[])")
+        conds_dev.append(f"event_type = ANY(${n}::text[])")
+        params.append(event_types)
+        n += 1
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT 'ip' AS log_type, ie.id, ie.ip::text AS ip,
+                   ie.device_id, ie.event_type, ie.source,
+                   ie.occurred_at, ie.meta::text AS meta,
+                   d.hostname, d.alias,
+                   NULL::text AS old_value, NULL::text AS new_value,
+                   ia.last_online, d.mac::text AS mac,
+                   r.label AS range_label, s.name AS site_name
+            FROM ip_events ie
+            LEFT JOIN devices d ON d.id = ie.device_id
+            LEFT JOIN ip_addresses ia ON ia.ip = ie.ip
+            LEFT JOIN ip_ranges r ON r.id = ia.range_id
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE {' AND '.join(conds_ip)}
+
+            UNION ALL
+
+            SELECT 'device' AS log_type, de.id, d.ip::text AS ip,
+                   de.device_id, de.event_type, NULL AS source,
+                   de.occurred_at, NULL AS meta,
+                   d.hostname, d.alias,
+                   de.old_value::text, de.new_value::text,
+                   d.last_online, d.mac::text AS mac,
+                   NULL::text AS range_label, NULL::text AS site_name
+            FROM device_events de
+            JOIN devices d ON d.id = de.device_id
+            WHERE {' AND '.join(conds_dev)}
+
+            ORDER BY occurred_at DESC
+            LIMIT ${n}
+        """, *params, limit)
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["occurred_at"] = r["occurred_at"].isoformat()
+        d["last_online"]  = r["last_online"].isoformat() if r.get("last_online") else None
+        d["mac"]          = r.get("mac")
+        d["range_label"]  = r.get("range_label")
+        d["site_name"]    = r.get("site_name")
+        # Použijeme snap_last_online z meta pokud je k dispozici
+        if isinstance(d.get('meta'), dict) and d['meta'].get('snap_last_online'):
+            d['last_online'] = d['meta']['snap_last_online']
+        if d.get("meta"):
+            try: d["meta"] = _j.loads(d["meta"])
+            except: pass
+        if d.get("old_value"):
+            try: d["old_value"] = _j.loads(d["old_value"])
+            except: pass
+        if d.get("new_value"):
+            try: d["new_value"] = _j.loads(d["new_value"])
+            except: pass
+        result.append(d)
+    return result
+
+
+async def get_outage_stats(pool, hours: int = 24) -> dict:
+    """Statistiky výpadků."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE ended_at IS NULL)     AS active,
+                COUNT(*) FILTER (WHERE ended_at IS NOT NULL
+                    AND resolution = 'recovered')            AS recovered,
+                COUNT(*) FILTER (WHERE resolution='ip_changed') AS ip_changes,
+                ROUND(AVG(duration_s) FILTER (WHERE duration_s IS NOT NULL))::int AS avg_duration_s,
+                MAX(duration_s)                              AS max_duration_s
+            FROM outages
+            WHERE started_at > NOW() - make_interval(hours=>$1)
+        """, hours)
+    return dict(row) if row else {}

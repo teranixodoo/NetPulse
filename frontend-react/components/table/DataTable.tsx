@@ -46,6 +46,10 @@ export interface DataTableProps<T> {
     total:        number;
     onPageChange: (pageIndex: number) => void;
   };
+  serverSorting?: {
+    sorting:         SortingState;
+    onSortingChange: (updater: any) => void;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +80,7 @@ export function DataTable<T>({
   stickyHeader = true,
   pageSize = 100,
   serverPagination,
+  serverSorting,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -157,12 +162,13 @@ export function DataTable<T>({
   const table = useReactTable<T>({
     data,
     columns: tableColumns,
-    state: { sorting, rowSelection, columnFilters, globalFilter, pagination },
-    onSortingChange: setSorting,
+    state: { sorting: serverSorting?.sorting ?? sorting, rowSelection, columnFilters, globalFilter, pagination },
+    onSortingChange: serverSorting?.onSortingChange ?? setSorting,
     onRowSelectionChange: setRowSelection,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange,
     onPaginationChange: setPagination,
+    manualSorting: !!serverSorting,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),

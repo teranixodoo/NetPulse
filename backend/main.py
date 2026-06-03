@@ -483,13 +483,17 @@ async def ping_single_host(
     }
 
 
-@app.get("/outages", response_model=List[OutageEvent], tags=["Data"])
+@app.get("/outages", tags=["Logs"])
 async def get_outages(
-    hours: int = Query(24, ge=1, le=168),
+    hours:           int  = Query(24, ge=1, le=720),
+    active_only:     bool = Query(False),
+    limit:           int  = Query(200, ge=1, le=1000),
+    min_duration_s:  int  = Query(0, ge=0),
     user = Depends(current_user),
     pool = Depends(get_db),
 ):
-    return await db.get_outages(pool, hours)
+    """Výpadky z dedikované tabulky — rychlé."""
+    return await db.get_outages_new(pool, hours, active_only, limit, min_duration_s)
 
 @app.delete("/results/orphaned", tags=["Data"])
 async def delete_orphaned_logs(user=Depends(admin_only), pool=Depends(get_db)):
@@ -1594,6 +1598,8 @@ async def get_hosts_enriched(
     search:   Optional[str] = Query(None),
     limit:    int           = Query(100, ge=1, le=500),
     offset:   int           = Query(0, ge=0),
+    sort_by:  str           = Query("ip"),
+    sort_dir: str           = Query("asc"),
     user = Depends(current_user),
     pool = Depends(get_db),
 ):
@@ -1607,6 +1613,8 @@ async def get_hosts_enriched(
         search=search,
         limit=limit,
         offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
 
 
@@ -1748,3 +1756,30 @@ async def delete_location(
 ):
     await db.delete_location(pool, location_id)
     return {"status": "ok"}
+
+
+# ===========================================================================
+# LOG VÝPADKŮ + LOG ZMĚN
+# ===========================================================================
+
+@app.get("/outages/stats", tags=["Logs"])
+async def get_outage_stats(
+    hours: int = Query(24, ge=1, le=720),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    return await db.get_outage_stats(pool, hours)
+
+
+@app.get("/change-log", tags=["Logs"])
+async def get_change_log(
+    hours:       int            = Query(24, ge=1, le=720),
+    device_id:   int | None     = Query(None),
+    event_types: str | None     = Query(None),  # čárkou oddělené
+    limit:       int            = Query(200, ge=1, le=1000),
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Unified log změn IP + zařízení."""
+    types = event_types.split(",") if event_types else None
+    return await db.get_change_log(pool, hours, device_id, types, limit)

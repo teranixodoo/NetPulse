@@ -447,6 +447,8 @@ export const hostsEnrichedApi = {
     search?:   string;
     limit?:    number;
     offset?:   number;
+    sort_by?:  string;
+    sort_dir?: string;
   }): Promise<EnrichedHostsResponse> {
     const p: Record<string, string | number> = {};
     if (params.site_id  != null) p.site_id  = params.site_id;
@@ -456,6 +458,8 @@ export const hostsEnrichedApi = {
     if (params.search)           p.search   = params.search;
     if (params.limit != null)  p.limit  = params.limit;
     if (params.offset != null) p.offset = params.offset;
+    if (params.sort_by)        p.sort_by  = params.sort_by;
+    if (params.sort_dir)       p.sort_dir = params.sort_dir;
     const { data } = await api.get("/hosts/enriched", { params: p });
     return data;
   },
@@ -546,5 +550,25 @@ export const locationsApi = {
   },
   async remove(id: number): Promise<void> {
     await api.delete(`/locations/${id}`);
+  },
+};
+
+export const outagesApi = {
+  async getAll(hours = 24, activeOnly = false, limit = 200, minDuration = 0): Promise<import('./types').Outage[]> {
+    const { data } = await api.get('/outages', { params: { hours, active_only: activeOnly, limit, min_duration_s: minDuration } });
+    return data;
+  },
+  async getStats(hours = 24): Promise<import('./types').OutageStats> {
+    const { data } = await api.get('/outages/stats', { params: { hours } });
+    return data;
+  },
+};
+
+export const changeLogApi = {
+  async getAll(hours = 24, deviceId?: number, eventTypes?: string, limit = 200): Promise<import('./types').ChangeEvent[]> {
+    const { data } = await api.get('/change-log', {
+      params: { hours, device_id: deviceId, event_types: eventTypes, limit }
+    });
+    return data;
   },
 };

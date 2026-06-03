@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi } from '@/lib/api';
+import { outagesApi, changeLogApi, scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -574,9 +574,11 @@ export function useHostsEnriched(params: {
   search?:   string;
   limit?:    number;
   offset?:   number;
+  sort_by?:  string;
+  sort_dir?: string;
 }) {
   return useQuery({
-    queryKey: ['hosts-enriched', params],
+    queryKey: ['hosts-enriched', params.site_id, params.range_id, params.status, params.device, params.search, params.limit, params.offset, params.sort_by, params.sort_dir],
     queryFn:  () => hostsEnrichedApi.get(params),
     staleTime: 30_000,
     refetchInterval: 60_000,
@@ -672,6 +674,33 @@ export function useDeleteLocation() {
   return useMutation({
     mutationFn: (id: number) => locationsApi.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['locations'] }),
+  });
+}
+
+export function useOutagesNew(hours = 24, activeOnly = false, limit = 200, minDuration = 0) {
+  return useQuery<import("@/lib/types").Outage[]>({
+    queryKey: ['outages-new', hours, activeOnly, minDuration],
+    queryFn:  () => outagesApi.getAll(hours, activeOnly, limit, minDuration),
+    refetchInterval: 60_000,
+    staleTime: 0,
+  });
+}
+
+export function useOutageStats(hours = 24) {
+  return useQuery<import("@/lib/types").OutageStats>({
+    queryKey: ['outage-stats', hours],
+    queryFn:  () => outagesApi.getStats(hours),
+    refetchInterval: 60_000,
+    staleTime: 0,
+  });
+}
+
+export function useChangeLog(hours = 24, deviceId?: number, eventTypes?: string) {
+  return useQuery<import("@/lib/types").ChangeEvent[]>({
+    queryKey: ['change-log', hours, deviceId, eventTypes],
+    queryFn:  () => changeLogApi.getAll(hours, deviceId, eventTypes),
+    refetchInterval: 60_000,
+    staleTime: 0,
   });
 }
 

@@ -109,3 +109,49 @@ export function uptimeColor(pct: number): string {
 export async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
+
+// ---------------------------------------------------------------------------
+// IP adresa — třídění jako inet (ne jako string)
+// ---------------------------------------------------------------------------
+
+/**
+ * Převede IPv4 adresu (s nebo bez prefixu) na pole čísel pro porovnání.
+ * "10.1.1.5/32" → [10, 1, 1, 5]
+ */
+export function ipToOctets(ip: string): number[] {
+  const clean = (ip ?? "").split("/")[0].trim();
+  const parts = clean.split(".");
+  if (parts.length !== 4) return [0, 0, 0, 0];
+  return parts.map(p => parseInt(p, 10) || 0);
+}
+
+/**
+ * Porovnání dvou IPv4 adres jako inet (správné číselné řazení).
+ * Vrátí záporné číslo, 0 nebo kladné číslo (jako localeCompare).
+ */
+export function compareInet(a: string | null | undefined, b: string | null | undefined): number {
+  const oa = ipToOctets(a ?? "");
+  const ob = ipToOctets(b ?? "");
+  for (let i = 0; i < 4; i++) {
+    if (oa[i] !== ob[i]) return oa[i] - ob[i];
+  }
+  // Pokud jsou IP stejné, porovnáme prefix délku
+  const pa = parseInt((a ?? "").split("/")[1] ?? "32", 10);
+  const pb = parseInt((b ?? "").split("/")[1] ?? "32", 10);
+  return pa - pb;
+}
+
+/**
+ * TanStack Table sortingFn pro IPv4 sloupce.
+ * Použití: { accessorKey: "ip", sortingFn: inetSortingFn }
+ */
+export function inetSortingFn<T>(
+  rowA: { getValue: (id: string) => unknown },
+  rowB: { getValue: (id: string) => unknown },
+  columnId: string
+): number {
+  return compareInet(
+    rowA.getValue(columnId) as string,
+    rowB.getValue(columnId) as string
+  );
+}

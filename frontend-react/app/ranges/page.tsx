@@ -11,7 +11,7 @@ import {
 } from "@/hooks/useNetPulse";
 import type { IpRange, HostStats, Site } from "@/lib/types";
 import { Button, MetricCard, FormField, Input, EmptyState, Spinner, Select } from "@/components/ui";
-import { cn, normalizeNetwork } from "@/lib/utils";
+import { cn, normalizeNetwork, compareInet } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // IP mapa rozsahu
@@ -613,7 +613,7 @@ export default function RangesPage() {
         if (!r.label.toLowerCase().includes(q) && !r.network.toLowerCase().includes(q)) return false;
       }
       return true;
-    });
+    }).sort((a: any, b: any) => compareInet(a.network, b.network));
   }, [ranges, siteFilter, searchQuery]);
   const activeRanges   = filteredRanges.filter((r: any) => r.active);
   const inactiveRanges = filteredRanges.filter((r: any) => !r.active);

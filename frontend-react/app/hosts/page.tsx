@@ -10,7 +10,7 @@ import { Button, Select, MetricCard, Spinner } from "@/components/ui";
 import type { Row } from "@tanstack/react-table";
 import type { Device, Site } from "@/lib/types";
 import type { EnrichedRow } from "@/lib/api";
-import { useReactTable } from "@tanstack/react-table";
+import { useReactTable, type SortingState } from "@tanstack/react-table";
 
 const HOSTS_PAGE_SIZE = 100;
 
@@ -30,11 +30,26 @@ export default function HostsPage() {
   const [deviceFilter, setDeviceFilter] = useState("");
   const [searchInput,  setSearchInput]  = useState("");
   const [pageIndex,    setPageIndex]    = useState(0);
+  const [sorting, setSorting] = useState<import("@tanstack/react-table").SortingState>([{ id: "ip", desc: false }]);
+  const handleSortingChange = (updater: any) => {
+    setSorting(typeof updater === "function" ? updater(sorting) : updater);
+    setPageIndex(0);
+  };
+  const _sortByMap: Record<string, string> = {
+    ip: "ip", currently_alive: "is_alive", device_hostname: "hostname",
+    device_type: "device_type", uptime_pct: "uptime_pct", avg_rtt_ms: "avg_rtt_ms",
+    avg_loss_pct: "avg_loss_pct", site_name: "site_name", range_label: "range_label",
+    measurements: "measurements",
+  };
+  const sortBy  = _sortByMap[sorting[0]?.id ?? "ip"] ?? "ip";
+  const sortDir = sorting[0]?.desc ? "desc" : "asc";
   const debouncedSearch = useDebounce(searchInput, 400);
 
   useEffect(() => {
     setPageIndex(0);
   }, [statusFilter, siteFilter, rangeFilter, deviceFilter, debouncedSearch]);
+
+
 
   const { data: enriched, isLoading } = useHostsEnriched({
     site_id:  siteFilter,
@@ -44,10 +59,18 @@ export default function HostsPage() {
     search:   debouncedSearch || undefined,
     limit:    HOSTS_PAGE_SIZE,
     offset:   pageIndex * HOSTS_PAGE_SIZE,
+    sort_by:  sortBy,
+    sort_dir: sortDir,
   });
 
+
+
   const { data: devices = [] } = useDevices();
+
+
   const { data: ranges  = [] } = useRanges();
+
+
   const { data: sites   = [] } = useSites();
 
   const deviceMap = useMemo(() => {
@@ -212,6 +235,10 @@ export default function HostsPage() {
         getRowId={(r) => r.ip}
         isLoading={isLoading}
         pageSize={0}
+        serverSorting={{
+          sorting,
+          onSortingChange: handleSortingChange,
+        }}
         serverPagination={{
           pageIndex,
           pageCount: enriched?.page_count ?? Math.max(1, Math.ceil(stats.total / HOSTS_PAGE_SIZE)),

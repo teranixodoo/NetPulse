@@ -175,6 +175,8 @@ async def run_scan(
             updated = await db.refresh_alive_from_presence(pool)
             if updated > 0:
                 log.info(f"ARP/DHCP alive: {updated} IP aktualizováno")
+            # Detekce změn stavu → výpadky a log změn
+            await _process_state_changes(pool)
         except Exception as _ipe:
             log.warning(f"ip_addresses update: {_ipe}")
         _syslog().write_bg(
@@ -1069,3 +1071,44 @@ def setup_poll_scheduler(pool, config: dict) -> None:
         log.info(f"Poll scheduler: interval {interval}s, zapnutý")
     else:
         log.info("Poll scheduler: vypnutý")
+
+
+async def _process_state_changes(pool) -> None:
+    """
+    Detekuje přechody is_alive TRUE↔FALSE v ip_addresses
+    a zapisuje výpadky + logy změn.
+    Porovnává aktuální stav s předchozím (ukládáme do ip_addresses.prev_alive).
+    """
+    try:
+        async with pool.acquire() as conn:
+            # Najdeme IP kde se stav změnil od posledního scanu
+            rows = await conn.fetch("""
+                SELECT ia.ip::text, ia.is_alive, ia.prev_alive,
+                       ia.device_id, ia.alive_source
+                FROM ip_addresses ia
+                WHERE ia.is_alive IS DISTINCT FROM ia.prev_alive
+                  AND ia.updated_at > NOW() - INTERVAL '5 minutes'
+            """)
+
+        for r in rows:
+            if r["is_alive"] == r["prev_alive"]:
+                continue
+            await db.process_ip_state_change(
+                pool,
+                ip        = r["ip"],
+                is_alive  = bool(r["is_alive"]),
+                device_id = r["device_id"],
+                source    = r["alive_source"] or "ping"
+            )
+
+        # Aktualizujeme prev_alive pro příští scan
+        if rows:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE ip_addresses SET prev_alive = is_alive "
+                    "WHERE is_alive IS DISTINCT FROM prev_alive"
+                )
+            log.debug(f"State changes: {len(rows)} IP zpracováno")
+
+    except Exception as e:
+        log.warning(f"_process_state_changes chyba: {e}")

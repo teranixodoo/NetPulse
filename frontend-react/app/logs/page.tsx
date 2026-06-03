@@ -5,7 +5,7 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useOutages, useHosts, useDevices } from "@/hooks/useNetPulse";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { StatusDot, MetricCard, EmptyState, Select } from "@/components/ui";
-import { formatDateTime, cn } from "@/lib/utils";
+import { formatDateTime, cn, inetSortingFn } from "@/lib/utils";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { OutageEvent } from "@/lib/types";
 import { useQueryClient } from "@tanstack/react-query";
@@ -25,6 +25,7 @@ interface OutageRow extends OutageEvent {
 const columns: ColumnDef<OutageRow, unknown>[] = [
   {
     accessorKey: "ip",
+      sortingFn: inetSortingFn,
     header: "IP adresa",
     size: 140,
     cell: ({ getValue }) => (
