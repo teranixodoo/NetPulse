@@ -13,11 +13,20 @@ export interface HostRow extends HostStats {
   ipOwner?:     { device_id: number; hostname: string; alias: string | null;
                   vendor: string | null; model: string | null;
                   interface: string | null; source: string; };
-  device_name?:   string | null;   // pro třídění a vyhledávání
-  device_source?: string | null;   // zdroj vazby
-  range_label?:   string | null;   // název rozsahu
-  site_name?:     string | null;   // název sítě
-  site_color?:    string | null;   // barva sítě
+  device_name?:     string | null;
+  device_source?:   string | null;
+  range_label?:     string | null;
+  site_name?:       string | null;
+  site_color?:      string | null;
+  // Enriched fields
+  device_hostname?: string | null;
+  device_alias?:    string | null;
+  device_vendor?:   string | null;
+  device_type?:     string | null;
+  mac?:             string | null;
+  device_id?:       number | null;
+  range_id?:        number | null;
+  site_id?:         number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,12 +100,6 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
           </div>
         );
       },
-      sortingFn: (a, b) => {
-        const av = a.original.currently_alive;
-        const bv = b.original.currently_alive;
-        if (av === bv) return 0;
-        return av ? -1 : 1;
-      },
     },
 
     // Síť
@@ -139,7 +142,6 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
     {
       accessorKey: "ip",
       header: "IP adresa",
-      sortingFn: inetSortingFn,
       size: 140,
       cell: ({ getValue }) => (
         <span className="font-mono text-sm">{getValue() as string}</span>
@@ -263,9 +265,10 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
       id: "mac",
       header: "MAC",
       size: 140,
-      accessorFn: (row) => row.device?.mac ?? "",
+      accessorFn: (row) => (row as any).mac ?? "",
+      enableSorting: false,
       cell: ({ row }) => {
-        const m = row.original.device?.mac;
+        const m = (row.original as any).mac;
         return m
           ? <span className="font-mono text-xs">{m}</span>
           : <span className="text-muted-foreground">—</span>;
@@ -274,10 +277,9 @@ export function getHostColumns(): ColumnDef<HostRow, unknown>[] {
 
     // Zařízení — tříditelný sloupec
     {
-      accessorKey: "device_name",
+      accessorKey: "device_hostname",
       header: "Zařízení",
       enableSorting: true,
-      sortingFn: "alphanumeric",
       cell: ({ row }) => {
         const name   = row.original.device_name;
         const source = row.original.device_source;

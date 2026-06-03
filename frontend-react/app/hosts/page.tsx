@@ -32,7 +32,8 @@ export default function HostsPage() {
   const [pageIndex,    setPageIndex]    = useState(0);
   const [sorting, setSorting] = useState<import("@tanstack/react-table").SortingState>([{ id: "ip", desc: false }]);
   const handleSortingChange = (updater: any) => {
-    setSorting(typeof updater === "function" ? updater(sorting) : updater);
+    const next = typeof updater === "function" ? updater(sorting) : updater;
+    setSorting(next);
     setPageIndex(0);
   };
   const _sortByMap: Record<string, string> = {
@@ -99,6 +100,15 @@ export default function HostsPage() {
       site_color:      r.site_color,
       device:          r.device_id ? deviceMap[r.device_id] : undefined,
       ipOwner:         undefined,
+      // Enriched fields pro server-side sort a zobrazení
+      device_hostname: r.device_hostname ?? null,
+      device_alias:    r.device_alias ?? null,
+      device_vendor:   r.device_vendor ?? null,
+      device_type:     r.device_type ?? null,
+      mac:             (r as any).mac ?? null,
+      device_id:       r.device_id ?? null,
+      range_id:        r.range_id ?? null,
+      site_id:         r.site_id ?? null,
     }));
   }, [enriched, deviceMap]);
 

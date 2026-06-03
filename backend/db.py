@@ -1519,7 +1519,9 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
     _sort_map = {
         "ip":          "ia.ip",
         "hostname":    "d.hostname",
+        "device_hostname": "d.hostname",
         "device_type": "d.device_type",
+        "mac":         "d.mac::text",
         "uptime_pct":  "h.uptime_pct",
         "avg_rtt_ms":  "h.avg_rtt_ms",
         "avg_loss_pct":"h.avg_loss_pct",
@@ -1556,7 +1558,7 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
                    ia.range_id, r.label AS range_label, r.site_id,
                    s.name AS site_name, s.color AS site_color,
                    ia.device_id, d.hostname AS device_hostname, d.alias AS device_alias,
-                   d.vendor AS device_vendor, d.device_type,
+                   d.vendor AS device_vendor, d.device_type, d.mac::text AS mac,
                    h.avg_rtt_ms, h.min_rtt_ms, h.max_rtt_ms, h.avg_loss_pct,
                    h.checks AS measurements, h.uptime_pct, h.last_check
             FROM ip_addresses ia
