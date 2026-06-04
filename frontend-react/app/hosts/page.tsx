@@ -52,7 +52,7 @@ export default function HostsPage() {
 
 
 
-  const { data: enriched, isLoading } = useHostsEnriched({
+  const { data: enriched, isLoading, error, status } = useHostsEnriched({
     site_id:  siteFilter,
     range_id: rangeFilter,
     status:   statusFilter || undefined,
@@ -65,6 +65,11 @@ export default function HostsPage() {
   });
 
 
+
+  // DEBUG
+  useEffect(() => {
+    console.log("[HOSTS] status:", status, "enriched:", enriched, "error:", error);
+  }, [status, enriched, error]);
 
   const { data: devices = [] } = useDevices();
 

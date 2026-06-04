@@ -88,6 +88,12 @@ function BasicInfoTab({
     (device.ownership as "isp"|"client"|"unknown") ?? "isp"
   );
   const [locationId,   setLocationId]   = useState<number | null>(device.location_id ?? null);
+
+  // Synchronizace state s props při změně zařízení
+  React.useEffect(() => {
+    setOwnership((device.ownership as "isp"|"client"|"unknown") ?? "isp");
+    setLocationId(device.location_id ?? null);
+  }, [device.id, device.ownership, device.location_id]);
   const { data: locations = [] }        = useLocations(false);
   const [vendor,       setVendor]       = useState(device.vendor ?? "");
   const [serialNumber, setSerialNumber] = useState(device.serial_number ?? "");

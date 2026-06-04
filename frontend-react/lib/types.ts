@@ -146,7 +146,8 @@ export interface Device {
   is_alive: boolean | null;
   cron_poll:  boolean;
   ownership:   "isp" | "client" | "unknown";
-  location_id: number | null;
+  location_id:   number | null;
+  location_name: string | null;
 }
 
 export interface DeviceCreate {

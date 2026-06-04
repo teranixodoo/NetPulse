@@ -65,6 +65,25 @@ async def save_results(pool: asyncpg.Pool, results: list) -> None:
         )
 
 
+async def update_ip_addresses_alive(pool: asyncpg.Pool, results: list) -> None:
+    """Aktualizuje is_alive v ip_addresses z výsledků ping scanu."""
+    if not results:
+        return
+    alive_ips   = [str(r.ip) for r in results if r.is_alive]
+    offline_ips = [str(r.ip) for r in results if not r.is_alive]
+    async with pool.acquire() as conn:
+        if alive_ips:
+            await conn.execute(
+                "UPDATE ip_addresses SET is_alive=TRUE, updated_at=NOW() WHERE host(ip)=ANY($1::text[])",
+                alive_ips,
+            )
+        if offline_ips:
+            await conn.execute(
+                "UPDATE ip_addresses SET is_alive=FALSE, updated_at=NOW() WHERE host(ip)=ANY($1::text[])",
+                offline_ips,
+            )
+
+
 async def get_host_stats(pool: asyncpg.Pool) -> List[HostStatsModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM host_stats_24h ORDER BY uptime_pct ASC")
@@ -429,6 +448,7 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d.vendor, d.serial_number,
                 d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
                 d.created_at, d.updated_at, d.cron_poll, d.location_id,
+                l.name AS location_name,
                 COALESCE(
                     json_agg(
                         json_build_object(
@@ -443,7 +463,8 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
             FROM devices d
             LEFT JOIN device_credentials dc ON dc.device_id = d.id
             LEFT JOIN credentials c ON c.id = dc.credential_id
-            GROUP BY d.id
+            LEFT JOIN locations l ON l.id = d.location_id
+            GROUP BY d.id, l.name
             ORDER BY d.hostname
             """
         )
@@ -1559,7 +1580,7 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
+            LEFT JOIN host_stats_24h h ON h.ip=ia.ip::text
             WHERE {where}
         """, *params)
         rows = await conn.fetch(f"""
@@ -1574,7 +1595,7 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
+            LEFT JOIN host_stats_24h h ON h.ip=ia.ip::text
             WHERE {where}
             ORDER BY {order_clause}
             LIMIT ${n} OFFSET ${n+1}

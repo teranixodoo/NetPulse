@@ -580,9 +580,8 @@ export function useHostsEnriched(params: {
   return useQuery({
     queryKey: ['hosts-enriched', params.site_id, params.range_id, params.status, params.device, params.search, params.limit, params.offset, params.sort_by, params.sort_dir],
     queryFn:  () => hostsEnrichedApi.get(params),
-    staleTime: 30_000,
+    staleTime: 0,
     refetchInterval: 60_000,
-    placeholderData: (prev: any) => prev,
   });
 }
 

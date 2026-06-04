@@ -110,6 +110,17 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
       },
     },
     {
+      accessorKey: "location_name",
+      header: "Lokace",
+      size: 140,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        return v
+          ? <span className="text-xs">{v}</span>
+          : <span className="text-muted-foreground text-xs">—</span>;
+      },
+    },
+    {
       accessorKey: "device_type",
       header: "Typ",
       size: 100,
@@ -223,25 +234,6 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
         const m = Math.floor((s % 3600) / 60);
         const text = w ? `${w}t ${d}d ${h}h` : d ? `${d}d ${h}h` : `${h}h ${m}m`;
         return <span className="text-xs font-mono tabular-nums text-muted-foreground" title="Vypočteno ze sekund">{text}</span>;
-      },
-    },
-    {
-      accessorKey: "credentials",
-      header: "Profily",
-      size: 150,
-      enableSorting: false,
-      cell: ({ getValue }) => {
-        const creds = getValue() as Device["credentials"];
-        if (!creds?.length) return <span className="text-muted-foreground">—</span>;
-        return (
-          <div className="flex flex-wrap gap-1">
-            {creds.map((c) => (
-              <Badge key={c.id} variant="secondary">
-                {c.name}
-              </Badge>
-            ))}
-          </div>
-        );
       },
     },
     {

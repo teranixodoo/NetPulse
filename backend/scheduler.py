@@ -144,6 +144,12 @@ async def run_scan(
 
         await db.save_results(pool, results)
 
+        # Aktualizujeme ip_addresses.is_alive z výsledků scanu
+        try:
+            await db.update_ip_addresses_alive(pool, results)
+        except Exception as _e:
+            log.warning(f"update_ip_addresses_alive chyba: {_e}")
+
         scan_state["last_scan"]  = datetime.now(timezone.utc).isoformat()
         scan_state["scan_count"] += 1
 

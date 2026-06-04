@@ -18,6 +18,8 @@ class DeviceBase(BaseModel):
     mac: Optional[str] = None
     vendor:        Optional[str] = None
     serial_number: Optional[str] = None
+    ownership:     Optional[str] = "isp"
+    location_id:   Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     @validator("mac")
@@ -224,6 +226,7 @@ class DeviceWithCredentials(BaseModel):
     cron_poll:                Optional[bool]  = False
     ownership:                Optional[str]   = "isp"
     location_id:              Optional[int]   = None
+    location_name:            Optional[str]   = None
     is_alive:                 Optional[bool]  = None
 
     class Config:
