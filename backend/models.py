@@ -62,6 +62,10 @@ class AppConfigModel(BaseModel):
     retention_days:  int   = Field(30, ge=1)
     db_url:          str   = "postgresql://user:pass@localhost/netpulse"
     ranges:          List[IpRangeModel] = []
+    # Cleanup scheduler
+    cleanup_enabled:        bool = Field(True,  description="Automatické mazání starých dat")
+    cleanup_retention_days: int  = Field(30, ge=1, le=365, description="Počet dní pro zachování ping_results")
+    cleanup_time:           str  = Field("02:00", description="Čas spuštění cleanup (HH:MM)")
     # Discovery scheduler
     discovery_enabled:    bool = Field(False, description="Discovery scheduler zapnutý")
     discovery_interval_s: int  = Field(3600, ge=60, description="Interval discovery (s)")

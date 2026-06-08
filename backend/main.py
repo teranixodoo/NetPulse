@@ -572,9 +572,9 @@ async def update_config(
 # ---------------------------------------------------------------------------
 # IP ROZSAHY
 # ---------------------------------------------------------------------------
-@app.get("/ranges", tags=["Ranges"])
+@app.get("/ranges", response_model=List[IpRangeModel], tags=["Ranges"])
 async def get_ranges(user=Depends(current_user), pool=Depends(get_db)):
-    return await db.get_ip_ranges_with_site(pool)
+    return await db.get_ip_ranges(pool)
 
 @app.post("/ranges", response_model=IpRangeModel, tags=["Ranges"])
 async def add_range(rng: IpRangeModel, user=Depends(admin_only), pool=Depends(get_db)):
@@ -1529,25 +1529,12 @@ async def get_ip_device_map(
 
 @app.get("/hosts/enriched", tags=["Hosts"])
 async def get_hosts_enriched(
-    site_id:    Optional[int] = Query(None),
-    range_id:   Optional[int] = Query(None),
-    status:     Optional[str] = Query(None),
-    device:     Optional[str] = Query(None),
-    search:     Optional[str] = Query(None),
-    limit:      int           = Query(100, ge=1, le=500),
-    offset:     int           = Query(0, ge=0),
-    sort_by:    str           = Query("ip"),
-    sort_dir:   str           = Query("asc"),
-    user = Depends(current_user),
-    pool = Depends(get_db),
+    hours: int = 24,
+    user  = Depends(current_user),
+    pool  = Depends(get_db),
 ):
-    """IP adresy se statistikami, filtrování a řazení."""
-    return await db.get_hosts_enriched(
-        pool, site_id=site_id, range_id=range_id,
-        status=status, device=device, search=search,
-        limit=limit, offset=offset,
-        sort_by=sort_by, sort_dir=sort_dir,
-    )
+    """Vrátí IP adresy s přiřazenými zařízeními (JOIN přes device_ips i primární IP)."""
+    return await db.get_hosts_enriched(pool, hours)
 
 
 # ===========================================================================
@@ -1700,15 +1687,3 @@ async def get_unknown_networks(user=Depends(current_user), pool=Depends(get_db))
 @app.get("/unknown-networks/{subnet:path}", tags=["UnknownNetworks"])
 async def get_unknown_network_ips(subnet: str, user=Depends(current_user), pool=Depends(get_db)):
     return await db.get_unknown_network_ips(pool, subnet)
-
-
-@app.post("/admin/cleanup-ping-results", tags=["Admin"])
-async def trigger_cleanup_ping_results(
-    user = Depends(admin_only),
-    pool = Depends(get_db),
-):
-    """Manuálně spustí cleanup ping_results."""
-    cfg = await db.get_config(pool)
-    retention = getattr(cfg, "cleanup_retention_days", 30)
-    result = await db.cleanup_ping_results(pool, retention)
-    return result

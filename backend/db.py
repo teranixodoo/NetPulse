@@ -1574,13 +1574,12 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             SELECT COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE ia.is_alive=TRUE) AS alive,
                    COUNT(*) FILTER (WHERE ia.device_id IS NOT NULL) AS assigned,
-                   ROUND(AVG(h.avg_rtt_ms)::numeric,1) AS avg_rtt,
-                   ROUND(AVG(h.uptime_pct)::numeric,1) AS avg_uptime
+                   ROUND(AVG(ia.avg_rtt_24h)::numeric,1) AS avg_rtt,
+                   ROUND(AVG(ia.uptime_pct_24h)::numeric,1) AS avg_uptime
             FROM ip_addresses ia
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
             WHERE {where}
         """, *params)
         rows = await conn.fetch(f"""
@@ -1595,7 +1594,6 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=host(ia.ip)||'/32'
             WHERE {where}
             ORDER BY {order_clause}
             LIMIT ${n} OFFSET ${n+1}
@@ -2152,3 +2150,48 @@ async def get_outage_stats(pool, hours: int = 24) -> dict:
             WHERE started_at > NOW() - make_interval(hours=>$1)
         """, hours)
     return dict(row) if row else {}
+
+
+# ===========================================================================
+# CLEANUP — mazání starých ping_results
+# ===========================================================================
+
+async def cleanup_ping_results(pool, retention_days: int) -> dict:
+    """Smaže ping_results starší než retention_days dní a provede VACUUM ANALYZE."""
+    import logging as _log
+    logger = _log.getLogger("netpulse.cleanup")
+
+    async with pool.acquire() as conn:
+        total_before = await conn.fetchval("SELECT COUNT(*) FROM ping_results")
+        deleted = await conn.fetchval(
+            "WITH deleted AS (DELETE FROM ping_results "
+            "WHERE scanned_at < NOW() - $1::interval RETURNING 1) "
+            "SELECT COUNT(*) FROM deleted",
+            f"{retention_days} days"
+        )
+        total_after = await conn.fetchval("SELECT COUNT(*) FROM ping_results")
+
+    logger.info(
+        f"Cleanup ping_results: smazáno {deleted} záznamů "
+        f"({total_before} → {total_after}), retence {retention_days} dní"
+    )
+
+    # VACUUM ANALYZE mimo transakci
+    try:
+        import os as _os, asyncpg as _apg
+        db_url = _os.environ.get("DATABASE_URL") or _os.environ.get("NETPULSE_DB_URL", "")
+        conn2 = await _apg.connect(db_url)
+        try:
+            await conn2.execute("VACUUM ANALYZE ping_results")
+            logger.info("VACUUM ANALYZE ping_results dokončen")
+        finally:
+            await conn2.close()
+    except Exception as e:
+        logger.warning(f"VACUUM ANALYZE chyba: {e}")
+
+    return {
+        "deleted":        deleted,
+        "total_before":   total_before,
+        "total_after":    total_after,
+        "retention_days": retention_days,
+    }
