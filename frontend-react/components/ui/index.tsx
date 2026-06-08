@@ -327,3 +327,5 @@ export function InlineConfirm({
 }
 
 export { Pagination, usePagination, PAGE_SIZE } from "./Pagination";
+
+export { LocationCombobox } from "./LocationCombobox";

@@ -596,3 +596,6 @@ ALTER TABLE devices       ADD COLUMN IF NOT EXISTS last_online TIMESTAMPTZ;
 
 -- prev_alive pro detekci změn stavu
 ALTER TABLE ip_addresses ADD COLUMN IF NOT EXISTS prev_alive BOOLEAN;
+
+-- ownership na ip_ranges
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS ownership TEXT NOT NULL DEFAULT 'isp' CHECK (ownership IN ('isp','client','unknown'));

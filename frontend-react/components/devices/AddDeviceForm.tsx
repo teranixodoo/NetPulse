@@ -3,9 +3,9 @@
 import { useConfigList } from "@/hooks/useNetPulse";
 import { useState, useMemo } from "react";
 import { Plus, ChevronDown, Loader2 } from "lucide-react";
-import { useCreateDevice, useLocations, getErrorMessage } from "@/hooks/useNetPulse";
+import { useCreateDevice, useLocations, useCreateLocation, getErrorMessage } from "@/hooks/useNetPulse";
 import type { HostStats, Device } from "@/lib/types";
-import { Button, FormField, Input } from "@/components/ui";
+import { Button, FormField, Input , LocationCombobox } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 
@@ -33,6 +33,7 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   const [locationId,   setLocationId]   = useState<number | null>(null);
   const [description,  setDescription]  = useState("");
   const { data: locations = [] }        = useLocations(false);
+  const createLocation                  = useCreateLocation();
   const [error,        setError]        = useState<string | null>(null);
 
   // Přiřazené IP
@@ -226,16 +227,17 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
                 />
               </FormField>
               <FormField label="Lokace">
-                <select
-                  value={locationId ?? ""}
-                  onChange={(e) => setLocationId(e.target.value ? Number(e.target.value) : null)}
-                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="">— bez lokace —</option>
-                  {(locations as import("@/lib/types").Location[]).map((l) => (
-                    <option key={l.id} value={l.id}>{l.breadcrumb?.join(" › ") ?? l.name}</option>
-                  ))}
-                </select>
+                <LocationCombobox
+                  locations={locations as import("@/lib/types").Location[]}
+                  value={locationId}
+                  onChange={setLocationId}
+                  onCreateNew={async (name) => {
+                    try {
+                      const newLoc = await createLocation.mutateAsync({ name, type: "other" });
+                      setLocationId(newLoc.id);
+                    } catch {}
+                  }}
+                />
               </FormField>
             </div>
             <FormField label="Poznámka">

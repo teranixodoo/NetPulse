@@ -572,9 +572,9 @@ async def update_config(
 # ---------------------------------------------------------------------------
 # IP ROZSAHY
 # ---------------------------------------------------------------------------
-@app.get("/ranges", response_model=List[IpRangeModel], tags=["Ranges"])
+@app.get("/ranges", tags=["Ranges"])
 async def get_ranges(user=Depends(current_user), pool=Depends(get_db)):
-    return await db.get_ip_ranges(pool)
+    return await db.get_ip_ranges_with_site(pool)
 
 @app.post("/ranges", response_model=IpRangeModel, tags=["Ranges"])
 async def add_range(rng: IpRangeModel, user=Depends(admin_only), pool=Depends(get_db)):
@@ -1529,15 +1529,15 @@ async def get_ip_device_map(
 
 @app.get("/hosts/enriched", tags=["Hosts"])
 async def get_hosts_enriched(
-    site_id:        Optional[int] = Query(None),
-    range_id:       Optional[int] = Query(None),
-    status:         Optional[str] = Query(None),
-    device:         Optional[str] = Query(None),
-    search:         Optional[str] = Query(None),
-    limit:          int           = Query(100, ge=1, le=500),
-    offset:         int           = Query(0, ge=0),
-    sort_by:        str           = Query("ip"),
-    sort_dir:       str           = Query("asc"),
+    site_id:    Optional[int] = Query(None),
+    range_id:   Optional[int] = Query(None),
+    status:     Optional[str] = Query(None),
+    device:     Optional[str] = Query(None),
+    search:     Optional[str] = Query(None),
+    limit:      int           = Query(100, ge=1, le=500),
+    offset:     int           = Query(0, ge=0),
+    sort_by:    str           = Query("ip"),
+    sort_dir:   str           = Query("asc"),
     user = Depends(current_user),
     pool = Depends(get_db),
 ):

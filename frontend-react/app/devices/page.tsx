@@ -23,6 +23,7 @@ export default function DevicesPage() {
   const [statusFilter,   setStatusFilter]   = useState("");
   const [vendorFilter,   setVendorFilter]   = useState("");
   const [ownershipFilter, setOwnershipFilter] = useState("");
+  const [locationFilter,  setLocationFilter]  = useState("");
   const [activeTabs, setActiveTabs] = useState<Record<number, string>>({});
   const [expandedRowId,  setExpandedRowId]  = useState<number | null>(null);
 
@@ -47,12 +48,13 @@ export default function DevicesPage() {
       if (typeFilter   && r.device_type !== typeFilter) return false;
       if (vendorFilter && r.vendor !== vendorFilter)    return false;
       if (ownershipFilter && (r.ownership ?? "isp") !== ownershipFilter) return false;
+      if (locationFilter  && !(r.location_name ?? "").toLowerCase().includes(locationFilter.toLowerCase())) return false;
       if (statusFilter === "online"  && r.hostInfo?.currently_alive !== true)  return false;
       if (statusFilter === "offline" && r.hostInfo?.currently_alive !== false) return false;
       if (statusFilter === "unknown" && r.hostInfo?.currently_alive != null)   return false;
       return true;
     });
-  }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter]);
+  }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter, locationFilter]);
 
   // Unikátní výrobci pro filtr
   const vendors = useMemo(
@@ -178,6 +180,14 @@ export default function DevicesPage() {
         <option value="client">Klientské</option>
         <option value="unknown">Neznámé</option>
       </Select>
+      <input
+        type="text"
+        value={locationFilter}
+        onChange={(e) => setLocationFilter(e.target.value)}
+        placeholder="Lokace..."
+        className="h-9 w-44 rounded-md border border-input bg-background px-3 text-sm
+                   placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+      />
       {vendors.length > 0 && (
         <Select
           value={vendorFilter}
@@ -198,7 +208,7 @@ export default function DevicesPage() {
         Export CSV
       </Button>
     </div>
-  ), [globalFilter, statusFilter, typeFilter, vendorFilter, ownershipFilter, vendors, filteredRows]);
+  ), [globalFilter, statusFilter, typeFilter, vendorFilter, ownershipFilter, locationFilter, vendors, filteredRows]);
 
   return (
     <div className="space-y-4">

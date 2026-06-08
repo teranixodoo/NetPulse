@@ -92,6 +92,7 @@ export interface IpRange {
   scan_enabled: boolean;
   description:  string | null;
   site_id:      number | null;
+  ownership?:   "isp" | "client" | "unknown" | null;
   site_name:    string | null;
   site_color:   string | null;
 }

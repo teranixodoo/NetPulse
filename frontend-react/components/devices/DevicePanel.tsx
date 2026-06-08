@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
-import { useConfigList, useLocations } from "@/hooks/useNetPulse";
+import { useConfigList, useLocations, useCreateLocation } from "@/hooks/useNetPulse";
 import {
-  Loader2, Save, Trash2, Search, RefreshCw,
+  Loader2, Save, Trash2, Search, RefreshCw, X,
   Link, Unlink, ChevronDown, Download, HardDrive, AlertCircle, CheckCircle2,
 } from "lucide-react";
 import {
@@ -16,7 +16,7 @@ import {
   getErrorMessage,
 } from "@/hooks/useNetPulse";
 import type { Device, HostStats, DiscoveryLayer, DeviceBackup, DeviceInterface, ArpEntry, DhcpLease, DeviceAllData, DeviceIp, DeviceIpHistory } from "@/lib/types";
-import { Button, FormField, Input, Spinner } from "@/components/ui";
+import { Button, FormField, Input, Spinner , LocationCombobox } from "@/components/ui";
 import { formatDateTime, cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,7 @@ function BasicInfoTab({
     setLocationId(device.location_id ?? null);
   }, [device.id, device.ownership, device.location_id]);
   const { data: locations = [] }        = useLocations(false);
+  const createLocation                  = useCreateLocation();
   const [vendor,       setVendor]       = useState(device.vendor ?? "");
   const [serialNumber, setSerialNumber] = useState(device.serial_number ?? "");
   const [mac,          setMac]          = useState(device.mac ?? "");
@@ -167,17 +168,17 @@ function BasicInfoTab({
           </select>
         </FormField>
         <FormField label="Lokace">
-          <select
-            value={locationId ?? ""}
-            onChange={(e) => setLocationId(e.target.value ? Number(e.target.value) : null)}
-            className="h-9 w-full rounded-md border border-input bg-background
-                       px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-          >
-            <option value="">— bez lokace —</option>
-            {(locations as import("@/lib/types").Location[]).map((l) => (
-              <option key={l.id} value={l.id}>{l.breadcrumb.join(" › ")}</option>
-            ))}
-          </select>
+          <LocationCombobox
+            locations={locations as import("@/lib/types").Location[]}
+            value={locationId}
+            onChange={setLocationId}
+            onCreateNew={async (name) => {
+              try {
+                const newLoc = await createLocation.mutateAsync({ name, type: "other" });
+                setLocationId(newLoc.id);
+              } catch {}
+            }}
+          />
         </FormField>
         <FormField label="Výrobce / platforma">
           <Input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="MikroTik" />
@@ -409,68 +410,92 @@ function CredentialsTab({ device }: { device: Device }) {
   const { data: allCredentials = [] } = useCredentials();
   const link   = useLinkCredential();
   const unlink = useUnlinkCredential();
+  const [search, setSearch] = React.useState("");
 
-  const assignedIds = new Set(device.credentials.map((c) => c.id));
+  const assignedIds  = new Set(device.credentials.map((c) => c.id));
+  const unassigned   = allCredentials.filter(
+    (c) => !assignedIds.has(c.id) &&
+      (search === "" ||
+       c.name.toLowerCase().includes(search.toLowerCase()) ||
+       c.auth_type.toLowerCase().includes(search.toLowerCase()))
+  );
 
   return (
-    <div className="p-4 space-y-3">
-      <p className="text-xs text-muted-foreground">
-        Přiřazené přihlašovací profily — jedno zařízení může mít více profilů.
-      </p>
-
-      {allCredentials.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          Žádné profily — přidejte je v sekci Přihl. profily.
+    <div className="p-4 space-y-4">
+      {/* Přiřazené profily */}
+      <div>
+        <p className="text-xs font-medium text-muted-foreground mb-2">
+          Přiřazené profily ({device.credentials.length})
         </p>
-      ) : (
-        <div className="space-y-1">
-          {allCredentials.map((cred) => {
-            const isAssigned = assignedIds.has(cred.id);
-            const isPending =
-              (link.isPending && link.variables?.credentialId === cred.id) ||
-              (unlink.isPending && unlink.variables?.credentialId === cred.id);
-            return (
-              <div
-                key={cred.id}
-                className={cn(
-                  "flex items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors",
-                  isAssigned
-                    ? "border-primary/30 bg-primary/5"
-                    : "border-border bg-background"
-                )}
-              >
-                <div className="flex-1 min-w-0">
-                  <span className="font-medium">{cred.name}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {cred.auth_type}
-                    {cred.username && ` · ${cred.username}`}
-                    {cred.port && ` · port ${cred.port}`}
-                  </span>
+        {device.credentials.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">Žádné přiřazené profily</p>
+        ) : (
+          <div className="space-y-1">
+            {device.credentials.map((cred) => {
+              const isPending = unlink.isPending && unlink.variables?.credentialId === cred.id;
+              return (
+                <div key={cred.id} className="flex items-center gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium">{cred.name}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {cred.auth_type}{cred.username && ` · ${cred.username}`}{cred.port && ` · port ${cred.port}`}
+                    </span>
+                  </div>
+                  <Button size="sm" variant="ghost" disabled={isPending}
+                    onClick={() => unlink.mutate({ deviceId: device.id, credentialId: cred.id })}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><Unlink className="h-3.5 w-3.5 mr-1" />Odebrat</>}
+                  </Button>
                 </div>
-                <Button
-                  size="sm"
-                  variant={isAssigned ? "ghost" : "outline"}
-                  disabled={isPending}
-                  onClick={() =>
-                    isAssigned
-                      ? unlink.mutate({ deviceId: device.id, credentialId: cred.id })
-                      : link.mutate({ deviceId: device.id, credentialId: cred.id })
-                  }
-                  className={cn(isAssigned && "text-destructive hover:text-destructive")}
-                >
-                  {isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : isAssigned ? (
-                    <><Unlink className="h-3.5 w-3.5" /> Odebrat</>
-                  ) : (
-                    <><Link className="h-3.5 w-3.5" /> Přiřadit</>
-                  )}
-                </Button>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Přidat profil — combobox */}
+      <div>
+        <p className="text-xs font-medium text-muted-foreground mb-2">Přidat profil</p>
+        <div className="relative">
+          <div className="flex items-center gap-2 h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Hledat profil..."
+              className="flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
+            />
+            {search && <X className="h-3.5 w-3.5 text-muted-foreground cursor-pointer" onClick={() => setSearch("")} />}
+          </div>
+          {(search.length > 0 && unassigned.length > 0) && (
+            <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-background shadow-lg max-h-48 overflow-y-auto">
+              {unassigned.map((cred) => {
+                const isPending = link.isPending && link.variables?.credentialId === cred.id;
+                return (
+                  <div key={cred.id}
+                    onClick={() => { link.mutate({ deviceId: device.id, credentialId: cred.id }); setSearch(""); }}
+                    className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-muted"
+                  >
+                    {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+                    <div>
+                      <span className="font-medium">{cred.name}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {cred.auth_type}{cred.username && ` · ${cred.username}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {search.length > 0 && unassigned.length === 0 && (
+            <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-background shadow-lg px-3 py-3 text-sm text-muted-foreground">
+              Žádné dostupné profily
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

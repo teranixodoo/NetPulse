@@ -245,10 +245,14 @@ async def set_config_value(pool: asyncpg.Pool, key: str, value: str) -> None:
 async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, label, network::text, active, scan_enabled, description, site_id FROM ip_ranges ORDER BY network::inet"
+            "SELECT id, label, network::text, active, scan_enabled, description, site_id, ownership FROM ip_ranges ORDER BY network::inet"
         )
-    return [IpRangeModel(id=r["id"], label=r["label"], network=r["network"], active=r["active"])
-            for r in rows]
+    return [IpRangeModel(
+        id=r["id"], label=r["label"], network=r["network"],
+        active=r["active"], scan_enabled=r["scan_enabled"],
+        description=r["description"], site_id=r["site_id"],
+        ownership=r["ownership"],
+    ) for r in rows]
 
 
 async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel:
@@ -259,8 +263,12 @@ async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel
                 "SELECT network::text FROM ip_ranges WHERE id=$1", rng.id
             )
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id,
+                """UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3,
+                   scan_enabled=$4, description=$5, site_id=$6, ownership=$7
+                   WHERE id=$8""",
+                rng.label, rng.network, rng.active,
+                rng.scan_enabled, rng.description, rng.site_id,
+                rng.ownership or "isp", rng.id,
             )
             # Pokud se změnil rozsah — smažeme ping_results mimo nový rozsah
             if old_row and old_row["network"] != rng.network:
@@ -271,8 +279,11 @@ async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active) VALUES ($1, $2::cidr, $3) RETURNING id",
+                """INSERT INTO ip_ranges (label, network, active, scan_enabled, description, site_id, ownership)
+                   VALUES ($1, $2::cidr, $3, $4, $5, $6, $7) RETURNING id""",
                 rng.label, rng.network, rng.active,
+                rng.scan_enabled, rng.description, rng.site_id,
+                rng.ownership or "isp",
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -1304,8 +1315,9 @@ async def get_ip_addresses(pool, alive_only=False, range_id=None, limit=5000) ->
     params.append(limit)
     async with pool.acquire() as conn:
         rows = await conn.fetch(f"""
-            SELECT host(ia.ip)||'/32' AS ip, ia.is_alive, ia.alive_source, ia.rtt_ms,
-                   ia.range_id, ia.device_id, ia.updated_at,
+            SELECT host(ia.ip)||'/32' AS ip,
+                   ia.is_alive AS currently_alive, ia.alive_source,
+                   ia.range_id, ia.device_id,
                    r.label AS range_label, s.id AS site_id, s.name AS site_name, s.color AS site_color,
                    d.hostname AS device_hostname, d.alias AS device_alias
             FROM ip_addresses ia
@@ -1574,13 +1586,12 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
             SELECT COUNT(*) AS total,
                    COUNT(*) FILTER (WHERE ia.is_alive=TRUE) AS alive,
                    COUNT(*) FILTER (WHERE ia.device_id IS NOT NULL) AS assigned,
-                   ROUND(AVG(h.avg_rtt_ms)::numeric,1) AS avg_rtt,
-                   ROUND(AVG(h.uptime_pct)::numeric,1) AS avg_uptime
+                   ROUND(AVG(ia.avg_rtt_24h)::numeric,1) AS avg_rtt,
+                   ROUND(AVG(ia.uptime_pct_24h)::numeric,1) AS avg_uptime
             FROM ip_addresses ia
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=ia.ip::text
             WHERE {where}
         """, *params)
         rows = await conn.fetch(f"""
@@ -1589,13 +1600,17 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
                    s.name AS site_name, s.color AS site_color,
                    ia.device_id, d.hostname AS device_hostname, d.alias AS device_alias,
                    d.vendor AS device_vendor, d.device_type, d.mac::text AS mac,
-                   h.avg_rtt_ms, h.min_rtt_ms, h.max_rtt_ms, h.avg_loss_pct,
-                   h.checks AS measurements, h.uptime_pct, h.last_check
+                   ia.avg_rtt_24h AS avg_rtt_ms,
+                   ia.min_rtt_24h AS min_rtt_ms,
+                   ia.max_rtt_24h AS max_rtt_ms,
+                   ia.packet_loss_24h AS avg_loss_pct,
+                   ia.checks_24h AS measurements,
+                   ia.uptime_pct_24h AS uptime_pct,
+                   ia.last_check AS last_check
             FROM ip_addresses ia
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
             LEFT JOIN devices d ON d.id=ia.device_id
-            LEFT JOIN host_stats_24h h ON h.ip=ia.ip::text
             WHERE {where}
             ORDER BY {order_clause}
             LIMIT ${n} OFFSET ${n+1}
@@ -1705,7 +1720,7 @@ async def get_ip_ranges_with_site(pool) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT r.id, r.label, r.network::text, r.active, r.scan_enabled,
-                   r.description, r.site_id, s.name AS site_name, s.color AS site_color
+                   r.description, r.site_id, r.ownership, s.name AS site_name, s.color AS site_color
             FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.network::inet
         """)
     return [dict(r) for r in rows]
