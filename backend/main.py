@@ -1700,3 +1700,15 @@ async def get_unknown_networks(user=Depends(current_user), pool=Depends(get_db))
 @app.get("/unknown-networks/{subnet:path}", tags=["UnknownNetworks"])
 async def get_unknown_network_ips(subnet: str, user=Depends(current_user), pool=Depends(get_db)):
     return await db.get_unknown_network_ips(pool, subnet)
+
+
+@app.post("/admin/cleanup-ping-results", tags=["Admin"])
+async def trigger_cleanup_ping_results(
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    """Manuálně spustí cleanup ping_results."""
+    cfg = await db.get_config(pool)
+    retention = getattr(cfg, "cleanup_retention_days", 30)
+    result = await db.cleanup_ping_results(pool, retention)
+    return result
