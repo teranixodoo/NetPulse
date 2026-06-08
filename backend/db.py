@@ -1777,6 +1777,106 @@ async def get_locations(pool, active_only: bool = False) -> list[dict]:
     return result
 
 
+
+async def get_locations_table(pool) -> list[dict]:
+    """
+    Vrátí lokace pro tabulkový pohled se stats:
+    - device_count: přímá zařízení
+    - total_device_count: všechna zařízení včetně podřízených (rekurzivně)
+    - online_count, offline_count: celkové (rekurzivně)
+    - children_count: počet přímých potomků
+    - parent_name: název nadřazené lokace
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            WITH RECURSIVE
+            -- Strom lokací s breadcrumb
+            loc_tree AS (
+                SELECT id, name, parent_id, ARRAY[name] AS path, 0 AS depth
+                FROM locations WHERE parent_id IS NULL
+                UNION ALL
+                SELECT l.id, l.name, l.parent_id, lt.path || l.name, lt.depth + 1
+                FROM locations l JOIN loc_tree lt ON l.parent_id = lt.id
+            ),
+            -- Všichni potomci pro každou lokaci (včetně sebe)
+            loc_descendants AS (
+                SELECT l.id AS root_id, l.id AS desc_id
+                FROM locations l
+                UNION ALL
+                SELECT ld.root_id, l.id
+                FROM locations l JOIN loc_descendants ld ON l.parent_id = ld.desc_id
+            ),
+            -- Stats zařízení přes celý podstrom
+            device_stats AS (
+                SELECT
+                    ld.root_id AS location_id,
+                    COUNT(d.id)                                          AS total_devices,
+                    COUNT(d.id) FILTER (WHERE ia.is_alive = TRUE)        AS online_devices,
+                    COUNT(d.id) FILTER (WHERE ia.is_alive = FALSE)       AS offline_devices
+                FROM loc_descendants ld
+                LEFT JOIN devices d ON d.location_id = ld.desc_id
+                LEFT JOIN LATERAL (
+                    SELECT is_alive FROM ip_addresses
+                    WHERE device_id = d.id
+                    ORDER BY updated_at DESC NULLS LAST LIMIT 1
+) ia ON TRUE
+                GROUP BY ld.root_id
+            ),
+            -- Přímá zařízení (ne rekurzivně)
+            direct_devices AS (
+                SELECT location_id, COUNT(*) AS cnt
+                FROM devices WHERE location_id IS NOT NULL
+                GROUP BY location_id
+            ),
+            -- Počet přímých potomků
+            children AS (
+                SELECT parent_id, COUNT(*) AS cnt
+                FROM locations WHERE parent_id IS NOT NULL
+                GROUP BY parent_id
+            )
+            SELECT
+                l.id, l.name, l.type, l.parent_id, l.active,
+                l.street, l.city, l.lat, l.lng,
+                lt.path AS breadcrumb,
+                lt.depth,
+                p.name AS parent_name,
+                COALESCE(dd.cnt, 0)              AS device_count,
+                COALESCE(ds.total_devices, 0)    AS total_device_count,
+                COALESCE(ds.online_devices, 0)   AS online_count,
+                COALESCE(ds.offline_devices, 0)  AS offline_count,
+                COALESCE(ch.cnt, 0)              AS children_count
+            FROM locations l
+            LEFT JOIN loc_tree lt ON lt.id = l.id
+            LEFT JOIN locations p ON p.id = l.parent_id
+            LEFT JOIN device_stats ds ON ds.location_id = l.id
+            LEFT JOIN direct_devices dd ON dd.location_id = l.id
+            LEFT JOIN children ch ON ch.parent_id = l.id
+            ORDER BY lt.path
+        """)
+
+    result = []
+    for r in rows:
+        result.append({
+            "id":               r["id"],
+            "name":             r["name"],
+            "type":             r["type"],
+            "parent_id":        r["parent_id"],
+            "parent_name":      r["parent_name"],
+            "active":           r["active"],
+            "street":           r["street"],
+            "city":             r["city"],
+            "lat":              float(r["lat"]) if r["lat"] else None,
+            "lng":              float(r["lng"]) if r["lng"] else None,
+            "breadcrumb":       list(r["breadcrumb"]) if r["breadcrumb"] else [r["name"]],
+            "depth":            r["depth"],
+            "device_count":     int(r["device_count"]),
+            "total_device_count": int(r["total_device_count"]),
+            "online_count":     int(r["online_count"]),
+            "offline_count":    int(r["offline_count"]),
+            "children_count":   int(r["children_count"]),
+        })
+    return result
+
 async def get_location(pool, location_id: int) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""

@@ -527,6 +527,13 @@ export const configListsApi = {
   },
 };
 
+export const locationsTableApi = {
+  async getAll(): Promise<any[]> {
+    const { data } = await api.get("/locations/table");
+    return data;
+  },
+};
+
 export const locationsApi = {
   async getAll(activeOnly = false): Promise<import('./types').Location[]> {
     const { data } = await api.get('/locations', { params: { active_only: activeOnly } });

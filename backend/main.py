@@ -1563,6 +1563,15 @@ async def get_locations(
     return await db.get_locations(pool, active_only)
 
 
+@app.get("/locations/table", tags=["Locations"])
+async def get_locations_table(
+    user = Depends(current_user),
+    pool = Depends(get_db),
+):
+    """Lokace pro tabulkový pohled se stats."""
+    return await db.get_locations_table(pool)
+
+
 @app.get("/locations/map", tags=["Locations"])
 async def get_locations_map(
     user = Depends(current_user),

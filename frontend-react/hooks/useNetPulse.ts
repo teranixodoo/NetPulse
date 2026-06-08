@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { systemLogsApi } from '@/lib/api';
-import { outagesApi, changeLogApi, scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi } from '@/lib/api';
+import { outagesApi, changeLogApi, scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi, locationsTableApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage,
@@ -640,6 +640,15 @@ export function useDeleteConfigItem() {
       qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
       qc.invalidateQueries({ queryKey: ['config-lists-all'] });
     },
+  });
+}
+
+export function useLocationsTable() {
+  return useQuery({
+    queryKey: ["locations-table"],
+    queryFn:  () => locationsTableApi.getAll(),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 
