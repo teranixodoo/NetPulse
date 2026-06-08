@@ -1552,13 +1552,13 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
         "device_hostname": "d.hostname",
         "device_type": "d.device_type",
         "mac":         "d.mac::text",
-        "uptime_pct":  "h.uptime_pct",
-        "avg_rtt_ms":  "h.avg_rtt_ms",
-        "avg_loss_pct":"h.avg_loss_pct",
+        "uptime_pct":  "ia.uptime_pct_24h",
+        "avg_rtt_ms":  "ia.avg_rtt_24h",
+        "avg_loss_pct":"ia.packet_loss_24h",
         "is_alive":    "ia.is_alive",
         "site_name":   "s.name",
         "range_label": "r.label",
-        "measurements":"h.checks",
+        "measurements":"ia.checks_24h",
     }
     _dir = "DESC" if sort_dir.lower() == "desc" else "ASC"
     # NULLS LAST musí být za směrem: "col ASC NULLS LAST"
@@ -1588,8 +1588,10 @@ async def get_hosts_enriched(pool, site_id=None, range_id=None, status=None,
                    s.name AS site_name, s.color AS site_color,
                    ia.device_id, d.hostname AS device_hostname, d.alias AS device_alias,
                    d.vendor AS device_vendor, d.device_type, d.mac::text AS mac,
-                   h.avg_rtt_ms, h.min_rtt_ms, h.max_rtt_ms, h.avg_loss_pct,
-                   h.checks AS measurements, h.uptime_pct, h.last_check
+                   ia.avg_rtt_24h AS avg_rtt_ms, ia.min_rtt_24h AS min_rtt_ms,
+                   ia.max_rtt_24h AS max_rtt_ms, ia.packet_loss_24h AS avg_loss_pct,
+                   ia.checks_24h AS measurements, ia.uptime_pct_24h AS uptime_pct,
+                   ia.last_check AS last_check
             FROM ip_addresses ia
             LEFT JOIN ip_ranges r ON r.id=ia.range_id
             LEFT JOIN sites s ON s.id=r.site_id
