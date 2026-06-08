@@ -48,9 +48,7 @@ class IpRangeModel(BaseModel):
     network:      str
     active:       bool = True
     scan_enabled: bool = True
-    description:  Optional[str] = None
-    site_id:      Optional[int] = None
-    ownership:    Optional[str] = "isp"
+    description:  Optional[str] = None  # volitelný popis rozsahu
 
 
 class AppConfigModel(BaseModel):

@@ -7,7 +7,7 @@ import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getDeviceColumns, type DeviceRow } from "@/components/devices/DeviceColumns";
 import { DevicePanel } from "@/components/devices/DevicePanel";
 import { AddDeviceForm } from "@/components/devices/AddDeviceForm";
-import { Button, Select } from "@/components/ui";
+import { Button, Select, MetricCard } from "@/components/ui";
 import type { Row } from "@tanstack/react-table";
 import type { Device } from "@/lib/types";
 
@@ -57,6 +57,12 @@ export default function DevicesPage() {
   }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter, locationFilter]);
 
   // Unikátní výrobci pro filtr
+  // Stats pro panel
+  const statsTotal   = filteredRows.length;
+  const statsOnline  = filteredRows.filter(r => r.hostInfo?.currently_alive === true).length;
+  const statsOffline = filteredRows.filter(r => r.hostInfo?.currently_alive === false).length;
+  const statsWithLoc = filteredRows.filter(r => r.location_id != null).length;
+
   const vendors = useMemo(
     () => [...new Set(rows.map((r) => r.vendor).filter(Boolean))] as string[],
     [rows]
@@ -214,6 +220,12 @@ export default function DevicesPage() {
     <div className="space-y-4">
       {/* Přidat zařízení — collapsible nahoře */}
       <AddDeviceForm hosts={hosts} devices={devices} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-2">
+        <MetricCard label="Celkem zařízení"   value={statsTotal} />
+        <MetricCard label="Online"            value={statsOnline}  color="green" />
+        <MetricCard label="Offline"           value={statsOffline} color="red" />
+        <MetricCard label="S umístněním"      value={statsWithLoc} />
+      </div>
 
       {/* Tabulka */}
       <DataTable<DeviceRow>

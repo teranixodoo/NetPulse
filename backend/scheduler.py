@@ -150,6 +150,12 @@ async def run_scan(
         except Exception as _e:
             log.warning(f"update_ip_addresses_alive chyba: {_e}")
 
+        # Detekce změn stavu → výpadky a log změn
+        try:
+            await _process_state_changes(pool)
+        except Exception as _e:
+            log.warning(f"_process_state_changes chyba: {_e}")
+
         scan_state["last_scan"]  = datetime.now(timezone.utc).isoformat()
         scan_state["scan_count"] += 1
 
@@ -502,6 +508,41 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
         name             = "System log cleanup",
         replace_existing = True,
     )
+
+    # Cleanup ping_results job
+    async def _ping_cleanup():
+        _cfg = await _db2.get_config(pool)
+        if not getattr(_cfg, "cleanup_enabled", True):
+            return
+        retention = getattr(_cfg, "cleanup_retention_days", 30)
+        result = await _db2.cleanup_ping_results(pool, retention)
+        _syslog().write_bg(
+            "INFO", "netpulse.cleanup",
+            f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
+            f"({result['total_before']} → {result['total_after']}), "
+            f"retence {retention} dní"
+        )
+
+    # Parsujeme cleanup_time (HH:MM) pro cron
+    _cleanup_time = config.get("cleanup_time", "02:00") if isinstance(config, dict) else getattr(config, "cleanup_time", "02:00")
+    try:
+        _ch, _cm = [int(x) for x in _cleanup_time.split(":")]
+    except Exception:
+        _ch, _cm = 2, 0
+
+    _scheduler.add_job(
+        _ping_cleanup,
+        "cron",
+        hour             = _ch,
+        minute           = _cm,
+        id               = "ping_cleanup",
+        name             = "Ping results cleanup",
+        replace_existing = True,
+        max_instances    = 1,
+    )
+    _cleanup_retention = config.get('cleanup_retention_days', 30) if isinstance(config, dict) else getattr(config, 'cleanup_retention_days', 30)
+    log.info(f"Cleanup scheduler: každý den v {_cleanup_time}, retence {_cleanup_retention} dní")
+
 
     # Watchdog — čistí zombie joby každé 3 minuty
     async def _watchdog_task():
@@ -1020,3 +1061,44 @@ def setup_poll_scheduler(pool, config: dict) -> None:
         log.info(f"Poll scheduler: interval {interval}s, zapnutý")
     else:
         log.info("Poll scheduler: vypnutý")
+
+
+async def _process_state_changes(pool) -> None:
+    """
+    Detekuje přechody is_alive TRUE↔FALSE v ip_addresses
+    a zapisuje výpadky + logy změn.
+    Ignoruje NULL prev_alive (první scan).
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ia.ip::text, ia.is_alive, ia.prev_alive,
+                       ia.device_id, ia.alive_source
+                FROM ip_addresses ia
+                WHERE ia.is_alive IS DISTINCT FROM ia.prev_alive
+                  AND ia.prev_alive IS NOT NULL
+                  AND ia.updated_at > NOW() - INTERVAL '5 minutes'
+            """)
+
+        for r in rows:
+            await db.process_ip_state_change(
+                pool,
+                ip        = r["ip"],
+                is_alive  = bool(r["is_alive"]),
+                device_id = r["device_id"],
+                source    = r["alive_source"] or "ping"
+            )
+
+        # Aktualizujeme prev_alive pro příští scan
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE ip_addresses SET prev_alive = is_alive
+                   WHERE is_alive IS DISTINCT FROM prev_alive
+                      OR prev_alive IS NULL"""
+            )
+
+        if rows:
+            log.debug(f"State changes: {len(rows)} IP zpracováno")
+
+    except Exception as e:
+        log.warning(f"_process_state_changes chyba: {e}")

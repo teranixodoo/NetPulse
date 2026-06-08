@@ -74,6 +74,9 @@ function ScanTab({ config, onSave, isPending }: { config: any; onSave: (d: any) 
   const [alertRtt, setAlertRtt]           = useState(0);
   const [alertEmail, setAlertEmail]       = useState("");
   const [retention, setRetention]         = useState(30);
+  const [cleanupEnabled, setCleanupEnabled] = useState(true);
+  const [cleanupRetention, setCleanupRetention] = useState(30);
+  const [cleanupTime, setCleanupTime]     = useState("02:00");
   const [saved, setSaved]                 = useState(false);
   const triggerScan = useTriggerScan();
   const { data: status } = useScanStatus();
@@ -87,11 +90,15 @@ function ScanTab({ config, onSave, isPending }: { config: any; onSave: (d: any) 
     setAlertRtt(Number(config.alert_rtt_ms) || 0);
     setAlertEmail(config.alert_email || "");
     setRetention(Number(config.retention_days) || 30);
+    setCleanupEnabled(config.cleanup_enabled ?? true);
+    setCleanupRetention(Number(config.cleanup_retention_days) || 30);
+    setCleanupTime(config.cleanup_time ?? "02:00");
   }, [config]);
 
   async function handleSave() {
     await onSave({ scan_interval_s: scanInterval, ping_count: pingCount, ping_timeout_ms: pingTimeout,
-      max_concurrent: maxConcurrent, alert_rtt_ms: alertRtt, alert_email: alertEmail, retention_days: retention });
+      max_concurrent: maxConcurrent, alert_rtt_ms: alertRtt, alert_email: alertEmail, retention_days: retention,
+      cleanup_enabled: cleanupEnabled, cleanup_retention_days: cleanupRetention, cleanup_time: cleanupTime });
     setSaved(true); setTimeout(() => setSaved(false), 3000);
   }
 
@@ -123,6 +130,26 @@ function ScanTab({ config, onSave, isPending }: { config: any; onSave: (d: any) 
       </div>
       <NumInput label="Retence dat (dny)" value={retention} onChange={setRetention} min={1} max={365}
         hint={`Ping výsledky starší než ${retention} dní se automaticky mažou.`} />
+
+      <h3 className="text-sm font-semibold mt-4 mb-1 text-foreground">Automatický cleanup</h3>
+      <div className="flex items-center justify-between py-2">
+        <div>
+          <p className="text-sm font-medium">Automatické mazání ping výsledků</p>
+          <p className="text-xs text-muted-foreground">Spouští se jednou denně, maže záznamy starší než zadaný počet dní</p>
+        </div>
+        <input type="checkbox" checked={cleanupEnabled} onChange={(e) => setCleanupEnabled(e.target.checked)}
+          className="h-4 w-4 cursor-pointer" />
+      </div>
+      <NumInput label="Počet dní pro zachování dat" value={cleanupRetention} onChange={setCleanupRetention} min={1} max={365}
+        hint="Ping výsledky starší než zadaný počet dní budou smazány (+ VACUUM)" />
+      <div className="flex items-center gap-3">
+        <label className="text-sm font-medium w-48 shrink-0">Čas spuštění</label>
+        <input type="time" value={cleanupTime}
+          onChange={(e) => setCleanupTime(e.target.value)}
+          className="h-9 rounded-md border border-input bg-background px-3 text-sm
+                     focus:outline-none focus:ring-2 focus:ring-primary/50" />
+        <span className="text-xs text-muted-foreground">Doporučeno: 02:00 (mimo provoz)</span>
+      </div>
       <SaveRow onSave={handleSave} isPending={isPending} saved={saved} />
     </div>
   );
@@ -615,7 +642,7 @@ export default function SettingsPage() {
   if (isLoading) return <div className="flex h-64 items-center justify-center"><Spinner className="h-6 w-6" /></div>;
 
   return (
-    <div className="max-w-2xl">
+    <div className="w-full">
       <div className="mb-4">
         <h1 className="text-2xl font-semibold">Nastavení</h1>
         <p className="text-sm text-muted-foreground mt-1">Konfigurace scanneru, schedulerů a systému</p>
