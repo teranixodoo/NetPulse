@@ -1730,10 +1730,19 @@ async def get_scan_exclusions(pool) -> list[dict]:
 # ===========================================================================
 
 def _loc_row(r: dict) -> dict:
-    """Normalizuje časová razítka v lokaci."""
+    """Normalizuje časová razítka a numerické typy v lokaci.
+    PostgreSQL vrací NUMERIC jako Decimal — převedeme na float/int
+    aby JSON serializace nevracítka stringy nebo způsobovala type mismatch.
+    """
     d = dict(r)
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
+    # lat/lng: PostgreSQL NUMERIC -> Python Decimal -> musi byt float nebo None
+    d["lat"] = float(d["lat"]) if d.get("lat") is not None else None
+    d["lng"] = float(d["lng"]) if d.get("lng") is not None else None
+    # ruian_id: muze prijit jako Decimal
+    if d.get("ruian_id") is not None:
+        d["ruian_id"] = int(d["ruian_id"])
     return d
 
 

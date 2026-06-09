@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { MapPin, Plus, Pencil, Trash2, ChevronRight,
          Check, X, ChevronDown, ChevronRight as CR } from "lucide-react";
 import { useLocations, useCreateLocation, useUpdateLocation,
@@ -36,6 +36,19 @@ function LocationForm({
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState<string | null>(null);
   const [geocoding,   setGeocoding]   = useState(false);
+
+  // Při změně nadřazené lokace doplní adresu/GPS — jen pokud je pole prázdné
+  useEffect(() => {
+    if (pid == null) return;
+    const parent = allLocations.find(l => l.id === pid);
+    if (!parent) return;
+    if (!street  && parent.street)          setStreet(parent.street);
+    if (!city    && parent.city)            setCity(parent.city);
+    if (!zip     && parent.zip)             setZip(parent.zip);
+    if (!country && parent.country)         setCountry(parent.country);
+    if (!lat     && parent.lat  != null)    setLat(parent.lat.toString());
+    if (!lng     && parent.lng  != null)    setLng(parent.lng.toString());
+  }, [pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Geocoding přes Nominatim
   async function geocode() {
