@@ -223,6 +223,28 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_credential_id INTEG
 -- credential_id, auth_type, username, port, use_ssl, ssl_context_type
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_successful_auth JSONB;
 
+-- ===========================================================================
+-- device_backups — zálohy konfigurace zařízení
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS device_backups (
+    id               SERIAL PRIMARY KEY,
+    device_id        INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    backup_type      TEXT NOT NULL DEFAULT 'export',  -- 'export' | 'binary'
+    filename         TEXT,
+    filepath         TEXT,
+    file_size_bytes  BIGINT,
+    status           TEXT NOT NULL DEFAULT 'running'
+                         CHECK (status IN ('running','ok','failed')),
+    error_msg        TEXT,
+    triggered_by     TEXT NOT NULL DEFAULT 'scheduler',
+    mikrotik_version TEXT,
+    duration_ms      INTEGER,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_device_backups_device  ON device_backups (device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_backups_status  ON device_backups (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_backups_created ON device_backups (created_at DESC);
+
 -- Migrace: Backup scheduler — globální konfigurace
 INSERT INTO app_config (key, value, description) VALUES
     ('backup_enabled',         'false', 'Automatický backup scheduler zapnutý'),

@@ -1124,7 +1124,7 @@ async def get_all_config_lists(pool) -> dict[str, list[dict]]:
     return result
 
 
-async def create_config_item(
+async def create_config_list_item(
     pool, category: str, value: str, label: str,
     color: str | None = None, sort_order: int = 0
 ) -> dict:
@@ -1139,8 +1139,11 @@ async def create_config_item(
         )
     return dict(row)
 
+# alias pro zpětnou kompatibilitu
+create_config_item = create_config_list_item
 
-async def update_config_item(
+
+async def update_config_list_item(
     pool, item_id: int, label: str, color: str | None,
     sort_order: int, active: bool
 ) -> dict:
@@ -1156,11 +1159,13 @@ async def update_config_item(
         )
     return dict(row)
 
+# alias pro zpětnou kompatibilitu
+update_config_item = update_config_list_item
 
-async def delete_config_item(pool, item_id: int) -> bool:
+
+async def delete_config_list_item(pool, item_id: int) -> bool:
     """Smaže položku — pouze pokud se nepoužívá v zařízeních."""
     async with pool.acquire() as conn:
-        # Zkontrolujeme jestli se hodnota používá
         item = await conn.fetchrow(
             "SELECT category, value FROM config_lists WHERE id=$1", item_id
         )
@@ -1174,6 +1179,9 @@ async def delete_config_item(pool, item_id: int) -> bool:
                 raise ValueError(f"Typ se používá u {count} zařízení, nelze smazat")
         await conn.execute("DELETE FROM config_lists WHERE id=$1", item_id)
     return True
+
+# alias pro zpětnou kompatibilitu
+delete_config_item = delete_config_list_item
 
 
 async def get_excluded_ips(pool) -> set[str]:
@@ -1709,18 +1717,6 @@ async def get_ip_ranges_with_site(pool) -> list[dict]:
             FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.network::inet
         """)
     return [dict(r) for r in rows]
-
-
-async def delete_config_item(pool, item_id) -> bool:
-    async with pool.acquire() as conn:
-        item = await conn.fetchrow("SELECT category, value FROM config_lists WHERE id=$1", item_id)
-        if not item: return False
-        if item["category"] == "device_type":
-            count = await conn.fetchval("SELECT COUNT(*) FROM devices WHERE device_type=$1", item["value"])
-            if count > 0:
-                raise ValueError(f"Typ se používá u {count} zařízení")
-        await conn.execute("DELETE FROM config_lists WHERE id=$1", item_id)
-    return True
 
 
 async def get_scan_exclusions(pool) -> list[dict]:
