@@ -35,6 +35,7 @@ services:
       DB_ENCRYPTION_KEY: ${DB_ENCRYPTION_KEY}
       PORT:              8000
       JWT_SECRET:        ${JWT_SECRET}
+      TZ:                Europe/Prague
     volumes:
       - backup_data:/backups   # persistentní úložiště záloh zařízení
     user: "0"

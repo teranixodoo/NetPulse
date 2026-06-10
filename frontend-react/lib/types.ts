@@ -85,15 +85,29 @@ export interface OutageEvent {
 // IP Rozsahy
 // ---------------------------------------------------------------------------
 export interface IpRange {
-  id:           number | null;
-  label:        string;
-  network:      string;
-  active:       boolean;
-  scan_enabled: boolean;
-  description:  string | null;
-  site_id:      number | null;
-  site_name:    string | null;
-  site_color:   string | null;
+  id:               number | null;
+  label:            string;
+  network:          string;
+  active:           boolean;
+  scan_enabled:     boolean;
+  description:      string | null;
+  site_id:          number | null;
+  site_name:        string | null;
+  site_color:       string | null;
+  ownership:        string | null;
+  proxy_device_id:  number | null;
+  proxy_mode:       "auto" | "manual" | "direct";
+  proxy_hostname:   string | null;
+  proxy_ip:         string | null;
+}
+
+export interface MikrotikProxy {
+  id:        number;
+  hostname:  string;
+  ip:        string;
+  alias:     string | null;
+  site_id:   number | null;
+  site_name: string | null;
 }
 
 // ---------------------------------------------------------------------------

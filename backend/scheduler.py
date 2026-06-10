@@ -77,33 +77,41 @@ async def run_scan(
     job_id = None
 
     try:
-        ranges    = await db.get_ip_ranges(pool)
+        ranges_raw = await db.get_ip_ranges_with_site(pool)
         # Skenovat jen active=True AND scan_enabled=True
-        scannable = [r for r in ranges if r.active and getattr(r, "scan_enabled", True)]
-        skipped   = [r for r in ranges if r.active and not getattr(r, "scan_enabled", True)]
+        scannable = [r for r in ranges_raw if r.get("active", True) and r.get("scan_enabled", True)]
+        skipped   = [r for r in ranges_raw if r.get("active", True) and not r.get("scan_enabled", True)]
         if skipped:
             log.info(f"Ping scan: přeskočeno {len(skipped)} rozsahů (scan disabled): "
-                     f"{[r.label for r in skipped]}")
+                     f"{[r['label'] for r in skipped]}")
 
         import ipaddress
-        target_ips = []
+        # Sestavíme range→ips mapu pro proxy-aware scan
+        range_ip_map = []
         for rng in scannable:
             try:
-                net = ipaddress.ip_network(rng.network, strict=False)
-                target_ips.extend(str(ip) for ip in net.hosts())
+                net = ipaddress.ip_network(rng["network"], strict=False)
+                ips = [str(ip) for ip in net.hosts()]
+                if ips:
+                    range_ip_map.append((rng, ips))
             except ValueError as e:
-                log.warning(f"Neplatný rozsah {rng.network}: {e}")
+                log.warning(f"Neplatný rozsah {rng['network']}: {e}")
 
         # Odstraníme vyloučené IP adresy
         excluded = await db.get_excluded_ips(pool)
+        all_target_ips = [ip for _, ips in range_ip_map for ip in ips]
         if excluded:
-            before     = len(target_ips)
-            target_ips = [ip for ip in target_ips
-                          if ip not in excluded and ip + "/32" not in excluded]
-            diff = before - len(target_ips)
+            before = len(all_target_ips)
+            range_ip_map = [
+                (rng, [ip for ip in ips if ip not in excluded and ip + "/32" not in excluded])
+                for rng, ips in range_ip_map
+            ]
+            all_target_ips = [ip for _, ips in range_ip_map for ip in ips]
+            diff = before - len(all_target_ips)
             if diff > 0:
                 log.info(f"Ping scan: vyloučeno {diff} IP ze scan_exclusions")
 
+        target_ips = all_target_ips
         scan_state["total_ips"] = len(target_ips)
 
         if not target_ips:
@@ -117,7 +125,7 @@ async def run_scan(
             trigger_type  = trigger_type,
             triggered_by  = triggered_by,
             total_targets = len(target_ips),
-            meta          = {"ranges": [r.label for r in scannable]},
+            meta          = {"ranges": [r["label"] for r in scannable]},
         )
         hb_task_scan = asyncio.create_task(_heartbeat_loop(pool, job_id)) if job_id else None
         log.info(
@@ -134,13 +142,30 @@ async def run_scan(
             scan_state["done_ips"] = done
             scan_state["progress"] = int((done / total) * 100) if total > 0 else 0
 
-        results = await sc.scan_range(
-            target_ips,
-            count      = int(config.get("ping_count",     3)),
-            timeout_ms = int(config.get("ping_timeout_ms",1000)),
-            max_conc   = int(config.get("max_concurrent", 128)),
-            on_progress= on_progress,
-        )
+        # Skenujeme range po rangi — každý může mít vlastní proxy
+        all_results = []
+        for rng, ips in range_ip_map:
+            proxy = None
+            if rng.get("proxy_mode", "direct") != "direct":
+                try:
+                    proxy = await db.get_proxy_for_range(pool, rng["id"])
+                    if proxy:
+                        log.info(f"Range {rng['label']}: proxy={proxy.get('hostname')} ({proxy.get('ip')})")
+                except Exception as _pe:
+                    log.warning(f"Range {rng['label']}: chyba proxy — {_pe}, použiji přímý ICMP")
+
+            range_results = await sc.scan_range_with_proxy(
+                ips,
+                proxy       = proxy,
+                count       = int(config.get("ping_count",      3)),
+                timeout_ms  = int(config.get("ping_timeout_ms", 1000)),
+                max_conc    = int(config.get("max_concurrent",  128)),
+                on_progress = on_progress,
+                pool        = pool,
+            )
+            all_results.extend(range_results)
+
+        results = all_results
 
         await db.save_results(pool, results)
 
@@ -998,6 +1023,37 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
 
                 if result.success:
                     await db.update_device_poll_result(pool, dev["id"], result)
+
+                    # Aktualizujeme device_ips z ARP/DHCP dat pollu
+                    if result.extended:
+                        ext = result.extended
+                        ip_entries = []
+                        def _strip(s): return s.split("/")[0] if s else s
+                        ip_str = str(dev["ip"]).split("/")[0]
+                        for entry in ext.get("own_ips", []):
+                            ip_entries.append({"ip": _strip(entry["ip"]), "mac": entry.get("mac"),
+                                "interface": entry.get("interface"),
+                                "source": entry.get("source", "api_address"),
+                                "is_primary": _strip(entry["ip"]) == ip_str})
+                        for entry in ext.get("arp", []):
+                            if entry.get("ip"):
+                                ip_entries.append({"ip": _strip(entry["ip"]), "mac": entry.get("mac"),
+                                    "interface": entry.get("interface"), "source": "api_arp",
+                                    "is_primary": False})
+                        for lease in ext.get("dhcp", []):
+                            if lease.get("ip") and lease.get("status") == "bound":
+                                ip_entries.append({"ip": _strip(lease["ip"]), "mac": lease.get("mac"),
+                                    "interface": lease.get("server"), "source": "api_dhcp",
+                                    "is_primary": False})
+                        if ip_entries:
+                            try:
+                                await db.update_device_ips(pool, dev["id"], ip_entries, "api")
+                                log.info(f"Poll scheduler device_ips {dev['ip']}: uloženo {len(ip_entries)} záznamů")
+                            except Exception as _ie:
+                                log.warning(f"Poll scheduler device_ips {dev['ip']}: {_ie}")
+                        else:
+                            log.debug(f"Poll scheduler device_ips {dev['ip']}: extended bez ARP dat")
+
                     ok += 1
                     log.info(f"Poll scheduler: {dev['ip']} OK ({result.method})")
                 else:

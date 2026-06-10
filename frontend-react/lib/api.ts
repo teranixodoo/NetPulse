@@ -149,7 +149,7 @@ export const dataApi = {
 // ---------------------------------------------------------------------------
 export const rangesApi = {
   async getAll(): Promise<IpRange[]> {
-    const { data } = await api.get<any[]>("/ranges");  // any aby se zachovaly site_name, site_color
+    const { data } = await api.get<any[]>("/ranges");
     return data;
   },
   async create(range: Omit<IpRange, "id"> & { id?: number | null }): Promise<IpRange> {
@@ -166,6 +166,17 @@ export const rangesApi = {
   },
   async delete(id: number, deleteData = false): Promise<void> {
     await api.delete(`/ranges/${id}`, { params: { delete_data: deleteData } });
+  },
+  async getMikrotikProxies(): Promise<import('./types').MikrotikProxy[]> {
+    const { data } = await api.get("/ranges/proxy/mikrotiks");
+    return data;
+  },
+  async setProxy(rangeId: number, proxyMode: string, proxyDeviceId: number | null): Promise<void> {
+    await api.put(`/ranges/${rangeId}/proxy`, { proxy_mode: proxyMode, proxy_device_id: proxyDeviceId });
+  },
+  async getProxy(rangeId: number): Promise<any> {
+    const { data } = await api.get(`/ranges/${rangeId}/proxy`);
+    return data;
   },
 };
 

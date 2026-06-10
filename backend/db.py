@@ -1194,18 +1194,14 @@ async def get_excluded_ips(pool) -> set[str]:
 
 
 async def cleanup_zombie_jobs(pool) -> int:
-    """Označí jako zombie joby které se zasekly (heartbeat starší než 10 minut)."""
+    """Označí jako zombie joby které se zasekly (běží déle než 10 minut)."""
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
             UPDATE scan_jobs
-            SET status = 'zombie', updated_at = NOW()
+            SET status = 'zombie'
             WHERE status IN ('running', 'pending')
-              AND (
-                heartbeat_at IS NULL AND started_at < NOW() - INTERVAL '10 minutes'
-                OR
-                heartbeat_at < NOW() - INTERVAL '10 minutes'
-              )
+              AND started_at < NOW() - INTERVAL '10 minutes'
             """
         )
     return int(result.split()[-1]) if result else 0
@@ -1393,15 +1389,14 @@ async def remove_scan_exclusion(pool, exclusion_id: int) -> None:
 async def mark_startup_zombies(pool) -> int:
     async with pool.acquire() as conn:
         result = await conn.execute("""
-            UPDATE scan_jobs SET status='zombie', updated_at=NOW()
+            UPDATE scan_jobs SET status='zombie'
             WHERE status IN ('running','pending') AND started_at < NOW()-INTERVAL '1 hour'
         """)
     return int(result.split()[-1]) if result else 0
 
 
 async def scan_job_heartbeat(pool, job_id: int) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE scan_jobs SET heartbeat_at=NOW() WHERE id=$1", job_id)
+    pass  # heartbeat_at sloupec neexistuje v scan_jobs
 
 
 async def update_device_poll_result(pool, device_id: int, result) -> None:
@@ -1713,8 +1708,140 @@ async def get_ip_ranges_with_site(pool) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT r.id, r.label, r.network::text, r.active, r.scan_enabled,
-                   r.description, r.site_id, s.name AS site_name, s.color AS site_color
-            FROM ip_ranges r LEFT JOIN sites s ON s.id=r.site_id ORDER BY r.network::inet
+                   r.description, r.site_id, r.ownership,
+                   r.proxy_device_id, r.proxy_mode,
+                   s.name AS site_name, s.color AS site_color,
+                   d.hostname AS proxy_hostname, d.ip::text AS proxy_ip
+            FROM ip_ranges r
+            LEFT JOIN sites   s ON s.id = r.site_id
+            LEFT JOIN devices d ON d.id = r.proxy_device_id
+            ORDER BY r.network::inet
+        """)
+    return [dict(r) for r in rows]
+
+
+async def get_proxy_for_range(pool, range_id: int) -> dict | None:
+    """
+    Vrátí proxy zařízení + credential pro daný IP range.
+    Respektuje proxy_mode:
+      auto   → hledá MikroTik router s API credentialem ve stejném site
+      manual → použije proxy_device_id přímo
+      direct → vrátí None (přímý ICMP)
+    """
+    async with pool.acquire() as conn:
+        rng = await conn.fetchrow(
+            "SELECT proxy_device_id, proxy_mode, site_id FROM ip_ranges WHERE id=$1",
+            range_id
+        )
+        if not rng:
+            return None
+
+        mode = rng["proxy_mode"] or "auto"
+
+        if mode == "direct":
+            return None
+
+        if mode == "manual" and rng["proxy_device_id"]:
+            device_id = rng["proxy_device_id"]
+        elif mode == "auto" and rng["site_id"]:
+            # Najdi MikroTik router s API credentialem ve stejném site
+            # Auto: najdi MikroTik router s API credentialem jehož IP je v rangi
+            # patřícím do stejného site jako hledaný range
+            row = await conn.fetchrow("""
+                SELECT d.id FROM devices d
+                JOIN device_credentials dc ON dc.device_id = d.id
+                JOIN credentials c         ON c.id = dc.credential_id
+                JOIN ip_ranges r           ON d.ip << r.network
+                WHERE r.site_id       = $1
+                  AND d.device_type   = 'router'
+                  AND LOWER(d.vendor) = 'mikrotik'
+                  AND c.auth_type     = 'api'
+                ORDER BY d.id
+                LIMIT 1
+            """, rng["site_id"])
+            if not row:
+                return None
+            device_id = row["id"]
+        else:
+            return None
+
+        # Načti device + best API credential
+        device = await conn.fetchrow(
+            "SELECT id, hostname, ip::text, vendor FROM devices WHERE id=$1",
+            device_id
+        )
+        if not device:
+            return None
+
+        cred = await conn.fetchrow("""
+            SELECT c.id, c.auth_type, c.username, c.password_cipher AS password_enc,
+                   c.port, c.extra_params
+            FROM credentials c
+            JOIN device_credentials dc ON dc.credential_id = c.id
+            WHERE dc.device_id = $1
+              AND c.auth_type  = 'api'
+            ORDER BY c.id
+            LIMIT 1
+        """, device_id)
+        if not cred:
+            return None
+
+        # use_ssl z extra_params nebo podle portu
+        extra = cred.get("extra_params") or {}
+        if isinstance(extra, str):
+            import json as _json
+            try: extra = _json.loads(extra)
+            except Exception: extra = {}
+        port    = cred["port"] or 8728
+        use_ssl = extra.get("use_ssl", port in (8729, 58729))
+
+        return {
+            "device_id":     device["id"],
+            "hostname":      device["hostname"],
+            "ip":            str(device["ip"]).split("/")[0],
+            "vendor":        device["vendor"],
+            "credential_id": cred["id"],
+            "auth_type":     cred["auth_type"],
+            "username":      cred["username"],
+            "password_enc":  cred["password_enc"],  # = password_cipher
+            "port":          port,
+            "use_ssl":       use_ssl,
+        }
+
+
+async def set_range_proxy(
+    pool, range_id: int,
+    proxy_mode: str,
+    proxy_device_id: int | None
+) -> dict:
+    """Nastaví proxy_mode a proxy_device_id pro IP range."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE ip_ranges
+            SET proxy_mode      = $2,
+                proxy_device_id = $3
+            WHERE id = $1
+            RETURNING id, label, proxy_mode, proxy_device_id
+        """, range_id, proxy_mode, proxy_device_id)
+    return dict(row)
+
+
+async def get_mikrotik_routers_with_api(pool) -> list[dict]:
+    """Vrátí seznam MikroTik routerů které mají API credential — pro výběr proxy."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT ON (d.id)
+                   d.id, d.hostname, d.ip::text AS ip, d.alias,
+                   r.site_id, s.name AS site_name
+            FROM devices d
+            JOIN device_credentials dc ON dc.device_id = d.id
+            JOIN credentials c         ON c.id = dc.credential_id
+            LEFT JOIN ip_ranges r ON d.ip << r.network
+            LEFT JOIN sites s     ON s.id = r.site_id
+            WHERE d.device_type   = 'router'
+              AND LOWER(d.vendor) = 'mikrotik'
+              AND c.auth_type     = 'api'
+            ORDER BY d.id, d.hostname
         """)
     return [dict(r) for r in rows]
 

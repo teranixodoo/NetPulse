@@ -3,13 +3,14 @@
 import { useState, useMemo } from "react";
 import {
   Plus, Pencil, Trash2, Save, X,
-  ChevronDown, Loader2, Network, AlertTriangle, Info,
+  ChevronDown, Loader2, Network, AlertTriangle, Info, Router,
 } from "lucide-react";
 import {
   useRanges, useHosts, useIpAddresses, useCreateRange, useSites,
   useUpdateRange, useDeleteRange, useRangeImpact, getErrorMessage,
+  useMikrotikProxies, useSetRangeProxy,
 } from "@/hooks/useNetPulse";
-import type { IpRange, HostStats, Site } from "@/lib/types";
+import type { IpRange, HostStats, Site, MikrotikProxy } from "@/lib/types";
 import { Button, MetricCard, FormField, Input, EmptyState, Spinner, Select } from "@/components/ui";
 import { cn, normalizeNetwork, compareInet } from "@/lib/utils";
 
@@ -299,18 +300,22 @@ function RangeRow({
     const networkChanged = newNetwork !== range.network;
     try {
       await updateRange.mutateAsync({
-        id:           range.id!,
-        label:        data.label,
-        network:      newNetwork,
-        active:       data.active,
-        scan_enabled: data.scan_enabled,
-        description:  data.description || null,
-        site_id:      data.site_id ?? null,
-        site_name:    null,   // backend doplní
-        site_color:   null,   // backend doplní
+        id:              range.id!,
+        label:           data.label,
+        network:         newNetwork,
+        active:          data.active,
+        scan_enabled:    data.scan_enabled,
+        description:     data.description || null,
+        site_id:         data.site_id ?? null,
+        site_name:       null,
+        site_color:      null,
+        ownership:       (range as any).ownership ?? "isp",
+        proxy_device_id: (range as any).proxy_device_id ?? null,
+        proxy_mode:      (range as any).proxy_mode ?? "auto",
+        proxy_hostname:  null,
+        proxy_ip:        null,
       });
       setEditing(false);
-      // Upozornění při změně sítě
       if (networkChanged) {
         setNetworkChanged(true);
         setExpanded(true);
@@ -359,6 +364,21 @@ function RangeRow({
               ⏸ Sken zakázán
             </span>
           )}
+          {/* Proxy indikátor */}
+          {(range as any).proxy_mode === "direct" ? (
+            <span className="inline-flex items-center gap-1 rounded bg-blue-100 dark:bg-blue-950/40 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:text-blue-400">
+              📡 Přímý ICMP
+            </span>
+          ) : (range as any).proxy_hostname ? (
+            <span className="inline-flex items-center gap-1 rounded bg-green-100 dark:bg-green-950/40 px-1.5 py-0.5 text-[10px] font-medium text-green-700 dark:text-green-400"
+              title={`Ping proxy: ${(range as any).proxy_hostname} (${(range as any).proxy_ip})`}>
+              🔀 Proxy: {(range as any).proxy_hostname}
+            </span>
+          ) : (range as any).proxy_mode === "auto" ? (
+            <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              🔀 Auto proxy
+            </span>
+          ) : null}
           {range.description && (
             <p className="text-xs text-muted-foreground/70 truncate max-w-sm">{range.description}</p>
           )}
@@ -476,8 +496,8 @@ function RangeRow({
 
           {/* Editační formulář */}
           {editing && (
-            <div className="rounded-md border border-primary/30 bg-primary/5 p-4">
-              <p className="mb-3 text-sm font-medium">Upravit rozsah</p>
+            <div className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-4">
+              <p className="text-sm font-medium">Upravit rozsah</p>
               <RangeForm
                 defaultValues={{ label: range.label, network: range.network, active: range.active, scan_enabled: range.scan_enabled ?? true, description: range.description ?? "", site_id: (range as any).site_id ?? null }}
               sites={sites}
@@ -485,6 +505,10 @@ function RangeRow({
                 onCancel={() => setEditing(false)}
                 isPending={updateRange.isPending}
               />
+              {/* Proxy nastavení */}
+              {range.id && (
+                <ProxyPanel rangeId={range.id} range={range as IpRange} />
+              )}
             </div>
           )}
 
@@ -576,6 +600,113 @@ function RangeRow({
 }
 
 // ---------------------------------------------------------------------------
+// ProxyPanel — nastavení ping proxy pro IP range
+// ---------------------------------------------------------------------------
+function ProxyPanel({ rangeId, range }: { rangeId: number; range: IpRange }) {
+  const { data: mikrotiks = [], isLoading } = useMikrotikProxies();
+  const setProxy  = useSetRangeProxy();
+
+  const currentMode     = (range as any).proxy_mode     ?? "auto";
+  const currentDeviceId = (range as any).proxy_device_id ?? null;
+
+  const [mode,     setMode]     = useState<string>(currentMode);
+  const [deviceId, setDeviceId] = useState<number | null>(currentDeviceId);
+  const [saved,    setSaved]    = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+
+  async function handleSave() {
+    setError(null);
+    try {
+      await setProxy.mutateAsync({ rangeId, proxyMode: mode, proxyDeviceId: deviceId });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? e?.message ?? "Chyba při ukládání");
+    }
+  }
+
+  return (
+    <div className="border-t border-border pt-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Router className="h-4 w-4 text-primary" />
+        <p className="text-sm font-medium">Ping proxy</p>
+        <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+          MikroTik API
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {/* Režim */}
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Režim</label>
+          <Select value={mode} onChange={e => setMode(e.target.value)} className="w-full">
+            <option value="auto">🔀 Auto (MikroTik ze site)</option>
+            <option value="manual">🎯 Manuální výběr</option>
+            <option value="direct">📡 Přímý ICMP</option>
+          </Select>
+        </div>
+
+        {/* Výběr zařízení — jen při manual */}
+        {mode === "manual" && (
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Proxy zařízení</label>
+            {isLoading ? (
+              <div className="flex items-center gap-2 h-9 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Načítám…
+              </div>
+            ) : (
+              <Select
+                value={deviceId ?? ""}
+                onChange={e => setDeviceId(e.target.value ? Number(e.target.value) : null)}
+                className="w-full"
+              >
+                <option value="">— vyberte zařízení —</option>
+                {mikrotiks.map((m: MikrotikProxy) => (
+                  <option key={m.id} value={m.id}>
+                    {m.hostname} ({m.ip}){m.site_name ? ` · ${m.site_name}` : ""}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </div>
+        )}
+
+        {/* Info pro auto mode */}
+        {mode === "auto" && (
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Nalezený proxy</label>
+            <div className="h-9 flex items-center text-xs text-muted-foreground px-2 rounded-md border border-border bg-muted/30">
+              {(range as any).proxy_hostname
+                ? `🔀 ${(range as any).proxy_hostname} (${(range as any).proxy_ip})`
+                : "— žádný MikroTik v site —"}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Popis režimu */}
+      <p className="text-[11px] text-muted-foreground">
+        {mode === "auto"   && "NetPulse automaticky vybere MikroTik router ze stejného site. Musí mít credential typu API."}
+        {mode === "manual" && "Ping bude probíhat přes vybraný MikroTik router. Credential typu API musí být nastaven."}
+        {mode === "direct" && "Ping probíhá přímo z NetPulse serveru přes ICMP. Funguje pouze pro L2 dostupné adresy."}
+      </p>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="primary" onClick={handleSave} disabled={setProxy.isPending}>
+          {setProxy.isPending
+            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Ukládám…</>
+            : "Uložit proxy"}
+        </Button>
+        {saved && <span className="text-xs text-green-600 dark:text-green-400">✓ Uloženo</span>}
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
 export default function RangesPage() {
@@ -591,15 +722,20 @@ export default function RangesPage() {
   async function handleCreate(data: FormData) {
     try {
       await createRange.mutateAsync({
-        id:           null,
-        label:        data.label,
-        network:      normalizeNetwork(data.network),
-        active:       data.active,
-        scan_enabled: data.scan_enabled,
-        description:  data.description || null,
-        site_id:      data.site_id ?? null,
-        site_name:    null,
-        site_color:   null,
+        id:              null,
+        label:           data.label,
+        network:         normalizeNetwork(data.network),
+        active:          data.active,
+        scan_enabled:    data.scan_enabled,
+        description:     data.description || null,
+        site_id:         data.site_id ?? null,
+        site_name:       null,
+        site_color:      null,
+        ownership:       "isp",
+        proxy_device_id: null,
+        proxy_mode:      "auto",
+        proxy_hostname:  null,
+        proxy_ip:        null,
       });
       setShowAdd(false);
     } catch (err) { alert(getErrorMessage(err)); }

@@ -1399,3 +1399,176 @@ async def poll_device(
         ip=ip, method="failed",
         error=f"Všechny metody selhaly ({len(decrypted)} profilů)"
     )
+
+
+# ---------------------------------------------------------------------------
+# MikroTik API Ping Proxy
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# MikroTik ARP-based Proxy Scan
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProxyPingResult:
+    ip:          str
+    alive:       bool       = False
+    rtt_ms:      float | None = None
+    packet_loss: float      = 100.0
+    error:       str | None = None
+    via_device:  str | None = None
+
+
+async def proxy_scan_via_arp(
+    proxy_cred:  dict,
+    target_ips:  list[str],
+    cipher,
+    pool         = None,   # asyncpg pool — pro DB cache variantu
+    timeout:     float = 15.0,
+) -> dict[str, ProxyPingResult]:
+    """
+    Získá stav IP adres z ARP dat MikroTiku.
+
+    Strategie (v pořadí):
+    1. DB cache — device_ips tabulka (data z posledního Poll, nulové zatížení MikroTiku)
+    2. Živý ARP — jedno API spojení /ip/arp (pokud DB cache chybí nebo je stará)
+    """
+    proxy_device_id = proxy_cred.get("device_id")
+    via = proxy_cred.get("hostname", proxy_cred.get("ip", "unknown"))
+
+    # Výchozí — vše offline
+    results = {ip: ProxyPingResult(ip=ip, via_device=via) for ip in target_ips}
+
+    # ---------------------------------------------------------------------------
+    # Varianta 1: DB cache z device_ips (Poll data)
+    # ---------------------------------------------------------------------------
+    if pool and proxy_device_id:
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT host(ip)::text AS ip
+                    FROM device_ips
+                    WHERE device_id = $1
+                      AND source IN ('api_arp', 'api_dhcp')
+                      AND last_seen > NOW() - INTERVAL '2 hours'
+                """, proxy_device_id)
+
+            if rows:
+                arp_ips = {r["ip"] for r in rows}
+                hit = sum(1 for ip in target_ips if ip in arp_ips)
+                log.info(
+                    f"ProxyARP {via}: DB cache — {len(arp_ips)} IP v ARP, "
+                    f"{hit}/{len(target_ips)} cílových nalezeno"
+                )
+                for ip in target_ips:
+                    results[ip].alive       = ip in arp_ips
+                    results[ip].packet_loss = 0.0 if ip in arp_ips else 100.0
+                return results
+            else:
+                log.info(f"ProxyARP {via}: DB cache prázdná/stará → fallback na živý ARP")
+        except Exception as e:
+            log.warning(f"ProxyARP {via}: DB cache chyba: {e} → fallback na živý ARP")
+
+    # ---------------------------------------------------------------------------
+    # Varianta 2: Živý ARP přes MikroTik API — jedno spojení
+    # ---------------------------------------------------------------------------
+    try:
+        import routeros_api
+    except ImportError:
+        for ip in target_ips:
+            results[ip].error = "RouterOS-api není nainstalován"
+        return results
+
+    proxy_ip = str(proxy_cred["ip"]).split("/")[0]
+    port     = int(proxy_cred.get("port") or 8728)
+    use_ssl  = proxy_cred.get("use_ssl") or _is_ssl_port(port)
+    username = proxy_cred.get("username", "admin")
+    password = _decrypt(proxy_cred.get("password_enc", ""), cipher)
+    loop     = asyncio.get_event_loop()
+
+    def _fetch_arp():
+        conn = None
+        try:
+            if use_ssl:
+                import ssl as _ssl
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode    = _ssl.CERT_NONE
+                conn = routeros_api.RouterOsApiPool(
+                    host=proxy_ip, port=port,
+                    username=username, password=password,
+                    plaintext_login=True, ssl_context=ctx,
+                )
+            else:
+                conn = routeros_api.RouterOsApiPool(
+                    host=proxy_ip, port=port,
+                    username=username, password=password,
+                    plaintext_login=True,
+                )
+            api = conn.get_api()
+
+            arp_entries = api.get_resource("/ip/arp").get()
+            arp_ips = set()
+            for entry in arp_entries:
+                ip = entry.get("address", "").strip()
+                mac = entry.get("mac-address", "").strip()
+                status = entry.get("status", "")
+                if ip and mac and status in ("reachable", "stale", "permanent", ""):
+                    arp_ips.add(ip)
+            return arp_ips
+
+        finally:
+            if conn:
+                try: conn.disconnect()
+                except Exception: pass
+
+    try:
+        arp_ips = await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_arp),
+            timeout=timeout
+        )
+        hit = sum(1 for ip in target_ips if ip in arp_ips)
+        log.info(
+            f"ProxyARP {via}: živý ARP — {len(arp_ips)} IP, "
+            f"{hit}/{len(target_ips)} cílových nalezeno"
+        )
+        for ip in target_ips:
+            results[ip].alive       = ip in arp_ips
+            results[ip].packet_loss = 0.0 if ip in arp_ips else 100.0
+            results[ip].rtt_ms      = None
+
+    except asyncio.TimeoutError:
+        err = f"Timeout při ARP fetch přes proxy {via}"
+        log.warning(f"ProxyARP: {err}")
+        for ip in target_ips:
+            results[ip].error = err
+    except Exception as e:
+        err = str(e)[:120]
+        log.warning(f"ProxyARP {via}: {err}")
+        for ip in target_ips:
+            results[ip].error = err
+
+    return results
+
+
+async def proxy_ping_range(
+    pool,
+    range_id:   int,
+    target_ips: list[str],
+    cipher,
+    count:      int   = 3,
+    timeout:    float = 15.0,
+) -> dict[str, ProxyPingResult]:
+    """
+    Vrátí stav IP adres přes proxy MikroTik (ARP metoda).
+    Pokud proxy není k dispozici, vrátí prázdný dict.
+    """
+    import db as _db
+    proxy = await _db.get_proxy_for_range(pool, range_id)
+    if not proxy:
+        return {}
+    log.info(
+        f"ProxyARP range_id={range_id}: {len(target_ips)} IP přes "
+        f"{proxy.get('hostname', proxy.get('ip'))}"
+    )
+    return await proxy_scan_via_arp(proxy, target_ips, cipher, timeout=timeout)

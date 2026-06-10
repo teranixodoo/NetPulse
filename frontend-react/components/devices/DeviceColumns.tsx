@@ -51,7 +51,9 @@ function UptimeCell({ value }: { value?: number | null }) {
 // ---------------------------------------------------------------------------
 // Definice sloupců
 // ---------------------------------------------------------------------------
-export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
+export function getDeviceColumns(
+  deviceTypeMap: Record<string, string> = {}
+): ColumnDef<DeviceRow, unknown>[] {
   return [
     {
       id: "status",
@@ -126,9 +128,9 @@ export function getDeviceColumns(): ColumnDef<DeviceRow, unknown>[] {
       size: 100,
       cell: ({ getValue }) => {
         const v = getValue() as string;
-        return v && v !== "unknown"
-          ? <Badge variant="outline">{v}</Badge>
-          : <span className="text-muted-foreground">—</span>;
+        if (!v || v === "unknown") return <span className="text-muted-foreground">—</span>;
+        const label = deviceTypeMap[v] ?? v;
+        return <Badge variant="outline">{label}</Badge>;
       },
     },
     {

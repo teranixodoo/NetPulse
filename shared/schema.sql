@@ -624,3 +624,19 @@ ALTER TABLE ip_addresses ADD COLUMN IF NOT EXISTS prev_alive BOOLEAN;
 
 -- ownership na ip_ranges
 ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS ownership TEXT NOT NULL DEFAULT 'isp' CHECK (ownership IN ('isp','client','unknown'));
+
+-- ===========================================================================
+-- Ping proxy přes MikroTik API
+-- ===========================================================================
+-- proxy_device_id: odkaz na MikroTik router který bude pingovat místo serveru
+-- proxy_mode:
+--   'auto'   = automaticky vezme MikroTik ze stejného site (výchozí)
+--   'manual' = uživatel vybral konkrétní zařízení
+--   'direct' = vždy přímý ICMP i když je MikroTik k dispozici
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS proxy_device_id INTEGER
+    REFERENCES devices(id) ON DELETE SET NULL;
+ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS proxy_mode TEXT
+    NOT NULL DEFAULT 'auto'
+    CHECK (proxy_mode IN ('auto', 'manual', 'direct'));
+CREATE INDEX IF NOT EXISTS idx_ip_ranges_proxy ON ip_ranges (proxy_device_id)
+    WHERE proxy_device_id IS NOT NULL;

@@ -132,6 +132,26 @@ export function useDeleteRange() {
   });
 }
 
+export function useMikrotikProxies() {
+  return useQuery<import("@/lib/types").MikrotikProxy[]>({
+    queryKey: ["mikrotik-proxies"],
+    queryFn:  () => rangesApi.getMikrotikProxies(),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetRangeProxy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ rangeId, proxyMode, proxyDeviceId }: {
+      rangeId:       number;
+      proxyMode:     string;
+      proxyDeviceId: number | null;
+    }) => rangesApi.setProxy(rangeId, proxyMode, proxyDeviceId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: QK.ranges }),
+  });
+}
+
 export function useRangeImpact(rangeId: number | null) {
   return useQuery({
     queryKey: ["range-impact", rangeId],

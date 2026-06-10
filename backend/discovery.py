@@ -187,28 +187,81 @@ async def layer_arp(ip: str, result: DiscoveryResult) -> None:
 # Vrstva 3: OUI lookup
 # ---------------------------------------------------------------------------
 _OUI_TABLE: dict = {
+    # Cisco
     "00:00:0C": "Cisco",        "00:1A:A1": "Cisco",       "58:97:BD": "Cisco",
-    "00:17:94": "Cisco",        "B8:27:EB": "Raspberry Pi","DC:A6:32": "Raspberry Pi",
-    "E4:5F:01": "Raspberry Pi", "D8:3A:DD": "Raspberry Pi","00:50:56": "VMware",
-    "00:0C:29": "VMware",       "08:00:27": "VirtualBox",  "52:54:00": "QEMU/KVM",
-    "00:1B:21": "Intel",        "8C:8D:28": "Intel",       "00:E0:4C": "Realtek",
-    "00:23:24": "Apple",        "3C:22:FB": "Apple",       "A4:C3:F0": "Apple",
-    "F0:18:98": "Apple",        "00:26:B9": "Dell",        "18:DB:F2": "Dell",
-    "14:18:77": "Dell",         "FC:F8:AE": "Ubiquiti",    "00:27:22": "Ubiquiti",
-    "24:A4:3C": "Ubiquiti",     "DC:9F:DB": "Ubiquiti",    "00:15:6D": "Ubiquiti",
-    "80:2A:A8": "Ubiquiti",     "B4:FB:E4": "MikroTik",   "CC:2D:E0": "MikroTik",
-    "6C:3B:6B": "MikroTik",     "2C:C8:1B": "MikroTik",   "E4:8D:8C": "MikroTik",
-    "48:8F:5A": "MikroTik",     "D4:CA:6D": "MikroTik",   "74:4D:28": "MikroTik",
-    "00:0D:B9": "PC Engines",   "00:08:A2": "TP-Link",     "54:C8:0F": "TP-Link",
-    "EC:08:6B": "TP-Link",      "50:C7:BF": "TP-Link",     "A0:F3:C1": "TP-Link",
-    "00:1D:0F": "NETGEAR",      "C0:3F:0E": "NETGEAR",     "00:90:4C": "HP",
-    "3C:D9:2B": "HP",           "00:30:C1": "Synology",    "00:11:32": "Synology",
-    "00:08:9B": "D-Link",       "1C:7E:E5": "D-Link",      "AC:22:0B": "ASRock",
-    "00:1C:42": "Parallels",    "00:50:43": "Hikvision",   "BC:AD:28": "Hikvision",
-    "44:19:B6": "Dahua",        "3C:EF:8C": "Dahua",       "00:40:8C": "Axis",
-    "00:06:61": "Hanwha",       "00:09:18": "HP/Aruba",    "00:1A:1E": "Aruba",
-    "70:3A:CB": "Huawei",       "6C:92:BF": "Huawei",      "00:E0:FC": "Huawei",
-    "00:18:E7": "Juniper",      "2C:6B:F5": "Juniper",
+    "00:17:94": "Cisco",        "00:1B:54": "Cisco",       "00:21:A0": "Cisco",
+    "00:23:EA": "Cisco",        "70:69:5A": "Cisco",       "F8:72:EA": "Cisco",
+    # MikroTik
+    "B4:FB:E4": "MikroTik",    "CC:2D:E0": "MikroTik",   "6C:3B:6B": "MikroTik",
+    "2C:C8:1B": "MikroTik",    "E4:8D:8C": "MikroTik",   "48:8F:5A": "MikroTik",
+    "D4:CA:6D": "MikroTik",    "74:4D:28": "MikroTik",   "18:FD:74": "MikroTik",
+    "08:55:31": "MikroTik",    "DC:2C:6E": "MikroTik",   "64:D1:54": "MikroTik",
+    "E4:8D:8C": "MikroTik",    "C4:AD:34": "MikroTik",   "4C:5E:0C": "MikroTik",
+    # Ubiquiti
+    "FC:F8:AE": "Ubiquiti",    "00:27:22": "Ubiquiti",   "24:A4:3C": "Ubiquiti",
+    "DC:9F:DB": "Ubiquiti",    "00:15:6D": "Ubiquiti",   "80:2A:A8": "Ubiquiti",
+    "44:D9:E7": "Ubiquiti",    "F0:9F:C2": "Ubiquiti",   "68:72:51": "Ubiquiti",
+    "78:8A:20": "Ubiquiti",    "24:5A:4C": "Ubiquiti",   "60:22:32": "Ubiquiti",
+    # Raspberry Pi
+    "B8:27:EB": "Raspberry Pi","DC:A6:32": "Raspberry Pi","E4:5F:01": "Raspberry Pi",
+    "D8:3A:DD": "Raspberry Pi","28:CD:C1": "Raspberry Pi",
+    # TP-Link
+    "00:08:A2": "TP-Link",     "54:C8:0F": "TP-Link",    "EC:08:6B": "TP-Link",
+    "50:C7:BF": "TP-Link",     "A0:F3:C1": "TP-Link",    "30:DE:4B": "TP-Link",
+    "B0:4E:26": "TP-Link",     "F8:1A:67": "TP-Link",    "C4:E9:84": "TP-Link",
+    "34:60:F9": "TP-Link",     "50:3E:AA": "TP-Link",    "18:A6:F7": "TP-Link",
+    "60:32:B1": "TP-Link",     "98:DA:C4": "TP-Link",    "AC:84:C6": "TP-Link",
+    "C0:25:E9": "TP-Link",     "D8:0D:17": "TP-Link",    "F4:EC:38": "TP-Link",
+    "10:FE:ED": "TP-Link",     "14:CC:20": "TP-Link",    "1C:3B:F3": "TP-Link",
+    "20:DC:E6": "TP-Link",     "2C:D0:5A": "TP-Link",    "30:B5:C2": "TP-Link",
+    "40:16:9F": "TP-Link",     "48:8A:D2": "TP-Link",    "58:2F:40": "TP-Link",
+    "64:70:02": "TP-Link",     "70:4F:57": "TP-Link",    "74:EA:3A": "TP-Link",
+    # Hikvision
+    "00:50:43": "Hikvision",   "BC:AD:28": "Hikvision",  "C8:02:8F": "Hikvision",
+    "4C:57:CA": "Hikvision",   "D0:C3:8B": "Hikvision",  "A4:14:37": "Hikvision",
+    "54:C4:15": "Hikvision",   "28:57:BE": "Hikvision",  "AC:CC:8E": "Hikvision",
+    # Dahua
+    "44:19:B6": "Dahua",       "3C:EF:8C": "Dahua",      "E0:50:8B": "Dahua",
+    "90:02:A9": "Dahua",       "4C:11:BF": "Dahua",
+    # Axis
+    "00:40:8C": "Axis",        "AC:CC:8E": "Axis",       "00:23:8B": "Axis",
+    # VMware / virtualizace
+    "00:50:56": "VMware",      "00:0C:29": "VMware",     "08:00:27": "VirtualBox",
+    "52:54:00": "QEMU/KVM",    "00:1C:42": "Parallels",
+    # Apple
+    "00:23:24": "Apple",       "3C:22:FB": "Apple",      "A4:C3:F0": "Apple",
+    "F0:18:98": "Apple",       "00:1E:C2": "Apple",      "AC:DE:48": "Apple",
+    "F4:F1:5A": "Apple",       "8C:85:90": "Apple",
+    # Dell
+    "00:26:B9": "Dell",        "18:DB:F2": "Dell",       "14:18:77": "Dell",
+    "B0:83:FE": "Dell",        "F8:DB:88": "Dell",       "34:17:EB": "Dell",
+    # HP / Aruba
+    "00:90:4C": "HP",          "3C:D9:2B": "HP",         "00:09:18": "HP/Aruba",
+    "00:1A:1E": "Aruba",       "94:B4:0F": "Aruba",      "00:0B:86": "Aruba",
+    "20:4C:03": "Aruba",       "D8:C7:C8": "HP",
+    # Synology
+    "00:30:C1": "Synology",    "00:11:32": "Synology",   "BC:D0:74": "Synology",
+    # QNAP
+    "24:5E:BE": "QNAP",        "00:08:9B": "QNAP",
+    # D-Link
+    "1C:7E:E5": "D-Link",      "00:1C:F0": "D-Link",     "28:10:7B": "D-Link",
+    # NETGEAR
+    "00:1D:0F": "NETGEAR",     "C0:3F:0E": "NETGEAR",   "A0:40:A0": "NETGEAR",
+    "20:E5:2A": "NETGEAR",
+    # Huawei
+    "70:3A:CB": "Huawei",      "6C:92:BF": "Huawei",    "00:E0:FC": "Huawei",
+    "28:31:52": "Huawei",      "AC:85:3D": "Huawei",    "08:19:A6": "Huawei",
+    # Juniper
+    "00:18:E7": "Juniper",     "2C:6B:F5": "Juniper",   "3C:61:04": "Juniper",
+    # Intel
+    "00:1B:21": "Intel",       "8C:8D:28": "Intel",     "A4:4C:C8": "Intel",
+    "10:02:B5": "Intel",       "F8:16:54": "Intel",
+    # Realtek
+    "00:E0:4C": "Realtek",     "52:54:00": "Realtek",
+    # Ostatní
+    "00:0D:B9": "PC Engines",  "AC:22:0B": "ASRock",    "00:06:61": "Hanwha",
+    "00:40:8C": "Axis",        "00:30:C1": "Synology",
+    "00:50:43": "Hikvision",
 }
 
 
@@ -247,22 +300,22 @@ _SCAN_PORTS = [
 ]
 
 _PORT_SIGNATURES = [
-    ({8728, 8291},   "Router",        "MikroTik"),
-    ({8728, 8729},   "Router",        "MikroTik API"),
-    ({23},           "Router/Switch", "Telnet"),
-    ({554},          "IP Kamera",     "RTSP"),
-    ({37777},        "IP Kamera",     "Dahua"),
-    ({9100},         "Tiskárna",      "RAW print"),
-    ({631},          "Tiskárna",      "IPP"),
-    ({3389},         "Počítač",       "RDP"),
-    ({5900},         "Počítač",       "VNC"),
-    ({445, 3389},    "Počítač",       "Windows"),
-    ({445},          "Počítač/NAS",   "SMB"),
-    ({2049},         "NAS/Server",    "NFS"),
-    ({3306},         "Server",        "MySQL"),
-    ({5432},         "Server",        "PostgreSQL"),
-    ({25, 587},      "Mail server",   "SMTP"),
-    ({22},           "Server",        "SSH"),
+    ({8728, 8291},   "router",        "MikroTik"),
+    ({8728, 8729},   "router",        "MikroTik API"),
+    ({23},           "router", "Telnet"),
+    ({554},          "camera",     "RTSP"),
+    ({37777},        "camera",     "Dahua"),
+    ({9100},         "other",      "RAW print"),
+    ({631},          "other",      "IPP"),
+    ({3389},         "pc",       "RDP"),
+    ({5900},         "pc",       "VNC"),
+    ({445, 3389},    "pc",       "Windows"),
+    ({445},          "pc",   "SMB"),
+    ({2049},         "server",    "NFS"),
+    ({3306},         "server",        "MySQL"),
+    ({5432},         "server",        "PostgreSQL"),
+    ({25, 587},      "server",   "SMTP"),
+    ({22},           "server",        "SSH"),
 ]
 
 
@@ -341,7 +394,7 @@ async def layer_banner(ip: str, result: DiscoveryResult) -> None:
         if port == 22:
             if "mikrotik" in low:
                 result.vendor      = result.vendor or "MikroTik"
-                result.device_type = result.device_type or "Router"
+                result.device_type = result.device_type or "router"
             elif "dropbear" in low:
                 result.notes.append("SSH: Dropbear (embedded Linux)")
         elif port == 21 and "proftpd" in low:
@@ -408,22 +461,22 @@ def _parse_http(raw: str, result: DiscoveryResult) -> None:
     srv = (result.http_server or "").lower()
     ttl = (result.http_title   or "").lower()
     for keyword, vendor, dtype in [
-        ("mikrotik",  "MikroTik",  "Router"),
-        ("routeros",  "MikroTik",  "Router"),
-        ("openwrt",   "OpenWrt",   "Router"),
-        ("dd-wrt",    "DD-WRT",    "Router"),
-        ("hikvision", "Hikvision", "IP Kamera"),
-        ("dahua",     "Dahua",     "IP Kamera"),
-        ("axis",      "Axis",      "IP Kamera"),
-        ("synology",  "Synology",  "NAS/Server"),
-        ("qnap",      "QNAP",      "NAS/Server"),
-        ("ubiquiti",  "Ubiquiti",  "AP"),
-        ("unifi",     "Ubiquiti",  "AP"),
-        ("cisco",     "Cisco",     "Router"),
-        ("fortigate", "Fortinet",  "Router"),
-        ("pfsense",   "pfSense",   "Router"),
-        ("proxmox",   "Proxmox",   "Server"),
-        ("vmware",    "VMware",    "Server"),
+        ("mikrotik",  "MikroTik",  "router"),
+        ("routeros",  "MikroTik",  "router"),
+        ("openwrt",   "OpenWrt",   "router"),
+        ("dd-wrt",    "DD-WRT",    "router"),
+        ("hikvision", "Hikvision", "camera"),
+        ("dahua",     "Dahua",     "camera"),
+        ("axis",      "Axis",      "camera"),
+        ("synology",  "Synology",  "server"),
+        ("qnap",      "QNAP",      "server"),
+        ("ubiquiti",  "Ubiquiti",  "ap"),
+        ("unifi",     "Ubiquiti",  "ap"),
+        ("cisco",     "Cisco",     "router"),
+        ("fortigate", "Fortinet",  "router"),
+        ("pfsense",   "pfSense",   "router"),
+        ("proxmox",   "Proxmox",   "server"),
+        ("vmware",    "VMware",    "server"),
     ]:
         if keyword in srv or keyword in ttl:
             result.vendor      = result.vendor      or vendor
@@ -613,14 +666,14 @@ async def layer_snmp(ip: str, result: DiscoveryResult) -> None:
             result.snmp_sysdescr = vals[0][:120]
             sd = result.snmp_sysdescr.lower()
             for kw, v, t in [
-                ("mikrotik",  "MikroTik",  "Router"),
-                ("routeros",  "MikroTik",  "Router"),
-                ("cisco",     "Cisco",     "Router"),
-                ("linux",     None,        "Server"),
-                ("windows",   None,        "Počítač"),
-                ("synology",  "Synology",  "NAS/Server"),
-                ("fortinet",  "Fortinet",  "Router"),
-                ("juniper",   "Juniper",   "Router"),
+                ("mikrotik",  "MikroTik",  "router"),
+                ("routeros",  "MikroTik",  "router"),
+                ("cisco",     "Cisco",     "router"),
+                ("linux",     None,        "server"),
+                ("windows",   None,        "pc"),
+                ("synology",  "Synology",  "server"),
+                ("fortinet",  "Fortinet",  "router"),
+                ("juniper",   "Juniper",   "router"),
             ]:
                 if kw in sd:
                     if v: result.vendor = result.vendor or v
@@ -697,7 +750,7 @@ async def layer_netbios(ip: str, result: DiscoveryResult) -> None:
         if hostname:
             result.netbios_name   = hostname
             result.netbios_domain = domain
-            result.device_type    = result.device_type or "Počítač"
+            result.device_type    = result.device_type or "pc"
             if not result.hostname:
                 result.hostname = hostname
             result.notes.append(
@@ -784,12 +837,12 @@ async def layer_mdns(ip: str, result: DiscoveryResult) -> None:
         # Detekce dle služeb
         svc_str = " ".join(svcs)
         if "_printer._tcp" in svc_str or "_ipp._tcp" in svc_str:
-            result.device_type = result.device_type or "Tiskárna"
+            result.device_type = result.device_type or "other"
         if "_afpovertcp._tcp" in svc_str or "_adisk._tcp" in svc_str:
             result.vendor      = result.vendor or "Apple"
-            result.device_type = result.device_type or "NAS/Server"
+            result.device_type = result.device_type or "server"
         if "_smb._tcp" in svc_str:
-            result.device_type = result.device_type or "Počítač/NAS"
+            result.device_type = result.device_type or "pc"
 
         result.notes.append(
             f"mDNS: {name_found or '—'} | Služby: {', '.join(svcs) or '—'}"
@@ -801,14 +854,20 @@ async def layer_mdns(ip: str, result: DiscoveryResult) -> None:
 # ---------------------------------------------------------------------------
 # Hlavní entry point
 # ---------------------------------------------------------------------------
-async def run_discovery(ip: str) -> DiscoveryResult:
+async def run_discovery(ip: str, known_mac: str | None = None) -> DiscoveryResult:
     log.info(f"Discovery zahájen: {ip}")
     result = DiscoveryResult(ip=ip)
 
+    # Pokud známe MAC z DB, předvyplníme — ARP přes síť nemusí fungovat
+    # (zařízení v jiné L2 síti, ARP cache serveru ho neobsahuje)
+    if known_mac:
+        result.mac = known_mac.upper()
+        result.notes.append(f"MAC z DB: {known_mac}")
+
     # 1-3: sekvenčně (každá závisí na předchozí)
     await layer_rdns(ip, result)
-    await layer_arp(ip, result)
-    await layer_oui(ip, result)
+    await layer_arp(ip, result)   # doplní MAC pokud ARP cache zná zařízení
+    await layer_oui(ip, result)   # OUI funguje i s MAC z DB
 
     # 4: port scan (nutný před 5-7)
     await layer_portscan(ip, result)

@@ -290,3 +290,60 @@ async def ping_host(
         except Exception as e:
             log.debug(f"ping_host error {ip}: {e}")
             return PingResult(ip, False, None, 1.0, None, datetime.now(timezone.utc))
+
+
+async def scan_range_with_proxy(
+    target_ips:  list[str],
+    proxy:       dict | None = None,
+    count:       int = 3,
+    timeout_ms:  int = 1000,
+    max_conc:    int = 50,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    pool         = None,   # asyncpg pool pro DB cache ARP
+) -> List[PingResult]:
+    """
+    Proxy-aware scan. Pokud je proxy zadán, pinguje přes MikroTik ARP.
+    Jinak použije standardní scan_range (fping/icmplib).
+    """
+    if not proxy:
+        return await scan_range(
+            target_ips, count=count, timeout_ms=timeout_ms,
+            max_conc=max_conc, on_progress=on_progress,
+        )
+
+    # Scan přes MikroTik ARP proxy — jedno spojení pro celý range
+    from poller import proxy_scan_via_arp, ProxyPingResult
+    from cryptography.fernet import Fernet as _Fernet
+    import os as _os
+    log.info(f"Proxy scan: {len(target_ips)} IP přes {proxy.get('ip')} ({proxy.get('hostname')})")
+
+    _key = _os.environ.get("DB_ENCRYPTION_KEY", "") or _os.environ.get("FERNET_KEY", "")
+    try:
+        _cipher = _Fernet(_key.encode()) if _key else _Fernet(_Fernet.generate_key())
+    except Exception:
+        _cipher = _Fernet(_Fernet.generate_key())
+
+    proxy_results = await proxy_scan_via_arp(
+        proxy, target_ips, _cipher, pool=pool, timeout=15.0
+    )
+
+    now = datetime.now(timezone.utc)
+    results = []
+    for ip in target_ips:
+        r = proxy_results.get(ip)
+        if r and r.alive:
+            results.append(PingResult(
+                ip          = ip,
+                is_alive    = True,
+                rtt_ms      = r.rtt_ms,
+                packet_loss = r.packet_loss / 100.0,
+                jitter_ms   = None,
+                scanned_at  = now,
+            ))
+        else:
+            results.append(PingResult(ip, False, None, 1.0, None, now))
+
+        if on_progress:
+            on_progress(len(results), len(target_ips))
+
+    return results

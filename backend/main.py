@@ -749,6 +749,54 @@ async def delete_range(
         "deleted_outages": deleted_outages,
     }
 
+
+@app.get("/ranges/proxy/mikrotiks", tags=["Ranges"])
+async def get_mikrotik_proxies(
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Vrátí seznam MikroTik routerů s API credentialem — pro výběr ping proxy."""
+    return await db.get_mikrotik_routers_with_api(pool)
+
+
+@app.put("/ranges/{range_id}/proxy", tags=["Ranges"])
+async def set_range_proxy(
+    range_id: int,
+    body:     dict,
+    user      = Depends(current_user),
+    pool      = Depends(get_db),
+):
+    """Nastaví ping proxy pro IP range.
+    Body: { proxy_mode: 'auto'|'manual'|'direct', proxy_device_id: int|null }
+    """
+    mode      = body.get("proxy_mode", "auto")
+    device_id = body.get("proxy_device_id")
+    if mode not in ("auto", "manual", "direct"):
+        raise HTTPException(status_code=422, detail="proxy_mode musí být auto/manual/direct")
+    return await db.set_range_proxy(pool, range_id, mode, device_id)
+
+
+@app.get("/ranges/{range_id}/proxy", tags=["Ranges"])
+async def get_range_proxy(
+    range_id: int,
+    pool      = Depends(get_db),
+    user      = Depends(current_user),
+):
+    """Vrátí aktuální proxy nastavení pro IP range včetně detailu proxy zařízení."""
+    proxy = await db.get_proxy_for_range(pool, range_id)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT proxy_mode, proxy_device_id FROM ip_ranges WHERE id=$1", range_id
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Range nenalezen")
+    return {
+        "proxy_mode":      row["proxy_mode"],
+        "proxy_device_id": row["proxy_device_id"],
+        "resolved_proxy":  proxy,
+    }
+
+
 # ---------------------------------------------------------------------------
 # CREDENTIALS — trezor přihlašovacích profilů (SOA)
 # ---------------------------------------------------------------------------

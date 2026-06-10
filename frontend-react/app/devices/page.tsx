@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { Trash2, Download } from "lucide-react";
-import { useDevices, useHosts, useDeleteDevice, getErrorMessage } from "@/hooks/useNetPulse";
+import { useDevices, useHosts, useDeleteDevice, useConfigList, getErrorMessage } from "@/hooks/useNetPulse";
 import { DataTable, TableSearch } from "@/components/table/DataTable";
 import { getDeviceColumns, type DeviceRow } from "@/components/devices/DeviceColumns";
 import { DevicePanel } from "@/components/devices/DevicePanel";
@@ -11,11 +11,10 @@ import { Button, Select, MetricCard } from "@/components/ui";
 import type { Row } from "@tanstack/react-table";
 import type { Device } from "@/lib/types";
 
-const DEVICE_TYPES = ["Router","Switch","AP","Server","IP Kamera","Počítač","Jiné"];
-
 export default function DevicesPage() {
   const { data: devices = [], isLoading: devicesLoading } = useDevices();
   const { data: hosts   = [], isLoading: hostsLoading   } = useHosts();
+  const { data: deviceTypes = [] } = useConfigList("device_type", false);
   const deleteDevice = useDeleteDevice();
 
   const [globalFilter,   setGlobalFilter]   = useState("");
@@ -24,6 +23,7 @@ export default function DevicesPage() {
   const [vendorFilter,   setVendorFilter]   = useState("");
   const [ownershipFilter, setOwnershipFilter] = useState("");
   const [locationFilter,  setLocationFilter]  = useState("");
+  const [noIpFilter,      setNoIpFilter]      = useState(false);
   const [activeTabs, setActiveTabs] = useState<Record<number, string>>({});
   const [expandedRowId,  setExpandedRowId]  = useState<number | null>(null);
 
@@ -52,9 +52,11 @@ export default function DevicesPage() {
       if (statusFilter === "online"  && r.hostInfo?.currently_alive !== true)  return false;
       if (statusFilter === "offline" && r.hostInfo?.currently_alive !== false) return false;
       if (statusFilter === "unknown" && r.hostInfo?.currently_alive != null)   return false;
+      if (statusFilter === "no_ip"   && r.ip && r.ip !== "")                   return false;
+      if (noIpFilter && r.ip && r.ip !== "")                                   return false;
       return true;
     });
-  }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter, locationFilter]);
+  }, [rows, typeFilter, vendorFilter, statusFilter, ownershipFilter, locationFilter, noIpFilter]);
 
   // Unikátní výrobci pro filtr
   // Stats pro panel
@@ -69,7 +71,11 @@ export default function DevicesPage() {
   );
 
   // Sloupce
-  const columns = useMemo(() => getDeviceColumns(), []);
+  const deviceTypeMap = useMemo(() =>
+    Object.fromEntries(deviceTypes.map(t => [t.value, t.label])),
+    [deviceTypes]
+  );
+  const columns = useMemo(() => getDeviceColumns(deviceTypeMap), [deviceTypeMap]);
 
   // Sub-row renderer — detail panel
   const renderSubRow = useCallback(
@@ -161,20 +167,35 @@ export default function DevicesPage() {
       <Select
         value={statusFilter}
         onChange={(e) => setStatusFilter(e.target.value)}
-        className="w-36"
+        className="w-40"
       >
         <option value="">Vše — stav</option>
         <option value="online">🟢 Online</option>
         <option value="offline">🔴 Offline</option>
         <option value="unknown">⚫ Neznámý</option>
+        <option value="no_ip">⚠️ Bez IP</option>
       </Select>
+      <button
+        type="button"
+        onClick={() => setNoIpFilter(v => !v)}
+        className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-md border text-sm font-medium transition-colors
+          ${noIpFilter
+            ? "border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+            : "border-border bg-background text-muted-foreground hover:bg-muted"
+          }`}
+        title="Zobrazit pouze zařízení bez IP adresy"
+      >
+        ⚠️ Bez IP
+      </button>
       <Select
         value={typeFilter}
         onChange={(e) => setTypeFilter(e.target.value)}
         className="w-36"
       >
         <option value="">Vše — typ</option>
-        {DEVICE_TYPES.map((t) => <option key={t}>{t}</option>)}
+        {deviceTypes.map((t) => (
+          <option key={t.value} value={t.value}>{t.label}</option>
+        ))}
       </Select>
       <Select
         value={ownershipFilter}
@@ -214,7 +235,7 @@ export default function DevicesPage() {
         Export CSV
       </Button>
     </div>
-  ), [globalFilter, statusFilter, typeFilter, vendorFilter, ownershipFilter, locationFilter, vendors, filteredRows]);
+  ), [globalFilter, statusFilter, typeFilter, vendorFilter, ownershipFilter, locationFilter, vendors, filteredRows, noIpFilter]);
 
   return (
     <div className="space-y-4">
