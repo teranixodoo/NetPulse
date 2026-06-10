@@ -514,11 +514,11 @@ export const configListsApi = {
     const { data } = await api.get(`/config/lists/${category}`, { params: { active_only: activeOnly } });
     return data;
   },
-  async create(item: { category: string; value: string; label: string; color?: string; sort_order?: number }): Promise<import('./types').ConfigItem> {
+  async create(item: { category: string; value: string; label: string; color?: string | null; icon?: string | null; sort_order?: number }): Promise<import('./types').ConfigItem> {
     const { data } = await api.post('/config/lists', item);
     return data;
   },
-  async update(id: number, item: { label: string; color?: string; sort_order?: number; active?: boolean }): Promise<import('./types').ConfigItem> {
+  async update(id: number, item: { label: string; color?: string | null; icon?: string | null; sort_order?: number; active?: boolean }): Promise<import('./types').ConfigItem> {
     const { data } = await api.put(`/config/lists/${id}`, item);
     return data;
   },
@@ -539,7 +539,7 @@ export const locationsApi = {
     const { data } = await api.get('/locations', { params: { active_only: activeOnly } });
     return data;
   },
-  async getMap(): Promise<import('./types').Location[]> {
+  async getMap(): Promise<import('./types').LocationMapPoint[]> {
     const { data } = await api.get('/locations/map');
     return data;
   },

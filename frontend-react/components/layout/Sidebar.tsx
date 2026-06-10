@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Monitor, Network, KeyRound,
   ScrollText, Settings, Radio, Users, List, History, BarChart2,
-  HardDrive, Terminal, AlertTriangle, Globe, Settings2, MapPin, Table2 } from "lucide-react";
+  HardDrive, Terminal, AlertTriangle, Globe, Settings2, MapPin, Table2, Map } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { ScanStatusWidget } from "./ScanStatusWidget";
@@ -26,6 +26,7 @@ const NAV_ITEMS = [
   { href: "/config",      label: "Konfigurace", icon: Settings2 },
   { href: "/locations",        label: "Lokace strom",   icon: MapPin },
   { href: "/locations/table",  label: "Lokace tabulka", icon: Table2 },
+  { href: "/maps",             label: "Mapy",           icon: Map    },
   { href: "/outages",     label: "Log výpadků", icon: AlertTriangle },
   { href: "/change-log",  label: "Log změn",    icon: History },
 ];

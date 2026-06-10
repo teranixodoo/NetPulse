@@ -1096,7 +1096,7 @@ async def get_config_list(pool, category: str, active_only: bool = True) -> list
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, category, value, label, color, sort_order, active
+            SELECT id, category, value, label, color, icon, sort_order, active
             FROM config_lists
             WHERE category = $1
               AND ($2 = FALSE OR active = TRUE)
@@ -1112,7 +1112,7 @@ async def get_all_config_lists(pool) -> dict[str, list[dict]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, category, value, label, color, sort_order, active
+            SELECT id, category, value, label, color, icon, sort_order, active
             FROM config_lists
             ORDER BY category, sort_order, label
             """
@@ -1126,16 +1126,16 @@ async def get_all_config_lists(pool) -> dict[str, list[dict]]:
 
 async def create_config_list_item(
     pool, category: str, value: str, label: str,
-    color: str | None = None, sort_order: int = 0
+    color: str | None = None, icon: str | None = None, sort_order: int = 0
 ) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO config_lists (category, value, label, color, sort_order)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, category, value, label, color, sort_order, active
+            INSERT INTO config_lists (category, value, label, color, icon, sort_order)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, category, value, label, color, icon, sort_order, active
             """,
-            category, value, label, color, sort_order,
+            category, value, label, color, icon, sort_order,
         )
     return dict(row)
 
@@ -1145,17 +1145,17 @@ create_config_item = create_config_list_item
 
 async def update_config_list_item(
     pool, item_id: int, label: str, color: str | None,
-    sort_order: int, active: bool
+    icon: str | None, sort_order: int, active: bool
 ) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             UPDATE config_lists
-            SET label=$2, color=$3, sort_order=$4, active=$5
+            SET label=$2, color=$3, icon=$4, sort_order=$5, active=$6
             WHERE id=$1
-            RETURNING id, category, value, label, color, sort_order, active
+            RETURNING id, category, value, label, color, icon, sort_order, active
             """,
-            item_id, label, color, sort_order, active,
+            item_id, label, color, icon, sort_order, active,
         )
     return dict(row)
 
@@ -1781,6 +1781,86 @@ async def get_locations(pool, active_only: bool = False) -> list[dict]:
         result.append(d)
     return result
 
+
+
+async def get_locations_map(pool) -> list[dict]:
+    """
+    Vrátí lokace pro mapové zobrazení — pouze lokace s GPS souřadnicemi.
+    Obsahuje online/offline stats (rekurzivně přes podřízené).
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            WITH RECURSIVE
+            -- Rekurzivní strom pro agregaci zařízení
+            subtree AS (
+                SELECT id, id AS root_id FROM locations
+                UNION ALL
+                SELECT l.id, s.root_id
+                FROM locations l JOIN subtree s ON l.parent_id = s.id
+            ),
+            device_stats AS (
+                SELECT
+                    s.root_id                                           AS location_id,
+                    COUNT(d.id)                                         AS total_devices,
+                    COUNT(d.id) FILTER (WHERE ip.is_alive = TRUE)       AS online_count,
+                    COUNT(d.id) FILTER (WHERE ip.is_alive = FALSE)      AS offline_count
+                FROM subtree s
+                JOIN devices d ON d.location_id = s.id
+                LEFT JOIN ip_addresses ip ON ip.device_id = d.id
+                GROUP BY s.root_id
+            ),
+            direct_devices AS (
+                SELECT location_id, COUNT(*) AS direct_count
+                FROM devices
+                GROUP BY location_id
+            ),
+            children_count AS (
+                SELECT parent_id, COUNT(*) AS cnt
+                FROM locations
+                WHERE parent_id IS NOT NULL
+                GROUP BY parent_id
+            )
+            SELECT
+                l.id, l.name, l.type, l.parent_id,
+                l.street, l.city, l.zip, l.country,
+                l.lat, l.lng, l.active,
+                pl.name                                         AS parent_name,
+                COALESCE(ds.total_devices,  0)                  AS total_devices,
+                COALESCE(ds.online_count,   0)                  AS online_count,
+                COALESCE(ds.offline_count,  0)                  AS offline_count,
+                COALESCE(dd.direct_count,   0)                  AS direct_devices,
+                COALESCE(cc.cnt,            0)                  AS children_count
+            FROM locations l
+            LEFT JOIN locations pl ON pl.id = l.parent_id
+            LEFT JOIN device_stats   ds ON ds.location_id = l.id
+            LEFT JOIN direct_devices dd ON dd.location_id = l.id
+            LEFT JOIN children_count cc ON cc.parent_id   = l.id
+            WHERE l.lat IS NOT NULL AND l.lng IS NOT NULL
+              AND l.active = TRUE
+            ORDER BY l.name
+        """)
+    result = []
+    for r in rows:
+        result.append({
+            "id":             r["id"],
+            "name":           r["name"],
+            "type":           r["type"],
+            "parent_id":      r["parent_id"],
+            "parent_name":    r["parent_name"],
+            "street":         r["street"],
+            "city":           r["city"],
+            "zip":            r["zip"],
+            "country":        r["country"],
+            "lat":            float(r["lat"]),
+            "lng":            float(r["lng"]),
+            "active":         r["active"],
+            "total_devices":  int(r["total_devices"]),
+            "online_count":   int(r["online_count"]),
+            "offline_count":  int(r["offline_count"]),
+            "direct_devices": int(r["direct_devices"]),
+            "children_count": int(r["children_count"]),
+        })
+    return result
 
 
 async def get_locations_table(pool) -> list[dict]:

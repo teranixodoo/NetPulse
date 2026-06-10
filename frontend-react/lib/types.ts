@@ -484,8 +484,29 @@ export interface ConfigItem {
   value:      string;
   label:      string;
   color:      string | null;
+  icon:       string | null;
   sort_order: number;
   active:     boolean;
+}
+
+export interface LocationMapPoint {
+  id:             number;
+  name:           string;
+  type:           string;
+  parent_id:      number | null;
+  parent_name:    string | null;
+  street:         string | null;
+  city:           string | null;
+  zip:            string | null;
+  country:        string | null;
+  lat:            number;
+  lng:            number;
+  active:         boolean;
+  total_devices:  number;
+  online_count:   number;
+  offline_count:  number;
+  direct_devices: number;
+  children_count: number;
 }
 
 export interface Location {

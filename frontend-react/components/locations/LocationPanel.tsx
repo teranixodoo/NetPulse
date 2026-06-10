@@ -283,7 +283,7 @@ function EditPanel({
   const [description, setDescription] = useState(loc.description ?? "");
   const [active,      setActive]      = useState(loc.active);
 
-  const { data: locationTypes = [] } = useConfigList("location_type");
+  const { data: locationTypes = [] } = useConfigList("location_type", false);
 
   // Reset při změně lokace
   useEffect(() => {

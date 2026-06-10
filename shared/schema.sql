@@ -490,10 +490,13 @@ CREATE TABLE IF NOT EXISTS config_lists (
     value      TEXT NOT NULL,
     label      TEXT NOT NULL,
     color      TEXT,
+    icon       TEXT,          -- emoji nebo název ikony (např. "🏢" nebo "building")
     sort_order INTEGER NOT NULL DEFAULT 0,
     active     BOOLEAN NOT NULL DEFAULT TRUE,
     UNIQUE (category, value)
 );
+-- Migrace: přidat icon sloupec pokud chybí (bezpečné na existující DB)
+ALTER TABLE config_lists ADD COLUMN IF NOT EXISTS icon TEXT;
 
 -- Výchozí typy zařízení
 INSERT INTO config_lists (category, value, label, sort_order) VALUES

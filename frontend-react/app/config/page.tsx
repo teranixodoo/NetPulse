@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Settings2, Plus, Pencil, Trash2, Check, X, GripVertical } from "lucide-react";
+import { Settings2, Plus, Pencil, Trash2, Check, X } from "lucide-react";
 import {
-  useConfigList, useAllConfigLists,
+  useConfigList,
   useCreateConfigItem, useUpdateConfigItem, useDeleteConfigItem,
 } from "@/hooks/useNetPulse";
 import { Button, Spinner } from "@/components/ui";
@@ -12,21 +12,23 @@ import type { ConfigItem } from "@/lib/types";
 // ---------------------------------------------------------------------------
 // Kategorie
 // ---------------------------------------------------------------------------
-const CATEGORIES: { key: string; label: string; description: string }[] = [
-  { key: "device_type",   label: "Typy zařízení",  description: "Kategorie pro evidenci zařízení" },
-  { key: "location_type", label: "Typy lokací",     description: "Hierarchie umístění zařízení" },
+const CATEGORIES: { key: string; label: string; description: string; hasIcon: boolean }[] = [
+  { key: "device_type",   label: "Typy zařízení",  description: "Kategorie pro evidenci zařízení",      hasIcon: false },
+  { key: "location_type", label: "Typy lokací",     description: "Hierarchie umístění zařízení",         hasIcon: true  },
 ];
 
 // ---------------------------------------------------------------------------
 // Řádek položky
 // ---------------------------------------------------------------------------
-function ConfigItemRow({ item, onUpdated, onDeleted }: {
+function ConfigItemRow({ item, hasIcon, onUpdated, onDeleted }: {
   item:      ConfigItem;
+  hasIcon:   boolean;
   onUpdated: () => void;
   onDeleted: () => void;
 }) {
   const [editing,    setEditing]    = useState(false);
   const [label,      setLabel]      = useState(item.label);
+  const [icon,       setIcon]       = useState(item.icon ?? "");
   const [sortOrder,  setSortOrder]  = useState(item.sort_order);
   const [active,     setActive]     = useState(item.active);
   const [confirming, setConfirming] = useState(false);
@@ -37,7 +39,10 @@ function ConfigItemRow({ item, onUpdated, onDeleted }: {
 
   async function handleSave() {
     try {
-      await updateItem.mutateAsync({ id: item.id, category: item.category, label, sort_order: sortOrder, active });
+      await updateItem.mutateAsync({
+        id: item.id, category: item.category,
+        label, icon: icon.trim() || null, sort_order: sortOrder, active,
+      });
       setEditing(false);
       setError(null);
       onUpdated();
@@ -64,6 +69,20 @@ function ConfigItemRow({ item, onUpdated, onDeleted }: {
           <input value={label} onChange={(e) => setLabel(e.target.value)}
             className="h-8 w-full rounded border border-input bg-background px-2 text-sm" />
         </td>
+        {hasIcon && (
+          <td className="px-4 py-2">
+            <div className="flex items-center gap-2">
+              <input
+                value={icon}
+                onChange={(e) => setIcon(e.target.value)}
+                placeholder="🏢"
+                className="h-8 w-20 rounded border border-input bg-background px-2 text-sm text-center"
+                title="Zadej emoji nebo text ikony pro mapu"
+              />
+              {icon && <span className="text-lg">{icon}</span>}
+            </div>
+          </td>
+        )}
         <td className="px-4 py-2">
           <input type="number" value={sortOrder} onChange={(e) => setSortOrder(Number(e.target.value))}
             className="h-8 w-20 rounded border border-input bg-background px-2 text-sm" />
@@ -91,6 +110,13 @@ function ConfigItemRow({ item, onUpdated, onDeleted }: {
     <tr className={`border-b border-border hover:bg-muted/20 ${!item.active ? "opacity-50" : ""}`}>
       <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{item.value}</td>
       <td className="px-4 py-2 text-sm font-medium">{item.label}</td>
+      {hasIcon && (
+        <td className="px-4 py-2 text-center text-lg">
+          {item.icon
+            ? <span title={item.icon}>{item.icon}</span>
+            : <span className="text-xs text-muted-foreground">—</span>}
+        </td>
+      )}
       <td className="px-4 py-2 text-sm text-muted-foreground text-center">{item.sort_order}</td>
       <td className="px-4 py-2">
         <span className={`inline-block h-2 w-2 rounded-full ${item.active ? "bg-green-500" : "bg-muted-foreground"}`} />
@@ -121,28 +147,40 @@ function ConfigItemRow({ item, onUpdated, onDeleted }: {
 // ---------------------------------------------------------------------------
 // Panel kategorie
 // ---------------------------------------------------------------------------
-function CategoryPanel({ category, description }: { category: string; description: string }) {
+function CategoryPanel({ category, description, hasIcon }: {
+  category:    string;
+  description: string;
+  hasIcon:     boolean;
+}) {
   const { data: items = [], isLoading, refetch } = useConfigList(category, false);
   const createItem = useCreateConfigItem();
-  const [showAdd,   setShowAdd]   = useState(false);
-  const [newLabel,  setNewLabel]  = useState("");
-  const [newValue,  setNewValue]  = useState("");
-  const [newOrder,  setNewOrder]  = useState(0);
-  const [addError,  setAddError]  = useState<string | null>(null);
+  const [showAdd,  setShowAdd]  = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [newIcon,  setNewIcon]  = useState("");
+  const [newOrder, setNewOrder] = useState(0);
+  const [addError, setAddError] = useState<string | null>(null);
 
   async function handleAdd() {
     if (!newLabel.trim() || !newValue.trim()) return;
     try {
       await createItem.mutateAsync({
-        category, value: newValue.trim(), label: newLabel.trim(), sort_order: newOrder,
+        category,
+        value:      newValue.trim(),
+        label:      newLabel.trim(),
+        icon:       newIcon.trim() || null,
+        sort_order: newOrder,
       });
-      setNewLabel(""); setNewValue(""); setNewOrder(0); setShowAdd(false); setAddError(null);
+      setNewLabel(""); setNewValue(""); setNewIcon(""); setNewOrder(0);
+      setShowAdd(false); setAddError(null);
     } catch (e: any) {
       setAddError(e?.response?.data?.detail ?? e?.message ?? "Chyba");
     }
   }
 
   if (isLoading) return <div className="flex justify-center py-8"><Spinner className="h-6 w-6" /></div>;
+
+  const colSpan = hasIcon ? 6 : 5;
 
   return (
     <div className="space-y-4">
@@ -155,7 +193,7 @@ function CategoryPanel({ category, description }: { category: string; descriptio
 
       {showAdd && (
         <div className="rounded-lg border border-border bg-muted/10 p-3 space-y-2">
-          <div className="grid grid-cols-3 gap-2">
+          <div className={`grid gap-2 ${hasIcon ? "grid-cols-4" : "grid-cols-3"}`}>
             <div>
               <label className="text-xs text-muted-foreground">Hodnota (ID)</label>
               <input value={newValue} onChange={(e) => setNewValue(e.target.value.toLowerCase().replace(/\s/g,'_'))}
@@ -168,6 +206,17 @@ function CategoryPanel({ category, description }: { category: string; descriptio
                 placeholder="Router"
                 className="mt-1 h-8 w-full rounded border border-input bg-background px-2 text-sm" />
             </div>
+            {hasIcon && (
+              <div>
+                <label className="text-xs text-muted-foreground">Ikona (emoji)</label>
+                <div className="flex items-center gap-1 mt-1">
+                  <input value={newIcon} onChange={(e) => setNewIcon(e.target.value)}
+                    placeholder="🏢"
+                    className="h-8 w-16 rounded border border-input bg-background px-2 text-sm text-center" />
+                  {newIcon && <span className="text-lg">{newIcon}</span>}
+                </div>
+              </div>
+            )}
             <div>
               <label className="text-xs text-muted-foreground">Pořadí</label>
               <input type="number" value={newOrder} onChange={(e) => setNewOrder(Number(e.target.value))}
@@ -190,6 +239,7 @@ function CategoryPanel({ category, description }: { category: string; descriptio
             <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
               <th className="text-left px-4 py-2 w-32">Hodnota</th>
               <th className="text-left px-4 py-2">Název</th>
+              {hasIcon && <th className="text-center px-4 py-2 w-20">Ikona</th>}
               <th className="text-center px-4 py-2 w-20">Pořadí</th>
               <th className="text-left px-4 py-2 w-16">Aktivní</th>
               <th className="px-4 py-2 w-24"></th>
@@ -200,12 +250,13 @@ function CategoryPanel({ category, description }: { category: string; descriptio
               <ConfigItemRow
                 key={item.id}
                 item={item}
+                hasIcon={hasIcon}
                 onUpdated={() => refetch()}
                 onDeleted={() => refetch()}
               />
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground text-sm">
+              <tr><td colSpan={colSpan} className="px-4 py-8 text-center text-muted-foreground text-sm">
                 Žádné položky
               </td></tr>
             )}
@@ -252,7 +303,12 @@ export default function ConfigPage() {
       </div>
 
       {/* Obsah */}
-      <CategoryPanel key={activeTab} category={active.key} description={active.description} />
+      <CategoryPanel
+        key={activeTab}
+        category={active.key}
+        description={active.description}
+        hasIcon={active.hasIcon}
+      />
     </div>
   );
 }

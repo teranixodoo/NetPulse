@@ -606,7 +606,7 @@ export function useCreateConfigItem() {
   return useMutation<
     import("@/lib/types").ConfigItem,
     Error,
-    { category: string; value: string; label: string; color?: string; sort_order?: number }
+    { category: string; value: string; label: string; color?: string | null; icon?: string | null; sort_order?: number }
   >({
     mutationFn: (data) => configListsApi.create(data),
     onSuccess: (_, vars) => {
@@ -621,10 +621,10 @@ export function useUpdateConfigItem() {
   return useMutation<
     import("@/lib/types").ConfigItem,
     Error,
-    { id: number; category: string; label: string; color?: string; sort_order?: number; active?: boolean }
+    { id: number; category: string; label: string; color?: string | null; icon?: string | null; sort_order?: number; active?: boolean }
   >({
-    mutationFn: ({ id, label, color, sort_order, active }) =>
-      configListsApi.update(id, { label, color, sort_order, active }),
+    mutationFn: ({ id, label, color, icon, sort_order, active }) =>
+      configListsApi.update(id, { label, color, icon, sort_order, active }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['config-list', vars.category] });
       qc.invalidateQueries({ queryKey: ['config-lists-all'] });
@@ -657,6 +657,15 @@ export function useLocations(activeOnly = false) {
     queryKey: ['locations', activeOnly],
     queryFn:  () => locationsApi.getAll(activeOnly),
     staleTime: 60_000,
+  });
+}
+
+export function useLocationsMap() {
+  return useQuery<import("@/lib/types").LocationMapPoint[]>({
+    queryKey: ['locations', 'map'],
+    queryFn:  () => locationsApi.getMap(),
+    staleTime: 30_000,
+    refetchInterval: 60_000, // auto-refresh každou minutu
   });
 }
 

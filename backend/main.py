@@ -665,6 +665,7 @@ async def create_config_list_item(
         value      = item["value"],
         label      = item["label"],
         color      = item.get("color"),
+        icon       = item.get("icon"),
         sort_order = item.get("sort_order", 0),
     )
 
@@ -681,6 +682,7 @@ async def update_config_list_item(
         pool, item_id,
         label      = item["label"],
         color      = item.get("color"),
+        icon       = item.get("icon"),
         sort_order = item.get("sort_order", 0),
         active     = item.get("active", True),
     )
@@ -695,6 +697,15 @@ async def delete_config_list_item(
     """Smaže položku číselníku."""
     await db.delete_config_list_item(pool, item_id)
     return {"ok": True}
+
+
+@app.get("/locations/map", tags=["Locations"])
+async def get_locations_map(
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Vrátí lokace s GPS souřadnicemi + device stats pro mapové zobrazení."""
+    return await db.get_locations_map(pool)
 
 
 
@@ -1570,14 +1581,6 @@ async def get_locations_table(
 ):
     """Lokace pro tabulkový pohled se stats."""
     return await db.get_locations_table(pool)
-
-
-@app.get("/locations/map", tags=["Locations"])
-async def get_locations_map(
-    user = Depends(current_user),
-    pool = Depends(get_db),
-):
-    return await db.get_locations_with_gps(pool)
 
 
 @app.get("/locations/{location_id}", tags=["Locations"])
