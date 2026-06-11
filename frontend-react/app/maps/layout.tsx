@@ -2,12 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Map, Building2 } from "lucide-react";
+import { Map, Building2, Layers } from "lucide-react";
 
 const MAP_TABS = [
-  { href: "/maps/locations", label: "Mapa lokalit", icon: Building2 },
-  // Budoucí mapy:
-  // { href: "/maps/coverage",  label: "Mapa pokrytí", icon: Radio },
+  { href: "/maps/locations", label: "Mapa lokalit",  icon: Building2 },
+  { href: "/maps/oltec",     label: "Mapa Oltec",    icon: Layers    },
 ];
 
 export default function MapsLayout({ children }: { children: React.ReactNode }) {

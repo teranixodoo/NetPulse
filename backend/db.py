@@ -2474,14 +2474,15 @@ async def cleanup_ping_results(pool, retention_days: int) -> dict:
     """Smaže ping_results starší než retention_days dní a provede VACUUM ANALYZE."""
     import logging as _log
     logger = _log.getLogger("netpulse.cleanup")
+    days = int(retention_days)
 
     async with pool.acquire() as conn:
         total_before = await conn.fetchval("SELECT COUNT(*) FROM ping_results")
+        # Vkládáme počet dní přímo do SQL — bezpečné protože je to int
         deleted = await conn.fetchval(
-            "WITH deleted AS (DELETE FROM ping_results "
-            "WHERE scanned_at < NOW() - $1::interval RETURNING 1) "
-            "SELECT COUNT(*) FROM deleted",
-            f"{retention_days} days"
+            f"WITH deleted AS (DELETE FROM ping_results "
+            f"WHERE scanned_at < NOW() - INTERVAL '{days} days' RETURNING 1) "
+            f"SELECT COUNT(*) FROM deleted"
         )
         total_after = await conn.fetchval("SELECT COUNT(*) FROM ping_results")
 

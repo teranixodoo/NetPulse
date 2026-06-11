@@ -2,7 +2,8 @@
 
 FROM node:20-alpine AS deps
 WORKDIR /app
-RUN npm install -g npm@latest
+RUN npm install -g npm@11.16.0 --no-fund --no-audit
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 COPY frontend-react/package.json ./
 RUN npm install --legacy-peer-deps --no-fund --no-audit 2>&1 | grep -v "^npm warn deprecated" || true
 

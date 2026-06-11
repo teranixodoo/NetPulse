@@ -78,6 +78,8 @@ services:
       # Přepsat v .env: BACKEND_URL=http://VAŠE_IP:8000 (např. 10.221.0.65)
       API_URL: ${BACKEND_URL:-http://host.docker.internal:8000}
       NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://host.docker.internal:8000}
+    volumes:
+      - ./shared/maps:/shared/maps:ro
     ports:
       - "3000:3000"
 

@@ -1768,7 +1768,7 @@ async def trigger_cleanup_ping_results(
     pool = Depends(get_db),
 ):
     """Manuálně spustí cleanup ping_results."""
-    cfg = await db.get_config_db(pool)
-    retention = getattr(cfg, "cleanup_retention_days", 30)
-    result = await db.cleanup_ping_results(pool, retention)
+    cfg       = await db.get_config_db(pool)
+    retention = int(cfg.get("cleanup_retention_days", 30))
+    result    = await db.cleanup_ping_results(pool, retention)
     return result

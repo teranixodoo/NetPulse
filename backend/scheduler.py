@@ -535,16 +535,25 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
 
     # Cleanup ping_results job
     async def _ping_cleanup():
-        _cfg = await db.get_config(pool)
-        if not getattr(_cfg, "cleanup_enabled", True):
-            return
-        retention = getattr(_cfg, "cleanup_retention_days", 30)
-        result = await db.cleanup_ping_results(pool, retention)
-        _syslog().write_bg(
-            "INFO", "netpulse.cleanup",
-            f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
-            f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
-        )
+        try:
+            _cfg = await db.get_config_db(pool)
+            if not _cfg.get("cleanup_enabled", True):
+                log.info("Cleanup: zakázán v konfiguraci")
+                return
+            retention = int(_cfg.get("cleanup_retention_days", 30))
+            log.info(f"Cleanup: spouštím mazání ping_results starších než {retention} dní")
+            result = await db.cleanup_ping_results(pool, retention)
+            log.info(
+                f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
+                f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
+            )
+            _syslog().write_bg(
+                "INFO", "netpulse.cleanup",
+                f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
+                f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
+            )
+        except Exception as _ce:
+            log.error(f"Cleanup ping_results CHYBA: {_ce}", exc_info=True)
 
     _cleanup_time = config.get("cleanup_time", "02:00") if isinstance(config, dict) else getattr(config, "cleanup_time", "02:00")
     try:
