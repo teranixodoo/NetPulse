@@ -2520,23 +2520,20 @@ async def sync_mac_inventory(pool, proxy_device_id: int) -> dict:
     """
     Synchronizuje mac_inventory z device_ips pro daný proxy MikroTik.
     Detekuje nové MAC, změny IP, přechody online/offline.
-    Volat po každém Poll cyklu.
+    Události se generují pouze při skutečné změně — ne při každém Poll cyklu.
     """
     import logging as _log
     log = _log.getLogger("netpulse.mac_inventory")
     stats = {"new": 0, "ip_change": 0, "online": 0, "offline": 0, "updated": 0}
 
     async with pool.acquire() as conn:
-        # Načteme aktuální ARP/DHCP data z device_ips pro tento proxy MikroTik
-        # device_ips obsahuje IP zařízení která MikroTik vidí v síti
+        # Aktuální ARP/DHCP data pro tento MikroTik
         rows = await conn.fetch("""
             SELECT DISTINCT ON (di.mac)
-                di.mac::text    AS mac,
-                di.ip::text     AS ip,
+                di.mac::text AS mac,
+                di.ip::text  AS ip,
                 di.source,
-                di.last_seen,
-                d.id            AS device_id,
-                d.vendor        AS device_vendor
+                d.vendor     AS device_vendor
             FROM device_ips di
             JOIN devices d ON d.id = di.device_id
             WHERE d.id = $1
@@ -2546,81 +2543,83 @@ async def sync_mac_inventory(pool, proxy_device_id: int) -> dict:
             ORDER BY di.mac, di.last_seen DESC
         """, proxy_device_id)
 
-        # Pro každý MAC — upsert do mac_inventory
+        # Načteme existující inventory najednou — efektivnější
+        existing_rows = await conn.fetch("""
+            SELECT mac::text, last_ip::text, is_online, first_seen
+            FROM mac_inventory
+            WHERE proxy_device_id = $1
+        """, proxy_device_id)
+        existing_map = {r["mac"].upper(): dict(r) for r in existing_rows}
+
+        # Sada aktuálně viděných MAC
+        seen_macs = set()
+
         for r in rows:
-            mac    = r["mac"]
+            mac    = r["mac"].upper() if r["mac"] else r["mac"]
             ip     = r["ip"].split("/")[0] if r["ip"] else None
-            source = r["source"]
-
-            # Existuje záznam?
-            existing = await conn.fetchrow(
-                "SELECT id, last_ip::text, is_online FROM mac_inventory "
-                "WHERE mac::text = $1 AND proxy_device_id = $2",
-                mac, proxy_device_id
-            )
-
-            # Zjisti vendor z OUI (máme v discovery.py — zde použijeme device_vendor)
             vendor = r["device_vendor"]
+            seen_macs.add(mac)
 
-            # Najdi evidované zařízení podle MAC — primárně v devices.mac
-            dev_row = await conn.fetchrow("""
-                SELECT id FROM devices
-                WHERE mac::text = $1
-                LIMIT 1
-            """, mac)
-            # Fallback: hledat přes device_ips (pro zařízení bez mac v devices)
+            # Najdi evidované zařízení podle MAC
+            dev_row = await conn.fetchrow(
+                "SELECT id FROM devices WHERE UPPER(mac::text) = UPPER($1) LIMIT 1", mac
+            )
             if not dev_row:
                 dev_row = await conn.fetchrow("""
                     SELECT d.id FROM devices d
                     JOIN device_ips di ON di.device_id = d.id
-                    WHERE di.mac::text = $1
-                      AND d.id != $2
+                    WHERE UPPER(di.mac::text) = UPPER($1) AND d.id != $2
                       AND octet_length(di.mac::text) = 17
                     LIMIT 1
                 """, mac, proxy_device_id)
             device_id = dev_row["id"] if dev_row else None
 
+            existing = existing_map.get(mac)
+
             if not existing:
-                # Nový MAC
-                await conn.execute("""
+                # Skutečně nový MAC — INSERT a jedna událost 'new'
+                inserted = await conn.fetchrow("""
                     INSERT INTO mac_inventory
                         (mac, proxy_device_id, vendor, device_id, last_ip, is_online, source)
                     VALUES ($1::macaddr, $2, $3, $4, $5::inet, TRUE, $6)
-                    ON CONFLICT (mac, proxy_device_id) DO NOTHING
-                """, mac, proxy_device_id, vendor, device_id,
-                    ip, source)
+                    ON CONFLICT (mac, proxy_device_id) DO UPDATE
+                        SET last_seen = NOW()
+                    RETURNING (xmax = 0) AS was_inserted
+                """, mac, proxy_device_id, vendor, device_id, ip, r["source"])
 
-                await conn.execute("""
-                    INSERT INTO mac_events (mac, proxy_device_id, event_type, new_value)
-                    VALUES ($1::macaddr, $2, 'new', $3)
-                """, mac, proxy_device_id, ip)
-                stats["new"] += 1
-
+                if inserted and inserted["was_inserted"]:
+                    # Opravdu nový — generuj událost
+                    await conn.execute("""
+                        INSERT INTO mac_events (mac, proxy_device_id, event_type, new_value)
+                        VALUES ($1::macaddr, $2, 'new', $3)
+                    """, mac, proxy_device_id, ip)
+                    stats["new"] += 1
+                    # Aktualizuj local map
+                    existing_map[mac] = {"mac": mac, "last_ip": ip, "is_online": True}
             else:
-                updates = []
-                old_ip  = existing["last_ip"]
+                old_ip     = (existing["last_ip"] or "").split("/")[0]
                 was_online = existing["is_online"]
+                events     = []
 
-                events = []
                 # Změna IP?
-                if ip and old_ip and ip != old_ip.split("/")[0]:
+                if ip and old_ip and ip != old_ip:
                     events.append(("ip_change", old_ip, ip))
                     stats["ip_change"] += 1
 
-                # Online/offline přechod
+                # Přechod offline → online?
                 if not was_online:
                     events.append(("online", None, ip))
                     stats["online"] += 1
 
-                # Update záznamu
+                # Update (vždy — last_seen, ip, device_id)
                 await conn.execute("""
                     UPDATE mac_inventory
-                    SET last_seen  = NOW(),
-                        last_ip    = $3::inet,
-                        is_online  = TRUE,
-                        device_id  = COALESCE($4, device_id),
-                        vendor     = COALESCE($5, vendor)
-                    WHERE mac::text = $1 AND proxy_device_id = $2
+                    SET last_seen = NOW(),
+                        last_ip   = $3::inet,
+                        is_online = TRUE,
+                        device_id = COALESCE($4, device_id),
+                        vendor    = COALESCE($5, vendor)
+                    WHERE UPPER(mac::text) = UPPER($1) AND proxy_device_id = $2
                 """, mac, proxy_device_id, ip, device_id, vendor)
                 stats["updated"] += 1
 
@@ -2631,21 +2630,26 @@ async def sync_mac_inventory(pool, proxy_device_id: int) -> dict:
                         VALUES ($1::macaddr, $2, $3, $4, $5)
                     """, mac, proxy_device_id, etype, old_val, new_val)
 
-        # Označ jako offline MAC která se dlouho neobjevila (>2h)
+                # Aktualizuj local map pro případné další iterace
+                existing_map[mac]["last_ip"]   = ip
+                existing_map[mac]["is_online"]  = True
+
+        # Offline: MAC které v tomto Poll cyklu nebyly vidět ale jsou online
+        # Použijeme mírný timeout — 2× Poll interval (12 min) + rezerva
         offline_rows = await conn.fetch("""
             UPDATE mac_inventory
             SET is_online = FALSE
             WHERE proxy_device_id = $1
               AND is_online = TRUE
-              AND last_seen < NOW() - INTERVAL '2 hours'
-            RETURNING mac::text, last_ip::text
+              AND last_seen < NOW() - INTERVAL '15 minutes'
+            RETURNING UPPER(mac::text) AS mac, last_ip::text
         """, proxy_device_id)
 
-        for r in offline_rows:
+        for row in offline_rows:
             await conn.execute("""
                 INSERT INTO mac_events (mac, proxy_device_id, event_type, old_value)
                 VALUES ($1::macaddr, $2, 'offline', $3)
-            """, r["mac"], proxy_device_id, r["last_ip"])
+            """, row["mac"], proxy_device_id, row["last_ip"])
             stats["offline"] += 1
 
     log.debug(f"MAC inventory sync proxy={proxy_device_id}: {stats}")
