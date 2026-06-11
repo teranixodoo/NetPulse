@@ -2510,3 +2510,310 @@ async def cleanup_ping_results(pool, retention_days: int) -> dict:
         "total_after":    total_after,
         "retention_days": retention_days,
     }
+
+
+# ===========================================================================
+# Network Awareness — MAC inventář
+# ===========================================================================
+
+async def sync_mac_inventory(pool, proxy_device_id: int) -> dict:
+    """
+    Synchronizuje mac_inventory z device_ips pro daný proxy MikroTik.
+    Detekuje nové MAC, změny IP, přechody online/offline.
+    Volat po každém Poll cyklu.
+    """
+    import logging as _log
+    log = _log.getLogger("netpulse.mac_inventory")
+    stats = {"new": 0, "ip_change": 0, "online": 0, "offline": 0, "updated": 0}
+
+    async with pool.acquire() as conn:
+        # Načteme aktuální ARP/DHCP data z device_ips pro tento proxy MikroTik
+        # device_ips obsahuje IP zařízení která MikroTik vidí v síti
+        rows = await conn.fetch("""
+            SELECT DISTINCT ON (di.mac)
+                di.mac::text    AS mac,
+                di.ip::text     AS ip,
+                di.source,
+                di.last_seen,
+                d.id            AS device_id,
+                d.vendor        AS device_vendor
+            FROM device_ips di
+            JOIN devices d ON d.id = di.device_id
+            WHERE d.id = $1
+              AND di.mac IS NOT NULL
+              AND octet_length(di.mac::text) = 17
+              AND di.last_seen > NOW() - INTERVAL '2 hours'
+            ORDER BY di.mac, di.last_seen DESC
+        """, proxy_device_id)
+
+        # Pro každý MAC — upsert do mac_inventory
+        for r in rows:
+            mac    = r["mac"]
+            ip     = r["ip"].split("/")[0] if r["ip"] else None
+            source = r["source"]
+
+            # Existuje záznam?
+            existing = await conn.fetchrow(
+                "SELECT id, last_ip::text, is_online FROM mac_inventory "
+                "WHERE mac::text = $1 AND proxy_device_id = $2",
+                mac, proxy_device_id
+            )
+
+            # Zjisti vendor z OUI (máme v discovery.py — zde použijeme device_vendor)
+            vendor = r["device_vendor"]
+
+            # Najdi evidované zařízení podle MAC — primárně v devices.mac
+            dev_row = await conn.fetchrow("""
+                SELECT id FROM devices
+                WHERE mac::text = $1
+                LIMIT 1
+            """, mac)
+            # Fallback: hledat přes device_ips (pro zařízení bez mac v devices)
+            if not dev_row:
+                dev_row = await conn.fetchrow("""
+                    SELECT d.id FROM devices d
+                    JOIN device_ips di ON di.device_id = d.id
+                    WHERE di.mac::text = $1
+                      AND d.id != $2
+                      AND octet_length(di.mac::text) = 17
+                    LIMIT 1
+                """, mac, proxy_device_id)
+            device_id = dev_row["id"] if dev_row else None
+
+            if not existing:
+                # Nový MAC
+                await conn.execute("""
+                    INSERT INTO mac_inventory
+                        (mac, proxy_device_id, vendor, device_id, last_ip, is_online, source)
+                    VALUES ($1::macaddr, $2, $3, $4, $5::inet, TRUE, $6)
+                    ON CONFLICT (mac, proxy_device_id) DO NOTHING
+                """, mac, proxy_device_id, vendor, device_id,
+                    ip, source)
+
+                await conn.execute("""
+                    INSERT INTO mac_events (mac, proxy_device_id, event_type, new_value)
+                    VALUES ($1::macaddr, $2, 'new', $3)
+                """, mac, proxy_device_id, ip)
+                stats["new"] += 1
+
+            else:
+                updates = []
+                old_ip  = existing["last_ip"]
+                was_online = existing["is_online"]
+
+                events = []
+                # Změna IP?
+                if ip and old_ip and ip != old_ip.split("/")[0]:
+                    events.append(("ip_change", old_ip, ip))
+                    stats["ip_change"] += 1
+
+                # Online/offline přechod
+                if not was_online:
+                    events.append(("online", None, ip))
+                    stats["online"] += 1
+
+                # Update záznamu
+                await conn.execute("""
+                    UPDATE mac_inventory
+                    SET last_seen  = NOW(),
+                        last_ip    = $3::inet,
+                        is_online  = TRUE,
+                        device_id  = COALESCE($4, device_id),
+                        vendor     = COALESCE($5, vendor)
+                    WHERE mac::text = $1 AND proxy_device_id = $2
+                """, mac, proxy_device_id, ip, device_id, vendor)
+                stats["updated"] += 1
+
+                for etype, old_val, new_val in events:
+                    await conn.execute("""
+                        INSERT INTO mac_events
+                            (mac, proxy_device_id, event_type, old_value, new_value)
+                        VALUES ($1::macaddr, $2, $3, $4, $5)
+                    """, mac, proxy_device_id, etype, old_val, new_val)
+
+        # Označ jako offline MAC která se dlouho neobjevila (>2h)
+        offline_rows = await conn.fetch("""
+            UPDATE mac_inventory
+            SET is_online = FALSE
+            WHERE proxy_device_id = $1
+              AND is_online = TRUE
+              AND last_seen < NOW() - INTERVAL '2 hours'
+            RETURNING mac::text, last_ip::text
+        """, proxy_device_id)
+
+        for r in offline_rows:
+            await conn.execute("""
+                INSERT INTO mac_events (mac, proxy_device_id, event_type, old_value)
+                VALUES ($1::macaddr, $2, 'offline', $3)
+            """, r["mac"], proxy_device_id, r["last_ip"])
+            stats["offline"] += 1
+
+    log.debug(f"MAC inventory sync proxy={proxy_device_id}: {stats}")
+    return stats
+
+
+async def get_mac_inventory(
+    pool,
+    proxy_device_id: int | None = None,
+    only_new_days:   int | None = None,   # None = vše, 7 = jen nové za 7 dní
+    only_unknown:    bool = False,         # jen neevidované
+    search:          str | None = None,
+    limit:           int = 500,
+    offset:          int = 0,
+) -> list[dict]:
+    """Vrátí MAC inventář s detaily."""
+    conditions = ["1=1"]
+    params: list = []
+    p = 1
+
+    if proxy_device_id:
+        conditions.append(f"mi.proxy_device_id = ${p}")
+        params.append(proxy_device_id); p += 1
+
+    if only_new_days:
+        conditions.append(f"mi.first_seen > NOW() - INTERVAL '{int(only_new_days)} days'")
+
+    if only_unknown:
+        conditions.append("mi.device_id IS NULL")
+
+    if search:
+        conditions.append(
+            f"(mi.mac::text ILIKE ${p} OR mi.last_ip::text ILIKE ${p} "
+            f"OR mi.vendor ILIKE ${p} OR d.hostname ILIKE ${p})"
+        )
+        params.append(f"%{search}%"); p += 1
+
+    where = " AND ".join(conditions)
+    params += [limit, offset]
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT
+                mi.id, mi.mac::text, mi.vendor,
+                mi.last_ip::text    AS ip,
+                mi.is_online,
+                mi.first_seen, mi.last_seen,
+                mi.source,
+                mi.proxy_device_id,
+                pd.hostname         AS proxy_hostname,
+                mi.device_id,
+                d.hostname          AS device_hostname,
+                d.alias             AS device_alias,
+                d.device_type,
+                -- Je "nové" (7 dní)?
+                mi.first_seen > NOW() - INTERVAL '7 days' AS is_new
+            FROM mac_inventory mi
+            LEFT JOIN devices pd ON pd.id = mi.proxy_device_id
+            LEFT JOIN devices d  ON d.id  = mi.device_id
+            WHERE {where}
+            ORDER BY mi.is_online DESC, mi.last_seen DESC
+            LIMIT ${p} OFFSET ${p+1}
+        """, *params)
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        for k in ("first_seen", "last_seen"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+        result.append(d)
+    return result
+
+
+async def get_mac_events(
+    pool,
+    proxy_device_id: int | None = None,
+    event_types:     list[str] | None = None,
+    hours:           int = 24,
+    limit:           int = 200,
+) -> list[dict]:
+    """Vrátí historii MAC událostí."""
+    conditions = [f"seen_at > NOW() - INTERVAL '{int(hours)} hours'"]
+    params: list = []
+    p = 1
+
+    if proxy_device_id:
+        conditions.append(f"proxy_device_id = ${p}")
+        params.append(proxy_device_id); p += 1
+
+    if event_types:
+        placeholders = ",".join(f"${p+i}" for i in range(len(event_types)))
+        conditions.append(f"event_type IN ({placeholders})")
+        params.extend(event_types); p += len(event_types)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT
+                me.id, me.mac::text, me.event_type,
+                me.old_value, me.new_value, me.seen_at,
+                me.proxy_device_id,
+                d.hostname AS proxy_hostname
+            FROM mac_events me
+            LEFT JOIN devices d ON d.id = me.proxy_device_id
+            WHERE {where}
+            ORDER BY me.seen_at DESC
+            LIMIT ${p}
+        """, *params)
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        if d.get("seen_at"):
+            d["seen_at"] = d["seen_at"].isoformat()
+        result.append(d)
+    return result
+
+
+async def get_mac_stats(pool) -> dict:
+    """Souhrnné statistiky pro badge v menu."""
+    async with pool.acquire() as conn:
+        total   = await conn.fetchval("SELECT COUNT(*) FROM mac_inventory")
+        online  = await conn.fetchval("SELECT COUNT(*) FROM mac_inventory WHERE is_online = TRUE")
+        unknown = await conn.fetchval("SELECT COUNT(*) FROM mac_inventory WHERE device_id IS NULL")
+        new_7d  = await conn.fetchval(
+            "SELECT COUNT(*) FROM mac_inventory "
+            "WHERE first_seen > NOW() - INTERVAL '7 days'"
+        )
+    return {
+        "total":   int(total   or 0),
+        "online":  int(online  or 0),
+        "unknown": int(unknown or 0),
+        "new_7d":  int(new_7d  or 0),
+    }
+
+
+async def cleanup_mac_inventory(pool, retention_days: int) -> dict:
+    """Smaže staré MAC záznamy a události."""
+    days = int(retention_days)
+    async with pool.acquire() as conn:
+        del_events = await conn.fetchval(
+            f"WITH d AS (DELETE FROM mac_events "
+            f"WHERE seen_at < NOW() - INTERVAL '{days} days' RETURNING 1) "
+            f"SELECT COUNT(*) FROM d"
+        )
+        del_mac = await conn.fetchval(
+            f"WITH d AS (DELETE FROM mac_inventory "
+            f"WHERE last_seen < NOW() - INTERVAL '{days} days' RETURNING 1) "
+            f"SELECT COUNT(*) FROM d"
+        )
+    return {"deleted_events": int(del_events or 0), "deleted_mac": int(del_mac or 0)}
+
+
+async def backfill_mac_inventory_devices(pool) -> int:
+    """
+    Jednorázový backfill — přiřadí device_id k existujícím MAC záznamům
+    které ho nemají, hledáním v devices.mac.
+    """
+    async with pool.acquire() as conn:
+        result = await conn.execute("""
+            UPDATE mac_inventory mi
+            SET device_id = d.id
+            FROM devices d
+            WHERE mi.device_id IS NULL
+              AND d.mac IS NOT NULL
+              AND d.mac::text = mi.mac::text
+        """)
+    return int(result.split()[-1]) if result else 0

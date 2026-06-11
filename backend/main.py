@@ -83,6 +83,14 @@ async def lifespan(app: FastAPI):
     except Exception as _ze:
         log.warning(f"Startup zombie cleanup: {_ze}")
 
+    # Backfill device_id v mac_inventory
+    try:
+        backfill_count = await db.backfill_mac_inventory_devices(pool)
+        if backfill_count > 0:
+            log.info(f"Startup: backfill mac_inventory device_id — přiřazeno {backfill_count} záznamů")
+    except Exception as _be:
+        log.warning(f"Startup mac backfill: {_be}")
+
     scheduler.start_scheduler(pool, cfg)
     yield
     scheduler.stop_scheduler()
@@ -1772,3 +1780,69 @@ async def trigger_cleanup_ping_results(
     retention = int(cfg.get("cleanup_retention_days", 30))
     result    = await db.cleanup_ping_results(pool, retention)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Network Awareness — MAC inventář endpointy
+# ---------------------------------------------------------------------------
+
+@app.get("/mac/stats", tags=["MAC"])
+async def get_mac_stats(
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Souhrnné statistiky pro badge v menu."""
+    return await db.get_mac_stats(pool)
+
+
+@app.get("/mac/inventory", tags=["MAC"])
+async def get_mac_inventory(
+    proxy_device_id: int | None = None,
+    only_new:        bool       = False,
+    only_unknown:    bool       = False,
+    search:          str | None = None,
+    limit:           int        = 500,
+    offset:          int        = 0,
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Vrátí MAC inventář."""
+    return await db.get_mac_inventory(
+        pool,
+        proxy_device_id = proxy_device_id,
+        only_new_days   = 7 if only_new else None,
+        only_unknown    = only_unknown,
+        search          = search,
+        limit           = limit,
+        offset          = offset,
+    )
+
+
+@app.get("/mac/events", tags=["MAC"])
+async def get_mac_events(
+    proxy_device_id: int | None = None,
+    event_types:     str | None = None,  # csv: "new,ip_change"
+    hours:           int        = 24,
+    limit:           int        = 200,
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Vrátí historii MAC událostí."""
+    types = event_types.split(",") if event_types else None
+    return await db.get_mac_events(
+        pool,
+        proxy_device_id = proxy_device_id,
+        event_types     = types,
+        hours           = hours,
+        limit           = limit,
+    )
+
+
+@app.post("/mac/sync/{device_id}", tags=["MAC"])
+async def sync_mac_inventory(
+    device_id: int,
+    pool = Depends(get_db),
+    user = Depends(current_user),
+):
+    """Manuálně spustí MAC sync pro daný MikroTik."""
+    return await db.sync_mac_inventory(pool, device_id)

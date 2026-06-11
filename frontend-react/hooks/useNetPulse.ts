@@ -5,7 +5,7 @@ import { systemLogsApi } from '@/lib/api';
 import { outagesApi, changeLogApi, scanExclusionsApi, deviceDataApi, deviceIpsApi, hostsApi, ipAddressesApi, presenceApi, unknownNetworksApi, sitesApi, hostsEnrichedApi, configListsApi, locationsApi, locationsTableApi } from '@/lib/api';
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
-  devicesApi, configApi, healthApi, backupApi, getErrorMessage,
+  devicesApi, configApi, healthApi, backupApi, getErrorMessage, macApi,
 } from "@/lib/api";
 import type { DeviceCreate, CredentialCreate, IpRange, ScanJob, ScanJobStats,
 } from "@/lib/types";
@@ -742,3 +742,56 @@ export function useChangeLog(hours = 24, deviceId?: number, eventTypes?: string)
 }
 
 export { getErrorMessage };
+
+// ---------------------------------------------------------------------------
+// Network Awareness — MAC hooks
+// ---------------------------------------------------------------------------
+export function useMacStats() {
+  return useQuery<import("@/lib/types").MacStats>({
+    queryKey: ["mac-stats"],
+    queryFn:  () => macApi.getStats(),
+    staleTime:     30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useMacInventory(params?: {
+  proxy_device_id?: number;
+  only_new?: boolean;
+  only_unknown?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return useQuery<import("@/lib/types").MacInventoryItem[]>({
+    queryKey: ["mac-inventory", params],
+    queryFn:  () => macApi.getInventory(params),
+    staleTime: 30_000,
+  });
+}
+
+export function useMacEvents(params?: {
+  proxy_device_id?: number;
+  event_types?: string;
+  hours?: number;
+  limit?: number;
+}) {
+  return useQuery<import("@/lib/types").MacEvent[]>({
+    queryKey: ["mac-events", params],
+    queryFn:  () => macApi.getEvents(params),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useSyncMacDevice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (deviceId: number) => macApi.syncDevice(deviceId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mac-inventory"] });
+      qc.invalidateQueries({ queryKey: ["mac-events"] });
+      qc.invalidateQueries({ queryKey: ["mac-stats"] });
+    },
+  });
+}

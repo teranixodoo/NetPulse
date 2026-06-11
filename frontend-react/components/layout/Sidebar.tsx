@@ -5,30 +5,32 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, Monitor, Network, KeyRound,
   ScrollText, Settings, Radio, Users, List, History, BarChart2,
-  HardDrive, Terminal, AlertTriangle, Globe, Settings2, MapPin, Table2, Map } from "lucide-react";
+  HardDrive, Terminal, AlertTriangle, Globe, Settings2, MapPin, Table2, Map, Wifi } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { ScanStatusWidget } from "./ScanStatusWidget";
+import { useMacStats } from "@/hooks/useNetPulse";
 
 const NAV_ITEMS = [
-  { href: "/dashboard",   label: "Dashboard",   icon: LayoutDashboard },
-  { href: "/devices",     label: "Zařízení",    icon: Monitor },
-  { href: "/hosts",       label: "IP Adresy",   icon: List },
-  { href: "/graphs",     label: "Grafy",       icon: BarChart2 },
-  { href: "/sites",            label: "Sítě",           icon: Globe },
-  { href: "/ranges",           label: "IP Rozsahy",     icon: Network },
-  { href: "/unknown-networks", label: "Neznámé sítě",   icon: AlertTriangle },
-  { href: "/credentials", label: "Přihl. profily", icon: KeyRound },
-  { href: "/scans",      label: "Historie scanů", icon: History },
-  { href: "/backups",    label: "Zálohy",         icon: HardDrive },
-  { href: "/users",       label: "Uživatelé",   icon: Users },
-  { href: "/settings",    label: "Nastavení",   icon: Settings },
-  { href: "/config",      label: "Konfigurace", icon: Settings2 },
-  { href: "/locations",        label: "Lokace strom",   icon: MapPin },
-  { href: "/locations/table",  label: "Lokace tabulka", icon: Table2 },
-  { href: "/maps",             label: "Mapy",           icon: Map    },
-  { href: "/outages",     label: "Log výpadků", icon: AlertTriangle },
-  { href: "/change-log",  label: "Log změn",    icon: History },
+  { href: "/dashboard",         label: "Dashboard",        icon: LayoutDashboard },
+  { href: "/devices",           label: "Zařízení",         icon: Monitor },
+  { href: "/hosts",             label: "IP Adresy",        icon: List },
+  { href: "/graphs",            label: "Grafy",            icon: BarChart2 },
+  { href: "/sites",             label: "Sítě",             icon: Globe },
+  { href: "/ranges",            label: "IP Rozsahy",       icon: Network },
+  { href: "/unknown-networks",  label: "Neznámé sítě",     icon: AlertTriangle },
+  { href: "/network-awareness", label: "Network Awareness",icon: Wifi },
+  { href: "/credentials",       label: "Přihl. profily",   icon: KeyRound },
+  { href: "/scans",             label: "Historie scanů",   icon: History },
+  { href: "/backups",           label: "Zálohy",           icon: HardDrive },
+  { href: "/users",             label: "Uživatelé",        icon: Users },
+  { href: "/settings",          label: "Nastavení",        icon: Settings },
+  { href: "/config",            label: "Konfigurace",      icon: Settings2 },
+  { href: "/locations",         label: "Lokace strom",     icon: MapPin },
+  { href: "/locations/table",   label: "Lokace tabulka",   icon: Table2 },
+  { href: "/maps",              label: "Mapy",             icon: Map },
+  { href: "/outages",           label: "Log výpadků",      icon: AlertTriangle },
+  { href: "/change-log",        label: "Log změn",         icon: History },
 ];
 
 const ADMIN_ITEMS = [
@@ -36,8 +38,10 @@ const ADMIN_ITEMS = [
 ];
 
 export function Sidebar() {
-  const pathname = usePathname();
-  const { user }  = useAuth();
+  const pathname      = usePathname();
+  const { user }      = useAuth();
+  const { data: macStats } = useMacStats();
+  const newMacCount   = macStats?.new_7d ?? 0;
 
   return (
     <aside className="flex w-[220px] shrink-0 flex-col border-r border-border bg-card">
@@ -52,6 +56,7 @@ export function Sidebar() {
         <ul className="space-y-0.5 px-2">
           {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || pathname.startsWith(href + "/");
+            const isNA   = href === "/network-awareness";
             return (
               <li key={href}>
                 <Link
@@ -64,7 +69,12 @@ export function Sidebar() {
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  {label}
+                  <span className="flex-1">{label}</span>
+                  {isNA && newMacCount > 0 && (
+                    <span className="inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[10px] font-bold min-w-[18px] h-[18px] px-1">
+                      {newMacCount > 99 ? "99+" : newMacCount}
+                    </span>
+                  )}
                 </Link>
               </li>
             );

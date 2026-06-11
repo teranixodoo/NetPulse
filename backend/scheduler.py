@@ -547,6 +547,16 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
                 f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
                 f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
             )
+            # Cleanup MAC inventář — stejná retence
+            try:
+                mac_result = await db.cleanup_mac_inventory(pool, retention)
+                if mac_result["deleted_mac"] > 0 or mac_result["deleted_events"] > 0:
+                    log.info(
+                        f"Cleanup MAC inventory: smazáno {mac_result['deleted_mac']} MAC, "
+                        f"{mac_result['deleted_events']} událostí, retence {retention} dní"
+                    )
+            except Exception as _mce:
+                log.warning(f"Cleanup MAC inventory chyba: {_mce}")
             _syslog().write_bg(
                 "INFO", "netpulse.cleanup",
                 f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
@@ -1058,6 +1068,18 @@ async def run_poll_scan(pool, config: dict, trigger_type: str = "scheduler") -> 
                             try:
                                 await db.update_device_ips(pool, dev["id"], ip_entries, "api")
                                 log.info(f"Poll scheduler device_ips {dev['ip']}: uloženo {len(ip_entries)} záznamů")
+                                # Synchronizuj MAC inventář pro tento proxy MikroTik
+                                try:
+                                    mac_stats = await db.sync_mac_inventory(pool, dev["id"])
+                                    if mac_stats["new"] > 0:
+                                        log.info(
+                                            f"MAC inventory {dev['ip']}: "
+                                            f"+{mac_stats['new']} nových, "
+                                            f"{mac_stats['ip_change']} změn IP, "
+                                            f"{mac_stats['offline']} offline"
+                                        )
+                                except Exception as _me:
+                                    log.warning(f"MAC inventory sync {dev['ip']}: {_me}")
                             except Exception as _ie:
                                 log.warning(f"Poll scheduler device_ips {dev['ip']}: {_ie}")
                         else:

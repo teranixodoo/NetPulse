@@ -640,3 +640,41 @@ ALTER TABLE ip_ranges ADD COLUMN IF NOT EXISTS proxy_mode TEXT
     CHECK (proxy_mode IN ('auto', 'manual', 'direct'));
 CREATE INDEX IF NOT EXISTS idx_ip_ranges_proxy ON ip_ranges (proxy_device_id)
     WHERE proxy_device_id IS NOT NULL;
+
+-- ===========================================================================
+-- Network Awareness — MAC inventář a události
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS mac_inventory (
+    id               SERIAL PRIMARY KEY,
+    mac              MACADDR NOT NULL,
+    proxy_device_id  INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+    vendor           TEXT,
+    device_id        INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    first_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_ip          INET,
+    is_online        BOOLEAN NOT NULL DEFAULT FALSE,
+    source           TEXT NOT NULL DEFAULT 'arp',
+    UNIQUE(mac, proxy_device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mac_inventory_proxy    ON mac_inventory(proxy_device_id);
+CREATE INDEX IF NOT EXISTS idx_mac_inventory_device   ON mac_inventory(device_id);
+CREATE INDEX IF NOT EXISTS idx_mac_inventory_last_seen ON mac_inventory(last_seen);
+CREATE INDEX IF NOT EXISTS idx_mac_inventory_is_online ON mac_inventory(is_online);
+
+CREATE TABLE IF NOT EXISTS mac_events (
+    id               SERIAL PRIMARY KEY,
+    mac              MACADDR NOT NULL,
+    proxy_device_id  INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+    event_type       TEXT NOT NULL,  -- 'new','ip_change','online','offline'
+    old_value        TEXT,
+    new_value        TEXT,
+    seen_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mac_events_mac     ON mac_events(mac);
+CREATE INDEX IF NOT EXISTS idx_mac_events_proxy   ON mac_events(proxy_device_id);
+CREATE INDEX IF NOT EXISTS idx_mac_events_seen_at ON mac_events(seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mac_events_type    ON mac_events(event_type);
+
+-- Migrace: přidat retention pro mac_inventory do cleanup
+ALTER TABLE app_config ADD COLUMN IF NOT EXISTS dummy_placeholder TEXT;  -- placeholder

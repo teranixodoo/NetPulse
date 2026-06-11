@@ -586,3 +586,42 @@ export interface OutageStats {
   avg_duration_s: number | null;
   max_duration_s: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// Network Awareness — MAC inventář
+// ---------------------------------------------------------------------------
+export interface MacInventoryItem {
+  id:               number;
+  mac:              string;
+  vendor:           string | null;
+  ip:               string | null;
+  is_online:        boolean;
+  first_seen:       string;
+  last_seen:        string;
+  source:           string;
+  proxy_device_id:  number | null;
+  proxy_hostname:   string | null;
+  device_id:        number | null;
+  device_hostname:  string | null;
+  device_alias:     string | null;
+  device_type:      string | null;
+  is_new:           boolean;      // poprvé viděno za posledních 7 dní
+}
+
+export interface MacEvent {
+  id:               number;
+  mac:              string;
+  event_type:       "new" | "ip_change" | "online" | "offline";
+  old_value:        string | null;
+  new_value:        string | null;
+  seen_at:          string;
+  proxy_device_id:  number | null;
+  proxy_hostname:   string | null;
+}
+
+export interface MacStats {
+  total:    number;
+  online:   number;
+  unknown:  number;
+  new_7d:   number;
+}

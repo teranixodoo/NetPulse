@@ -590,3 +590,37 @@ export const changeLogApi = {
     return data;
   },
 };
+
+// ---------------------------------------------------------------------------
+// MAC inventář API
+// ---------------------------------------------------------------------------
+export const macApi = {
+  async getStats(): Promise<import('./types').MacStats> {
+    const { data } = await api.get("/mac/stats");
+    return data;
+  },
+  async getInventory(params?: {
+    proxy_device_id?: number;
+    only_new?: boolean;
+    only_unknown?: boolean;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<import('./types').MacInventoryItem[]> {
+    const { data } = await api.get("/mac/inventory", { params });
+    return data;
+  },
+  async getEvents(params?: {
+    proxy_device_id?: number;
+    event_types?: string;
+    hours?: number;
+    limit?: number;
+  }): Promise<import('./types').MacEvent[]> {
+    const { data } = await api.get("/mac/events", { params });
+    return data;
+  },
+  async syncDevice(deviceId: number): Promise<any> {
+    const { data } = await api.post(`/mac/sync/${deviceId}`);
+    return data;
+  },
+};
