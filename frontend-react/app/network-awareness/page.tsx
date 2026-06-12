@@ -244,6 +244,7 @@ interface MacGroup {
   eventCount:   number;
   hasIpChange:  boolean;
   hasOffline:   boolean;
+  deviceName:   string;
   events:       MacEvent[];
 }
 
@@ -260,6 +261,7 @@ function buildGroups(events: MacEvent[]): MacGroup[] {
         eventCount:  0,
         hasIpChange: false,
         hasOffline:  false,
+        deviceName:  (ev as any).device_hostname || "",
         events:      [],
       });
     }
@@ -293,18 +295,28 @@ function GroupBadge({ g }: { g: MacGroup }) {
 }
 
 function EventsTab({ proxyId, hours }: { proxyId: number | null; hours: number }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [page,     setPage]     = useState(0);
+  const [expanded,   setExpanded]   = useState<Set<string>>(new Set());
+  const [page,       setPage]       = useState(0);
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [search,     setSearch]     = useState("");
 
   const { data = [], isLoading } = useMacEvents({
     proxy_device_id: proxyId ?? undefined, hours, limit: 5000,
   });
 
   const filtered = useMemo(() => {
-    if (typeFilter === "all") return data;
-    return data.filter(e => e.event_type === typeFilter);
-  }, [data, typeFilter]);
+    let rows = data;
+    if (typeFilter !== "all") rows = rows.filter(e => e.event_type === typeFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      rows = rows.filter(e =>
+        e.mac.toLowerCase().includes(q) ||
+        stripCidr(e.new_value).toLowerCase().includes(q) ||
+        stripCidr(e.old_value).toLowerCase().includes(q)
+      );
+    }
+    return rows;
+  }, [data, typeFilter, search]);
 
   const groups = useMemo(() => buildGroups(filtered), [filtered]);
   const pageGroups = useMemo(() =>
@@ -331,10 +343,16 @@ function EventsTab({ proxyId, hours }: { proxyId: number | null; hours: number }
 
   return (
     <div className="flex flex-col h-full">
-      {/* Filtr typů */}
+      {/* Filtr + search */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
-        <span className="text-xs text-muted-foreground">{groups.length} MAC s událostmi</span>
-        <div className="flex-1" />
+        <span className="text-xs text-muted-foreground shrink-0">{groups.length} MAC s událostmi</span>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <input type="text" placeholder="MAC nebo IP…" value={search}
+            onChange={e => { setSearch(e.target.value); setPage(0); }}
+            className="h-8 pl-8 pr-3 w-44 rounded-md border border-border bg-background text-xs
+              placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50" />
+        </div>
         <Select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(0); }} className="w-36">
           <option value="all">Všechny typy</option>
           <option value="new">🆕 Nové</option>
@@ -344,15 +362,16 @@ function EventsTab({ proxyId, hours }: { proxyId: number | null; hours: number }
         </Select>
       </div>
 
-      {/* Hlavičky sloupců */}
+      {/* Hlavičky */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border bg-muted/30 shrink-0 text-xs font-medium text-muted-foreground">
         <div className="w-4 shrink-0"></div>
         <div className="w-40 shrink-0">MAC adresa</div>
         <div className="w-32 shrink-0">Poslední IP</div>
-        <div className="w-24 shrink-0">Typ aktivity</div>
-        <div className="w-20 shrink-0">Událostí</div>
-        <div className="flex-1"></div>
-        <div className="shrink-0">Proxy · Poslední aktivita</div>
+        <div className="w-28 shrink-0">Typ aktivity</div>
+        <div className="w-36 shrink-0">Poslední změna</div>
+        <div className="w-16 shrink-0">Událostí</div>
+        <div className="flex-1">Zařízení</div>
+        <div className="shrink-0 pr-2">Proxy</div>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -362,7 +381,6 @@ function EventsTab({ proxyId, hours }: { proxyId: number | null; hours: number }
             const isOpen = expanded.has(key);
             return (
               <div key={key}>
-                {/* Hlavička skupiny */}
                 <button
                   onClick={() => toggleExpand(key)}
                   className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/30 transition-colors text-left"
@@ -376,15 +394,21 @@ function EventsTab({ proxyId, hours }: { proxyId: number | null; hours: number }
                     {g.lastIp !== "—" ? g.lastIp : ""}
                   </span>
 
-                  <GroupBadge g={g} />
+                  <span className="w-28 shrink-0"><GroupBadge g={g} /></span>
 
-                  <span className="text-xs text-muted-foreground">
-                    {g.eventCount} {g.eventCount === 1 ? "událost" : g.eventCount < 5 ? "události" : "událostí"}
+                  <span className="text-xs text-muted-foreground w-36 shrink-0 whitespace-nowrap">
+                    {fmtDateShort(g.lastSeen)}
                   </span>
 
-                  <span className="text-xs text-muted-foreground ml-auto shrink-0">
-                    {g.proxy} · {fmtDateShort(g.lastSeen)}
+                  <span className="text-xs text-muted-foreground w-16 shrink-0">
+                    {g.eventCount}
                   </span>
+
+                  <span className="text-xs text-muted-foreground flex-1 truncate">
+                    {g.deviceName || <span className="italic opacity-50">neevidováno</span>}
+                  </span>
+
+                  <span className="text-xs text-muted-foreground shrink-0 pr-2">{g.proxy}</span>
                 </button>
 
                 {/* Detail událostí */}
