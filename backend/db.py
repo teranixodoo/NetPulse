@@ -251,28 +251,87 @@ async def get_ip_ranges(pool: asyncpg.Pool) -> List[IpRangeModel]:
             for r in rows]
 
 
+async def validate_ip_range(
+    pool: asyncpg.Pool,
+    network: str,
+    site_id: int | None,
+    exclude_id: int | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """
+    Validuje síťový rozsah před uložením.
+    Vrací: (normalized_network, errors, warnings)
+    - errors   = blokující chyby (duplicita, nevalidní CIDR)
+    - warnings = varování (překryv v rámci site, lze přeskočit)
+    """
+    errors:   list[str] = []
+    warnings: list[str] = []
+
+    async with pool.acquire() as conn:
+        # 1. Validace a normalizace CIDR
+        try:
+            normalized = await conn.fetchval(
+                "SELECT network($1::cidr)::text", network
+            )
+        except Exception:
+            errors.append(
+                f"Neplatná CIDR notace: '{network}'. "
+                "Použijte formát např. 172.28.15.0/24"
+            )
+            return network, errors, warnings
+
+        # Upozornění na normalizaci (hostový bit nastaven)
+        if normalized != network:
+            warnings.append(
+                f"Síťová adresa bude normalizována: {network} → {normalized}"
+            )
+
+        # 2. Duplicita — přesná shoda kdekoliv v DB
+        dup = await conn.fetchrow("""
+            SELECT id, label FROM ip_ranges
+            WHERE network::cidr = $1::cidr
+              AND ($2::int IS NULL OR id != $2)
+        """, normalized, exclude_id)
+        if dup:
+            errors.append(
+                f"Rozsah {normalized} již existuje jako '{dup['label']}' (id={dup['id']})"
+            )
+
+        # 3. Překryv v rámci stejného site (jen pokud site_id je zadáno)
+        if site_id and not errors:
+            overlaps = await conn.fetch("""
+                SELECT id, label, network::text AS network FROM ip_ranges
+                WHERE site_id = $1
+                  AND ($2::int IS NULL OR id != $2)
+                  AND (network::cidr >>= $3::cidr
+                       OR network::cidr <<= $3::cidr)
+            """, site_id, exclude_id, normalized)
+            for o in overlaps:
+                warnings.append(
+                    f"Překryv s rozsahem '{o['label']}' ({o['network']}) "
+                    "ve stejném site — IP adresy mohou být skenovány dvakrát"
+                )
+
+    return normalized, errors, warnings
+
+
 async def upsert_ip_range(pool: asyncpg.Pool, rng: IpRangeModel) -> IpRangeModel:
     async with pool.acquire() as conn:
         if rng.id:
-            # Zjistíme starý rozsah pro porovnání
-            old_row = await conn.fetchrow(
-                "SELECT network::text FROM ip_ranges WHERE id=$1", rng.id
-            )
             await conn.execute(
-                "UPDATE ip_ranges SET label=$1, network=$2::cidr, active=$3 WHERE id=$4",
-                rng.label, rng.network, rng.active, rng.id,
+                """UPDATE ip_ranges
+                   SET label=$1, network=$2::cidr, active=$3,
+                       scan_enabled=$4, description=$5, site_id=$6
+                   WHERE id=$7""",
+                rng.label, rng.network, rng.active,
+                rng.scan_enabled, rng.description, rng.site_id, rng.id,
             )
-            # Pokud se změnil rozsah — smažeme ping_results mimo nový rozsah
-            if old_row and old_row["network"] != rng.network:
-                await conn.execute(
-                    "DELETE FROM ping_results WHERE NOT (ip << $1::cidr)",
-                    rng.network,
-                )
             return rng
         else:
             row = await conn.fetchrow(
-                "INSERT INTO ip_ranges (label, network, active) VALUES ($1, $2::cidr, $3) RETURNING id",
+                """INSERT INTO ip_ranges (label, network, active, scan_enabled, description, site_id)
+                   VALUES ($1, $2::cidr, $3, $4, $5, $6) RETURNING id""",
                 rng.label, rng.network, rng.active,
+                rng.scan_enabled, rng.description, rng.site_id,
             )
             return rng.model_copy(update={"id": row["id"]})
 
@@ -441,14 +500,29 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
+            WITH RECURSIVE loc_path(id, path) AS (
+                -- Kořenové lokace (bez rodiče)
+                SELECT id, name::text AS path
+                FROM locations
+                WHERE parent_id IS NULL
+                UNION ALL
+                -- Podlokace — přidej název za cestu rodiče
+                SELECT l.id, lp.path || ' > ' || l.name
+                FROM locations l
+                JOIN loc_path lp ON l.parent_id = lp.id
+            )
             SELECT
                 d.id, d.device_uuid, d.ip::text, d.hostname, d.mac::text,
                 d.device_type,
                 d.ownership, d.description, d.alias,
                 d.vendor, d.serial_number,
-                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str, d.last_polled_at, d.last_poll_method, d.last_successful_credential_id, d.last_successful_auth, d.backup_enabled, d.backup_schedule,
+                d.firmware, d.model, d.last_uptime_s, d.last_uptime_str,
+                d.last_polled_at, d.last_poll_method,
+                d.last_successful_credential_id, d.last_successful_auth,
+                d.backup_enabled, d.backup_schedule,
                 d.created_at, d.updated_at, d.cron_poll, d.location_id,
                 l.name AS location_name,
+                lf.path::text AS location_path,
                 COALESCE(
                     json_agg(
                         json_build_object(
@@ -463,8 +537,9 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
             FROM devices d
             LEFT JOIN device_credentials dc ON dc.device_id = d.id
             LEFT JOIN credentials c ON c.id = dc.credential_id
-            LEFT JOIN locations l ON l.id = d.location_id
-            GROUP BY d.id, l.name
+            LEFT JOIN locations l  ON l.id  = d.location_id
+            LEFT JOIN loc_path  lf ON lf.id = d.location_id
+            GROUP BY d.id, l.name, lf.path
             ORDER BY d.hostname
             """
         )
@@ -491,6 +566,9 @@ async def get_devices_with_credentials(pool: asyncpg.Pool) -> list[dict]:
                 d["last_successful_auth"] = parsed if isinstance(parsed, dict) else None
             except Exception:
                 d["last_successful_auth"] = None
+        # Zajisti location_path v odpovědi
+        if not d.get("location_path"):
+            d["location_path"] = d.get("location_name")
         result.append(d)
     return result
 
@@ -501,7 +579,7 @@ async def update_device(pool: asyncpg.Pool, device_id: int, dev: "DeviceCreate")
         row = await conn.fetchrow(
             """
             UPDATE devices
-            SET ip            = $2,
+            SET ip            = $2::inet,
                 hostname      = $3,
                 mac           = $4,
                 device_type   = $5,
@@ -518,7 +596,7 @@ async def update_device(pool: asyncpg.Pool, device_id: int, dev: "DeviceCreate")
                       ownership, location_id, created_at, updated_at
             """,
             device_id,
-            str(dev.ip),
+            str(dev.ip) if dev.ip and str(dev.ip) not in ("None", "") else None,
             dev.hostname,
             dev.mac,
             dev.device_type,

@@ -152,12 +152,12 @@ export const rangesApi = {
     const { data } = await api.get<any[]>("/ranges");
     return data;
   },
-  async create(range: Omit<IpRange, "id"> & { id?: number | null }): Promise<IpRange> {
-    const { data } = await api.post<IpRange>("/ranges", range);
+  async create(range: Omit<IpRange, "id"> & { id?: number | null }, force = false): Promise<IpRange> {
+    const { data } = await api.post<IpRange>("/ranges", range, { params: force ? { force: true } : undefined });
     return data;
   },
-  async update(id: number, range: Omit<IpRange, "id">): Promise<IpRange> {
-    const { data } = await api.put<IpRange>(`/ranges/${id}`, range);
+  async update(id: number, range: Omit<IpRange, "id">, force = false): Promise<IpRange> {
+    const { data } = await api.put<IpRange>(`/ranges/${id}`, range, { params: force ? { force: true } : undefined });
     return data;
   },
   async getImpact(id: number): Promise<import('./types').RangeImpact> {

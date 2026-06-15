@@ -48,7 +48,8 @@ class IpRangeModel(BaseModel):
     network:      str
     active:       bool = True
     scan_enabled: bool = True
-    description:  Optional[str] = None  # volitelný popis rozsahu
+    description:  Optional[str] = None
+    site_id:      Optional[int] = None
 
 
 class AppConfigModel(BaseModel):
@@ -231,6 +232,7 @@ class DeviceWithCredentials(BaseModel):
     ownership:                Optional[str]   = "isp"
     location_id:              Optional[int]   = None
     location_name:            Optional[str]   = None
+    location_path:            Optional[str]   = None  # plná cesta hierarchií: "Budova > Patro > Místnost"
     is_alive:                 Optional[bool]  = None
 
     class Config:

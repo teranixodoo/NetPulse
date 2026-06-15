@@ -584,13 +584,54 @@ async def update_config(
 async def get_ranges(user=Depends(current_user), pool=Depends(get_db)):
     return await db.get_ip_ranges_with_site(pool)
 
+@app.post("/ranges/validate", tags=["Ranges"])
+async def validate_range(rng: IpRangeModel, user=Depends(admin_only), pool=Depends(get_db)):
+    """Validuje rozsah před uložením — vrátí chyby a varování."""
+    normalized, errors, warnings = await db.validate_ip_range(
+        pool, rng.network, rng.site_id, exclude_id=rng.id
+    )
+    return {
+        "normalized": normalized,
+        "errors":     errors,
+        "warnings":   warnings,
+        "valid":      len(errors) == 0,
+    }
+
 @app.post("/ranges", response_model=IpRangeModel, tags=["Ranges"])
-async def add_range(rng: IpRangeModel, user=Depends(admin_only), pool=Depends(get_db)):
+async def add_range(
+    rng: IpRangeModel,
+    force: bool = False,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
+    normalized, errors, warnings = await db.validate_ip_range(
+        pool, rng.network, rng.site_id, exclude_id=None
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors, "warnings": warnings})
+    if warnings and not force:
+        raise HTTPException(status_code=409, detail={"errors": [], "warnings": warnings})
+    # Normalizuj síťovou adresu
+    rng.network = normalized
     return await db.upsert_ip_range(pool, rng)
 
 @app.put("/ranges/{range_id}", response_model=IpRangeModel, tags=["Ranges"])
-async def update_range(range_id: int, rng: IpRangeModel, user=Depends(admin_only), pool=Depends(get_db)):
+async def update_range(
+    range_id: int,
+    rng: IpRangeModel,
+    force: bool = False,
+    user = Depends(admin_only),
+    pool = Depends(get_db),
+):
     rng.id = range_id
+    normalized, errors, warnings = await db.validate_ip_range(
+        pool, rng.network, rng.site_id, exclude_id=range_id
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors, "warnings": warnings})
+    if warnings and not force:
+        raise HTTPException(status_code=409, detail={"errors": [], "warnings": warnings})
+    rng.network = normalized
     return await db.upsert_ip_range(pool, rng)
 
 @app.get("/ranges/{range_id}/impact", tags=["Ranges"])
@@ -598,39 +639,39 @@ async def get_range_impact(range_id: int, user=Depends(admin_only), pool=Depends
     """Vrátí dopad smazání/změny rozsahu — počty ovlivněných záznamů."""
     async with pool.acquire() as conn:
         # Načteme rozsah
-        row = await conn.fetchrow("SELECT id, label, network::text FROM ip_ranges WHERE id=$1", range_id)
+        row = await conn.fetchrow("SELECT id, label, network::text AS network FROM ip_ranges WHERE id=$1", range_id)
         if not row:
             raise HTTPException(status_code=404, detail="Rozsah nenalezen")
         network = row["network"]
 
-        # Počet ping_results záznamů
-        ping_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM ping_results WHERE ip << $1::cidr", network
+        # Počet IP adres přiřazených k tomuto rozsahu
+        ip_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM ip_addresses WHERE range_id = $1", range_id
         )
-        # Počet záznamů za posledních 30 dní
-        ping_30d = await conn.fetchval(
-            "SELECT COUNT(*) FROM ping_results WHERE ip << $1::cidr "
-            "AND scanned_at > NOW() - INTERVAL '30 days'", network
-        )
-        # Počet zařízení v rozsahu
+        # Počet zařízení přiřazených přes ip_addresses
         device_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM devices WHERE ip << $1::cidr", network
+            "SELECT COUNT(DISTINCT device_id) FROM ip_addresses WHERE range_id = $1 AND device_id IS NOT NULL", range_id
         )
         # Zařízení — jejich jména
-        devices_in = await conn.fetch(
-            "SELECT id, hostname, alias, ip::text FROM devices WHERE ip << $1::cidr LIMIT 10", network
-        )
-        # Počet outage eventů
-        outage_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM outage_events WHERE ip << $1::cidr", network
-        ) or 0
+        devices_in = await conn.fetch("""
+            SELECT DISTINCT d.id, d.hostname, d.alias, d.ip::text
+            FROM devices d
+            JOIN ip_addresses ia ON ia.device_id = d.id
+            WHERE ia.range_id = $1
+            LIMIT 10
+        """, range_id)
+
+        outage_count = 0
+        ping_count   = 0
+        ping_30d     = 0
 
     return {
         "range_id":     range_id,
         "label":        row["label"],
         "network":      network,
-        "ping_total":   int(ping_count or 0),
-        "ping_30d":     int(ping_30d or 0),
+        "ip_count":     int(ip_count or 0),
+        "ping_total":   0,
+        "ping_30d":     0,
         "device_count": int(device_count or 0),
         "devices":      [dict(d) for d in devices_in],
         "outage_count": int(outage_count),

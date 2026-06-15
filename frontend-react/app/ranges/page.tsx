@@ -295,12 +295,13 @@ function RangeRow({
     : deadN  === 0 ? "🟢"
     : aliveN === 0 ? "🔴" : "🟡";
 
-  async function handleUpdate(data: FormData) {
+  async function handleUpdate(data: FormData, force = false) {
     const newNetwork = normalizeNetwork(data.network);
     const networkChanged = newNetwork !== range.network;
     try {
       await updateRange.mutateAsync({
         id:              range.id!,
+        force,
         label:           data.label,
         network:         newNetwork,
         active:          data.active,
@@ -314,16 +315,25 @@ function RangeRow({
         proxy_mode:      (range as any).proxy_mode ?? "auto",
         proxy_hostname:  null,
         proxy_ip:        null,
-      });
+      } as any);
       setEditing(false);
       if (networkChanged) {
         setNetworkChanged(true);
         setExpanded(true);
         setTimeout(() => setNetworkChanged(false), 8000);
       }
-    } catch (err) {
-      console.error("Update range error:", err);
-      alert("Chyba při ukládání: " + getErrorMessage(err));
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (detail?.errors?.length) {
+        alert("❌ " + detail.errors.join("\n"));
+      } else if (detail?.warnings?.length) {
+        const msg = detail.warnings.join("\n");
+        if (confirm(`⚠️ Upozornění:\n\n${msg}\n\nChcete rozsah přesto uložit?`)) {
+          await handleUpdate(data, true);
+        }
+      } else {
+        alert("Chyba při ukládání: " + getErrorMessage(err));
+      }
     }
   }
 
@@ -556,23 +566,20 @@ function RangeRow({
                       </p>
                     </div>
                   )}
-                  <div className="flex items-start gap-1.5 text-muted-foreground">
-                    <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>
-                      <strong className="text-foreground">{impact.ping_total.toLocaleString("cs-CZ")}</strong> ping záznamů
-                      ({impact.ping_30d.toLocaleString("cs-CZ")} za 30 dní),
-                      <strong className="text-foreground"> {impact.outage_count}</strong> výpadků
-                    </span>
-                  </div>
-                  {impact.ping_total > 0 && (
-                    <label className="flex items-center gap-2 cursor-pointer pt-1">
-                      <input type="checkbox" checked={deleteData}
-                        onChange={(e) => setDeleteData(e.target.checked)}
-                        className="h-4 w-4 rounded accent-destructive" />
+                  {impact.ip_count > 0 && (
+                    <div className="flex items-start gap-1.5 text-muted-foreground">
+                      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                       <span>
-                        Smazat také historická ping data ({impact.ping_total.toLocaleString("cs-CZ")} záznamů) a {impact.outage_count} výpadků
+                        Rozsah obsahuje <strong className="text-foreground">{impact.ip_count}</strong> evidovaných IP adres.
+                        Historická ping data zůstanou zachována.
                       </span>
-                    </label>
+                    </div>
+                  )}
+                  {impact.device_count === 0 && impact.ip_count === 0 && (
+                    <div className="flex items-start gap-1.5 text-muted-foreground">
+                      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      <span>Rozsah neobsahuje žádná zařízení ani IP adresy.</span>
+                    </div>
                   )}
                 </div>
               )}
@@ -581,7 +588,7 @@ function RangeRow({
                 <Button size="sm" variant="destructive" onClick={handleDelete}
                         disabled={deleteRange.isPending || impactLoading}>
                   {deleteRange.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  {deleteData ? "Smazat rozsah + data" : "Smazat jen rozsah"}
+                  Smazat rozsah
                 </Button>
                 <Button size="sm" variant="ghost"
                         onClick={() => { setConfirming(false); setDeleteData(false); }}>
@@ -719,9 +726,9 @@ export default function RangesPage() {
   const [siteFilter,  setSiteFilter]  = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  async function handleCreate(data: FormData) {
+  async function handleCreate(data: FormData, force = false) {
     try {
-      await createRange.mutateAsync({
+      await createRange.mutateAsync({ data: {
         id:              null,
         label:           data.label,
         network:         normalizeNetwork(data.network),
@@ -736,9 +743,23 @@ export default function RangesPage() {
         proxy_mode:      "auto",
         proxy_hostname:  null,
         proxy_ip:        null,
-      });
+      } as any, force });
       setShowAdd(false);
-    } catch (err) { alert(getErrorMessage(err)); }
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (detail?.errors?.length) {
+        // Blokující chyba
+        alert("❌ " + detail.errors.join("\n"));
+      } else if (detail?.warnings?.length) {
+        // Varování — zeptej se
+        const msg = detail.warnings.join("\n");
+        if (confirm(`⚠️ Upozornění:\n\n${msg}\n\nChcete rozsah přesto uložit?`)) {
+          await handleCreate(data, true);
+        }
+      } else {
+        alert(getErrorMessage(err));
+      }
+    }
   }
 
   const filteredRanges = useMemo(() => {

@@ -5,9 +5,8 @@ import { useState, useMemo } from "react";
 import { Plus, ChevronDown, Loader2 } from "lucide-react";
 import { useCreateDevice, useLocations, useCreateLocation, getErrorMessage } from "@/hooks/useNetPulse";
 import type { HostStats, Device } from "@/lib/types";
-import { Button, FormField, Input , LocationCombobox } from "@/components/ui";
+import { Button, FormField, Input, LocationCombobox } from "@/components/ui";
 import { cn } from "@/lib/utils";
-
 
 interface AddDeviceFormProps {
   hosts:   HostStats[];
@@ -15,16 +14,17 @@ interface AddDeviceFormProps {
 }
 
 export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
-  const [open,        setOpen]        = useState(false);
-  const [statusFilter,setStatusFilter]= useState<"all"|"online"|"offline">("all");
-  const [ipSearch,    setIpSearch]    = useState("");
+  const [open,         setOpen]         = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all"|"online"|"offline">("all");
+  const [ipSearch,     setIpSearch]     = useState("");
+  const [ipMode,       setIpMode]       = useState<"select"|"manual">("select");
   const createDevice = useCreateDevice();
 
-  // Pole formuláře
   const [ip,           setIp]           = useState("");
+  const [ipManual,     setIpManual]     = useState("");
   const [hostname,     setHostname]     = useState("");
   const [alias,        setAlias]        = useState("");
-  const { data: deviceTypes = [] } = useConfigList("device_type");
+  const { data: deviceTypes = [] }      = useConfigList("device_type");
   const [deviceType,   setDeviceType]   = useState("other");
   const [ownership,    setOwnership]    = useState<"isp"|"client"|"unknown">("isp");
   const [vendor,       setVendor]       = useState("");
@@ -36,21 +36,19 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   const createLocation                  = useCreateLocation();
   const [error,        setError]        = useState<string | null>(null);
 
-  // Přiřazené IP
   const assignedIps = useMemo(
-    () => new Set(devices.map((d) => d.ip.split("/")[0])),
+    () => new Set(devices.map((d) => d.ip?.split("/")[0]).filter(Boolean)),
     [devices]
   );
 
-  // Volné hosty dle filtru
   const freeHosts = useMemo(() => {
     return hosts
       .filter((h) => {
         const hIp = h.ip.split("/")[0];
-        if (assignedIps.has(hIp))                                    return false;
-        if (statusFilter === "online"  && !h.currently_alive)        return false;
-        if (statusFilter === "offline" &&  h.currently_alive)        return false;
-        if (ipSearch && !hIp.includes(ipSearch))                     return false;
+        if (assignedIps.has(hIp))                             return false;
+        if (statusFilter === "online"  && !h.currently_alive) return false;
+        if (statusFilter === "offline" &&  h.currently_alive) return false;
+        if (ipSearch && !hIp.includes(ipSearch))              return false;
         return true;
       })
       .sort((a, b) => {
@@ -60,30 +58,31 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
   }, [hosts, assignedIps, statusFilter, ipSearch]);
 
   function reset() {
-    setIp(""); setHostname(""); setAlias(""); setDeviceType("other"); setOwnership("isp"); setOwnership("isp");
-    setVendor(""); setMac(""); setSerialNumber(""); setLocationId(null); setDescription(""); setError(null);
-    setIpSearch(""); setStatusFilter("all");
+    setIp(""); setIpManual(""); setHostname(""); setAlias("");
+    setDeviceType("other"); setOwnership("isp");
+    setVendor(""); setMac(""); setSerialNumber("");
+    setLocationId(null); setDescription(""); setError(null);
+    setIpSearch(""); setStatusFilter("all"); setIpMode("select");
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!ip)       { setError("Vyberte IP adresu");      return; }
     if (!hostname.trim()) { setError("Hostname je povinný"); return; }
-
+    const finalIp = ipMode === "manual" ? ipManual.trim() : ip;
     try {
       await createDevice.mutateAsync({
-        ip,
+        ip:            finalIp || null,
         hostname:      hostname.trim(),
         device_type:   deviceType,
-        ownership:     ownership,
+        ownership,
         alias:         alias.trim()        || undefined,
         vendor:        vendor.trim()       || undefined,
         mac:           mac.trim()          || undefined,
         serial_number: serialNumber.trim() || undefined,
         location_id:   locationId          || undefined,
         description:   description.trim()  || undefined,
-      });
+      } as any);
       reset();
       setOpen(false);
     } catch (err) {
@@ -93,108 +92,99 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
 
   return (
     <div className="rounded-lg border border-border bg-card">
-      {/* Toggle header */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
+      <button type="button" onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium
-                   hover:bg-muted/40 transition-colors rounded-lg"
-      >
+                   hover:bg-muted/40 transition-colors rounded-lg">
         <Plus className="h-4 w-4 text-primary" />
         Registrovat nové zařízení
         <div className="flex-1" />
-        <ChevronDown className={cn(
-          "h-4 w-4 text-muted-foreground transition-transform duration-150",
-          open && "rotate-180"
-        )} />
+        <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform duration-150", open && "rotate-180")} />
       </button>
 
       {open && (
         <div className="border-t border-border p-4">
           <form onSubmit={handleSubmit} className="space-y-4">
 
-            {/* IP výběr */}
+            {/* IP adresa — volitelná */}
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                IP adresa
-              </p>
-              <div className="flex gap-2 flex-wrap">
-                <input
-                  value={ipSearch}
-                  onChange={(e) => setIpSearch(e.target.value)}
-                  placeholder="🔍 Hledat IP…"
-                  className="h-8 flex-1 min-w-[120px] rounded-md border border-border
-                             bg-background px-3 text-sm
-                             focus:outline-none focus:ring-2 focus:ring-primary/50"
-                />
-                <div className="flex rounded-md border border-border overflow-hidden">
-                  {(["all","online","offline"] as const).map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => setStatusFilter(f)}
-                      className={cn(
-                        "px-3 py-1 text-xs transition-colors",
-                        statusFilter === f
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-background text-muted-foreground hover:bg-muted"
-                      )}
-                    >
-                      {f === "all" ? "Vše" : f === "online" ? "✅ Online" : "❌ Offline"}
-                    </button>
-                  ))}
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  IP adresa <span className="font-normal normal-case text-muted-foreground/60">(volitelná)</span>
+                </p>
+                <div className="flex rounded-md border border-border overflow-hidden text-xs">
+                  <button type="button" onClick={() => setIpMode("select")}
+                    className={cn("px-2.5 py-1 transition-colors",
+                      ipMode === "select" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted")}>
+                    Ze seznamu
+                  </button>
+                  <button type="button" onClick={() => setIpMode("manual")}
+                    className={cn("px-2.5 py-1 transition-colors",
+                      ipMode === "manual" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted")}>
+                    Zadat ručně
+                  </button>
                 </div>
               </div>
 
-              <select
-                value={ip}
-                onChange={(e) => setIp(e.target.value)}
-                className="h-9 w-full rounded-md border border-border bg-background
-                           px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-              >
-                <option value="">— Vyberte IP adresu —</option>
-                {freeHosts.map((h) => {
-                  const hIp  = h.ip.split("/")[0];
-                  const icon = h.currently_alive ? "✅" : "❌";
-                  const up   = h.uptime_pct?.toFixed(0) ?? "0";
-                  const rtt  = h.avg_rtt_ms ? ` · ${h.avg_rtt_ms.toFixed(1)} ms` : "";
-                  return (
-                    <option key={hIp} value={hIp}>
-                      {icon} {hIp} · uptime {up}%{rtt}
-                    </option>
-                  );
-                })}
-              </select>
-              <p className="text-xs text-muted-foreground">
-                {freeHosts.length} volných IP
-                {assignedIps.size > 0 && ` · ${assignedIps.size} přiřazených skryto`}
-              </p>
+              {ipMode === "select" ? (
+                <>
+                  <div className="flex gap-2 flex-wrap">
+                    <input value={ipSearch} onChange={(e) => setIpSearch(e.target.value)}
+                      placeholder="🔍 Hledat IP…"
+                      className="h-8 flex-1 min-w-[120px] rounded-md border border-border
+                                 bg-background px-3 text-sm
+                                 focus:outline-none focus:ring-2 focus:ring-primary/50" />
+                    <div className="flex rounded-md border border-border overflow-hidden">
+                      {(["all","online","offline"] as const).map((f) => (
+                        <button key={f} type="button" onClick={() => setStatusFilter(f)}
+                          className={cn("px-3 py-1 text-xs transition-colors",
+                            statusFilter === f ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted")}>
+                          {f === "all" ? "Vše" : f === "online" ? "✅ Online" : "❌ Offline"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <select value={ip} onChange={(e) => setIp(e.target.value)}
+                    className="h-9 w-full rounded-md border border-border bg-background
+                               px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
+                    <option value="">— Bez IP (přiřadit později) —</option>
+                    {freeHosts.map((h) => {
+                      const hIp = h.ip.split("/")[0];
+                      const icon = h.currently_alive ? "✅" : "❌";
+                      const up   = h.uptime_pct?.toFixed(0) ?? "0";
+                      const rtt  = h.avg_rtt_ms ? ` · ${h.avg_rtt_ms.toFixed(1)} ms` : "";
+                      return <option key={hIp} value={hIp}>{icon} {hIp} · uptime {up}%{rtt}</option>;
+                    })}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    {freeHosts.length} volných IP
+                    {assignedIps.size > 0 && ` · ${assignedIps.size} přiřazených skryto`}
+                  </p>
+                </>
+              ) : (
+                <div>
+                  <Input value={ipManual} onChange={(e) => setIpManual(e.target.value)}
+                    placeholder="např. 172.28.15.50" autoComplete="off" />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    IP lze přidat nebo změnit kdykoliv v detailu zařízení.
+                    Pokud zařízení není ve sledovaném rozsahu, scanner IP nenajde automaticky.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Základní údaje */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <FormField label="Hostname *">
-                <Input
-                  value={hostname}
-                  onChange={(e) => setHostname(e.target.value)}
-                  placeholder="ap-sklad-01"
-                  autoComplete="off"
-                />
+                <Input value={hostname} onChange={(e) => setHostname(e.target.value)}
+                  placeholder="ap-sklad-01" autoComplete="off" />
               </FormField>
               <FormField label="Alias">
-                <Input
-                  value={alias}
-                  onChange={(e) => setAlias(e.target.value)}
-                  placeholder="Sklad A"
-                />
+                <Input value={alias} onChange={(e) => setAlias(e.target.value)} placeholder="Sklad A" />
               </FormField>
               <FormField label="Typ">
-                <select
-                  value={deviceType}
-                  onChange={(e) => setDeviceType(e.target.value)}
+                <select value={deviceType} onChange={(e) => setDeviceType(e.target.value)}
                   className="h-9 w-full rounded-md border border-border bg-background
-                             px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
+                             px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50">
                   {deviceTypes.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </FormField>
@@ -207,24 +197,13 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
                 </select>
               </FormField>
               <FormField label="Výrobce">
-                <Input
-                  value={vendor}
-                  onChange={(e) => setVendor(e.target.value)}
-                  placeholder="MikroTik"
-                />
+                <Input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="MikroTik" />
               </FormField>
               <FormField label="MAC adresa">
-                <Input
-                  value={mac}
-                  onChange={(e) => setMac(e.target.value)}
-                  placeholder="AA:BB:CC:DD:EE:FF"
-                />
+                <Input value={mac} onChange={(e) => setMac(e.target.value)} placeholder="AA:BB:CC:DD:EE:FF" />
               </FormField>
               <FormField label="Sériové číslo">
-                <Input
-                  value={serialNumber}
-                  onChange={(e) => setSerialNumber(e.target.value)}
-                />
+                <Input value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} />
               </FormField>
               <FormField label="Lokace">
                 <LocationCombobox
@@ -240,16 +219,14 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
                 />
               </FormField>
             </div>
+
             <FormField label="Poznámka">
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
+              <textarea value={description} onChange={(e) => setDescription(e.target.value)}
                 rows={2}
                 className="w-full rounded-md border border-border bg-background px-3 py-2
                            text-sm placeholder:text-muted-foreground
                            focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-                placeholder="Volitelná poznámka…"
-              />
+                placeholder="Volitelná poznámka…" />
             </FormField>
 
             {error && (
@@ -259,23 +236,11 @@ export function AddDeviceForm({ hosts, devices }: AddDeviceFormProps) {
             )}
 
             <div className="flex gap-2">
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                disabled={createDevice.isPending}
-              >
-                {createDevice.isPending
-                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  : <Plus className="h-3.5 w-3.5" />}
+              <Button type="submit" variant="primary" size="sm" disabled={createDevice.isPending}>
+                {createDevice.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
                 Uložit zařízení
               </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => { reset(); setOpen(false); }}
-              >
+              <Button type="button" size="sm" variant="ghost" onClick={() => { reset(); setOpen(false); }}>
                 Zrušit
               </Button>
             </div>

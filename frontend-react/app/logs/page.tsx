@@ -159,7 +159,7 @@ export default function LogsPage() {
   const ipToDevice = useMemo(() => {
     const m = new Map<string, string>();
     for (const d of devices) {
-      m.set(d.ip.split("/")[0], d.alias ?? d.hostname);
+      if (d.ip) m.set(d.ip.split("/")[0], d.alias ?? d.hostname);
     }
     return m;
   }, [devices]);

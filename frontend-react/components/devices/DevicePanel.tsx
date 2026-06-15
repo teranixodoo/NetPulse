@@ -206,7 +206,7 @@ function BasicInfoTab({
       <div className="grid grid-cols-3 gap-3 rounded-md bg-muted/30 p-3 text-xs">
         <div>
           <span className="text-muted-foreground">IP adresa</span>
-          <p className="mt-0.5 font-mono font-medium">{device.ip}</p>
+          <p className="mt-0.5 font-mono font-medium">{device.ip ?? <span className="text-muted-foreground italic">bez IP</span>}</p>
         </div>
         <div>
           <span className="text-muted-foreground">Vytvořeno</span>
@@ -323,7 +323,7 @@ function IpTab({
   hosts: HostStats[];
 }) {
   const updateDevice = useUpdateDevice();
-  const currentIp = device.ip.split("/")[0];
+  const currentIp = device.ip ? device.ip.split("/")[0] : "";
 
   // Přiřazené IP ostatních zařízení (ne tohoto)
   const [selectedIp, setSelectedIp] = useState(currentIp);
@@ -332,7 +332,7 @@ function IpTab({
   // Seřadíme hosts dle IP
   const sortedHosts = [...hosts].sort((a, b) => {
     const toNum = (s: string) => s.split(".").reduce((n, o) => (n << 8) + +o, 0);
-    return toNum(a.ip.split("/")[0]) - toNum(b.ip.split("/")[0]);
+    return toNum((a.ip ?? "").split("/")[0]) - toNum((b.ip ?? "").split("/")[0]);
   });
 
   async function handleSave(e: React.FormEvent) {
@@ -370,7 +370,7 @@ function IpTab({
                      px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
         >
           {sortedHosts.map((h) => {
-            const hIp   = h.ip.split("/")[0];
+            const hIp   = (h.ip ?? "").split("/")[0];
             const icon  = h.currently_alive ? "✅" : "❌";
             const up    = h.uptime_pct?.toFixed(0) ?? "0";
             const rtt   = h.avg_rtt_ms ? ` · ${h.avg_rtt_ms.toFixed(1)} ms` : "";

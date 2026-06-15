@@ -678,3 +678,6 @@ CREATE INDEX IF NOT EXISTS idx_mac_events_type    ON mac_events(event_type);
 
 -- Migrace: přidat retention pro mac_inventory do cleanup
 ALTER TABLE app_config ADD COLUMN IF NOT EXISTS dummy_placeholder TEXT;  -- placeholder
+
+-- Umožnit zařízení bez IP adres (IP doplní scanner/discovery automaticky)
+ALTER TABLE devices ALTER COLUMN ip DROP NOT NULL;

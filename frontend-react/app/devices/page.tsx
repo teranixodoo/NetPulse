@@ -38,7 +38,7 @@ export default function DevicesPage() {
   const rows = useMemo<DeviceRow[]>(() => {
     return devices.map((d) => ({
       ...d,
-      hostInfo: hostMap.get(d.ip.split("/")[0]),
+      hostInfo: d.ip ? hostMap.get(d.ip.split("/")[0]) : undefined,
     }));
   }, [devices, hostMap]);
 
@@ -48,7 +48,7 @@ export default function DevicesPage() {
       if (typeFilter   && r.device_type !== typeFilter) return false;
       if (vendorFilter && r.vendor !== vendorFilter)    return false;
       if (ownershipFilter && (r.ownership ?? "isp") !== ownershipFilter) return false;
-      if (locationFilter  && !(r.location_name ?? "").toLowerCase().includes(locationFilter.toLowerCase())) return false;
+      if (locationFilter  && !((r.location_path ?? r.location_name ?? "")).toLowerCase().includes(locationFilter.toLowerCase())) return false;
       if (statusFilter === "online"  && r.hostInfo?.currently_alive !== true)  return false;
       if (statusFilter === "offline" && r.hostInfo?.currently_alive !== false) return false;
       if (statusFilter === "unknown" && r.hostInfo?.currently_alive != null)   return false;

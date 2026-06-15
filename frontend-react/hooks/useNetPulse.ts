@@ -108,8 +108,8 @@ export function useRanges() {
 export function useCreateRange() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: import("@/lib/types").IpRange) =>
-      rangesApi.create(data),
+    mutationFn: ({ data, force }: { data: import("@/lib/types").IpRange; force?: boolean }) =>
+      rangesApi.create(data, force),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.ranges }),
   });
 }
@@ -117,8 +117,8 @@ export function useCreateRange() {
 export function useUpdateRange() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...data }: { id: number } & Omit<IpRange, "id">) =>
-      rangesApi.update(id, data),
+    mutationFn: ({ id, force, ...data }: { id: number; force?: boolean } & Omit<IpRange, "id">) =>
+      rangesApi.update(id, data, force),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.ranges }),
   });
 }

@@ -114,12 +114,17 @@ export function getDeviceColumns(
     {
       accessorKey: "location_name",
       header: "Lokace",
-      size: 140,
-      cell: ({ getValue }) => {
-        const v = getValue() as string | null;
-        return v
-          ? <span className="text-xs">{v}</span>
-          : <span className="text-muted-foreground text-xs">—</span>;
+      size: 200,
+      cell: ({ row }) => {
+        const name = row.original.location_name as string | null;
+        const path = (row.original as any).location_path as string | null;
+        const display = path ?? name;
+        if (!display) return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <span className="text-xs" title={path ?? undefined}>
+            {display}
+          </span>
+        );
       },
     },
     {

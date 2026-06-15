@@ -162,6 +162,7 @@ export interface Device {
   ownership:   "isp" | "client" | "unknown";
   location_id:   number | null;
   location_name: string | null;
+  location_path: string | null;  // plná cesta: "Budova > Patro > Místnost"
 }
 
 export interface DeviceCreate {
@@ -402,6 +403,7 @@ export interface SystemLogMeta {
 
 export interface RangeImpact {
   range_id: number; label: string; network: string;
+  ip_count: number;
   ping_total: number; ping_30d: number; device_count: number;
   devices: { id: number; hostname: string; alias: string | null; ip: string }[];
   outage_count: number;

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import {
   Save, Loader2, Trash2, RefreshCw, Database, HardDrive,
   Table2, AlertTriangle, Radio, Search, Settings2,
-  CheckCircle2, XCircle, Clock, Ban, Plus,
+  CheckCircle2, XCircle, Clock, Ban, Plus, BookOpen,
 } from "lucide-react";
 import {
   useConfig, useUpdateConfig, useHealth,
@@ -494,6 +494,188 @@ function DataTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Tab: Nápověda (README)
+// ---------------------------------------------------------------------------
+function HelpTab() {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/README.md")
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.text();
+      })
+      .then(text => { setContent(text); setLoading(false); })
+      .catch(e  => { setError(e.message); setLoading(false); });
+  }, []);
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-16 text-muted-foreground gap-2">
+      <Loader2 className="h-5 w-5 animate-spin" /> Načítám nápovědu…
+    </div>
+  );
+  if (error) return (
+    <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
+      <AlertTriangle className="h-8 w-8 text-amber-500" />
+      <p>Nápověda není dostupná: {error}</p>
+      <p className="text-xs">Ujistěte se že je soubor README.md umístěn ve složce /public</p>
+    </div>
+  );
+
+  // Renderuj Markdown jako HTML pomocí jednoduchého parseru
+  const lines = (content || "").split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Kódový blok
+    if (line.startsWith("```")) {
+      const lang = line.slice(3).trim();
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      elements.push(
+        <pre key={key++} className="bg-muted rounded-md p-4 overflow-auto text-xs font-mono my-3 border border-border">
+          <code>{codeLines.join("\n")}</code>
+        </pre>
+      );
+      i++;
+      continue;
+    }
+
+    // Tabulka
+    if (line.startsWith("|") && lines[i + 1]?.startsWith("|---")) {
+      const headers = line.split("|").filter(c => c.trim()).map(c => c.trim());
+      i += 2; // přeskoč separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].startsWith("|")) {
+        rows.push(lines[i].split("|").filter(c => c.trim()).map(c => c.trim()));
+        i++;
+      }
+      elements.push(
+        <div key={key++} className="overflow-auto my-4">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-border bg-muted/50">
+                {headers.map((h, j) => (
+                  <th key={j} className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-border/50 hover:bg-muted/20">
+                  {row.map((cell, ci) => (
+                    <td key={ci} className="px-3 py-2 text-xs text-foreground">{renderInline(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    // Nadpisy
+    if (line.startsWith("#### ")) {
+      elements.push(<h4 key={key++} className="text-sm font-semibold mt-5 mb-1 text-foreground">{line.slice(5)}</h4>);
+    } else if (line.startsWith("### ")) {
+      elements.push(<h3 key={key++} className="text-base font-semibold mt-6 mb-2 text-foreground border-b border-border pb-1">{line.slice(4)}</h3>);
+    } else if (line.startsWith("## ")) {
+      elements.push(<h2 key={key++} className="text-lg font-bold mt-8 mb-3 text-foreground">{line.slice(3)}</h2>);
+    } else if (line.startsWith("# ")) {
+      elements.push(<h1 key={key++} className="text-2xl font-bold mt-2 mb-4 text-foreground">{line.slice(2)}</h1>);
+    }
+    // Oddělovač
+    else if (line.startsWith("---")) {
+      elements.push(<hr key={key++} className="my-6 border-border" />);
+    }
+    // Nečíslovaný seznam
+    else if (line.match(/^[-*] /)) {
+      const listItems: string[] = [];
+      while (i < lines.length && lines[i].match(/^[-*] /)) {
+        listItems.push(lines[i].slice(2));
+        i++;
+      }
+      elements.push(
+        <ul key={key++} className="list-disc pl-5 my-2 space-y-0.5">
+          {listItems.map((item, j) => (
+            <li key={j} className="text-sm text-foreground">{renderInline(item)}</li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+    // Číslovaný seznam
+    else if (line.match(/^\d+\. /)) {
+      const listItems: string[] = [];
+      while (i < lines.length && lines[i].match(/^\d+\. /)) {
+        listItems.push(lines[i].replace(/^\d+\. /, ""));
+        i++;
+      }
+      elements.push(
+        <ol key={key++} className="list-decimal pl-5 my-2 space-y-0.5">
+          {listItems.map((item, j) => (
+            <li key={j} className="text-sm text-foreground">{renderInline(item)}</li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+    // Odstavec
+    else if (line.trim()) {
+      elements.push(<p key={key++} className="text-sm text-foreground my-1.5">{renderInline(line)}</p>);
+    }
+    // Prázdný řádek
+    else {
+      elements.push(<div key={key++} className="h-1" />);
+    }
+
+    i++;
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto py-6 px-2">
+      {elements}
+    </div>
+  );
+}
+
+// Pomocná funkce — inline Markdown (bold, code, links)
+function renderInline(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  // Rozděl na segmenty: **bold**, `code`, normální text
+  const regex = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let k = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) parts.push(<span key={k++}>{text.slice(last, m.index)}</span>);
+    const token = m[0];
+    if (token.startsWith("**")) {
+      parts.push(<strong key={k++} className="font-semibold">{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("`")) {
+      parts.push(<code key={k++} className="bg-muted px-1 py-0.5 rounded text-xs font-mono">{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("[")) {
+      const lbl = token.match(/\[([^\]]+)\]/)?.[1] ?? "";
+      const href = token.match(/\(([^)]+)\)/)?.[1] ?? "#";
+      parts.push(<a key={k++} href={href} className="text-primary underline">{lbl}</a>);
+    }
+    last = m.index + token.length;
+  }
+  if (last < text.length) parts.push(<span key={k++}>{text.slice(last)}</span>);
+  return parts.length === 1 ? parts[0] : <>{parts}</>;
+}
+
 // Tab: O systému
 // ---------------------------------------------------------------------------
 function SystemTab() {
@@ -619,7 +801,7 @@ function ExclusionsTab() {
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
-type TabId = "scan" | "discovery" | "poll_sched" | "backup" | "exclusions" | "data" | "system";
+type TabId = "scan" | "discovery" | "poll_sched" | "backup" | "exclusions" | "data" | "system" | "help";
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "scan",       label: "Konfigurace scanu",   icon: Radio },
   { id: "discovery",  label: "Discovery scheduler", icon: Search },
@@ -628,6 +810,7 @@ const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "exclusions", label: "Vyloučené IP",        icon: Ban },
   { id: "data",       label: "Správa dat",          icon: Database },
   { id: "system",     label: "O systému",           icon: Settings2 },
+  { id: "help",       label: "Nápověda",            icon: BookOpen },
 ];
 
 export default function SettingsPage() {
@@ -665,6 +848,7 @@ export default function SettingsPage() {
       {activeTab === "exclusions" && <ExclusionsTab />}
       {activeTab === "data"       && <DataTab />}
       {activeTab === "system"     && <SystemTab />}
+      {activeTab === "help"       && <HelpTab />}
     </div>
   );
 }
