@@ -681,3 +681,104 @@ ALTER TABLE app_config ADD COLUMN IF NOT EXISTS dummy_placeholder TEXT;  -- plac
 
 -- Umožnit zařízení bez IP adres (IP doplní scanner/discovery automaticky)
 ALTER TABLE devices ALTER COLUMN ip DROP NOT NULL;
+
+-- ===========================================================================
+-- Migrace: CRM integrace — external_id, created_at, date_modified
+-- ===========================================================================
+
+-- Funkce pro auto-update date_modified
+CREATE OR REPLACE FUNCTION set_date_modified()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.date_modified = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ---------------------------------------------------------------------------
+-- devices
+-- ---------------------------------------------------------------------------
+ALTER TABLE devices
+    ADD COLUMN IF NOT EXISTS external_id   UUID          DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS date_modified TIMESTAMPTZ   DEFAULT NOW();
+
+-- created_at již existuje
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_external_id  ON devices (external_id) WHERE external_id IS NOT NULL;
+CREATE        INDEX IF NOT EXISTS idx_devices_created_at   ON devices (created_at);
+CREATE        INDEX IF NOT EXISTS idx_devices_date_modified ON devices (date_modified);
+
+DROP TRIGGER IF EXISTS trg_devices_date_modified ON devices;
+CREATE TRIGGER trg_devices_date_modified
+    BEFORE UPDATE ON devices
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ---------------------------------------------------------------------------
+-- locations
+-- ---------------------------------------------------------------------------
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS external_id   UUID          DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS created_at    TIMESTAMPTZ   DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS date_modified TIMESTAMPTZ   DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_external_id   ON locations (external_id) WHERE external_id IS NOT NULL;
+CREATE        INDEX IF NOT EXISTS idx_locations_created_at    ON locations (created_at);
+CREATE        INDEX IF NOT EXISTS idx_locations_date_modified  ON locations (date_modified);
+
+DROP TRIGGER IF EXISTS trg_locations_date_modified ON locations;
+CREATE TRIGGER trg_locations_date_modified
+    BEFORE UPDATE ON locations
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ---------------------------------------------------------------------------
+-- sites
+-- ---------------------------------------------------------------------------
+ALTER TABLE sites
+    ADD COLUMN IF NOT EXISTS external_id   UUID          DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS date_modified TIMESTAMPTZ   DEFAULT NOW();
+
+-- created_at již existuje
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_external_id   ON sites (external_id) WHERE external_id IS NOT NULL;
+CREATE        INDEX IF NOT EXISTS idx_sites_created_at    ON sites (created_at);
+CREATE        INDEX IF NOT EXISTS idx_sites_date_modified  ON sites (date_modified);
+
+DROP TRIGGER IF EXISTS trg_sites_date_modified ON sites;
+CREATE TRIGGER trg_sites_date_modified
+    BEFORE UPDATE ON sites
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ---------------------------------------------------------------------------
+-- ip_ranges
+-- ---------------------------------------------------------------------------
+ALTER TABLE ip_ranges
+    ADD COLUMN IF NOT EXISTS external_id   UUID          DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS date_modified TIMESTAMPTZ   DEFAULT NOW();
+
+-- created_at již existuje
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_ranges_external_id   ON ip_ranges (external_id) WHERE external_id IS NOT NULL;
+CREATE        INDEX IF NOT EXISTS idx_ip_ranges_created_at    ON ip_ranges (created_at);
+CREATE        INDEX IF NOT EXISTS idx_ip_ranges_date_modified  ON ip_ranges (date_modified);
+
+DROP TRIGGER IF EXISTS trg_ip_ranges_date_modified ON ip_ranges;
+CREATE TRIGGER trg_ip_ranges_date_modified
+    BEFORE UPDATE ON ip_ranges
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ---------------------------------------------------------------------------
+-- ip_addresses
+-- ---------------------------------------------------------------------------
+ALTER TABLE ip_addresses
+    ADD COLUMN IF NOT EXISTS external_id   UUID          DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS created_at    TIMESTAMPTZ   DEFAULT NOW(),
+    ADD COLUMN IF NOT EXISTS date_modified TIMESTAMPTZ   DEFAULT NOW();
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_addresses_external_id   ON ip_addresses (external_id) WHERE external_id IS NOT NULL;
+CREATE        INDEX IF NOT EXISTS idx_ip_addresses_created_at    ON ip_addresses (created_at);
+CREATE        INDEX IF NOT EXISTS idx_ip_addresses_date_modified  ON ip_addresses (date_modified);
+
+DROP TRIGGER IF EXISTS trg_ip_addresses_date_modified ON ip_addresses;
+CREATE TRIGGER trg_ip_addresses_date_modified
+    BEFORE UPDATE ON ip_addresses
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();

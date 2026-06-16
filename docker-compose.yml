@@ -106,9 +106,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      # Interní volání backend→frontend zůstává HTTP přes host.docker.internal
-      API_URL:             ${BACKEND_URL:-http://host.docker.internal:8000}
-      NEXT_PUBLIC_API_URL: ${BACKEND_URL:-http://host.docker.internal:8000}
+      # Backend proxy — host.docker.internal = Docker host gateway
+      # Backend běží v host network → dostupný přes tuto adresu
+      API_URL:             "http://host.docker.internal:8000"
+      NEXT_PUBLIC_API_URL: "http://host.docker.internal:8000"
     volumes:
       - ./shared/maps:/shared/maps:ro
     networks:
