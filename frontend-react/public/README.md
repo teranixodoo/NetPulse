@@ -94,16 +94,19 @@ cd ~/netpulse
 
 # 2. Nastav proměnné prostředí
 cp .env.example .env
-# Uprav .env — nastav POSTGRES_PASSWORD, JWT_SECRET, DB_ENCRYPTION_KEY, BACKEND_URL
+# Uprav .env — nastav POSTGRES_PASSWORD, JWT_SECRET, DB_ENCRYPTION_KEY
 
-# 3. Spusť celý stack
+# 3. Nastav HTTPS (jednorázově)
+bash setup-https.sh
+
+# 4. Spusť celý stack
 docker compose up -d
 
-# 4. Vytvoř prvního admin uživatele
+# 5. Vytvoř prvního admin uživatele
 docker compose exec backend python init_admin.py
 
-# 5. Otevři v prohlížeči
-http://<IP_SERVERU>:3000
+# 6. Otevři v prohlížeči (po nastavení klientů)
+https://netpulse.local:8443
 ```
 
 ### Klíčové proměnné prostředí (.env)
@@ -113,16 +116,203 @@ http://<IP_SERVERU>:3000
 | `POSTGRES_PASSWORD` | Heslo k PostgreSQL databázi |
 | `JWT_SECRET` | Tajný klíč pro JWT tokeny (min. 32 znaků) |
 | `DB_ENCRYPTION_KEY` | Klíč pro šifrování hesel přihlašovacích profilů |
-| `BACKEND_URL` | URL backendu dostupná z frontendu (např. `http://10.221.0.65:8000`) |
+| `BACKEND_URL` | URL backendu (interně `http://host.docker.internal:8000`) |
 
 ### Porty
 
 | Port | Služba |
 |---|---|
-| 3000 | Next.js frontend (hlavní webové rozhraní) |
-| 8000 | FastAPI backend (REST API) |
+| 8080 | HTTP → automatický redirect na HTTPS |
+| 8443 | HTTPS (Traefik reverse proxy) |
+| 8000 | FastAPI backend (lokálně na serveru, pro debug) |
 | 5433 | PostgreSQL (externě, pro přímý přístup) |
 | 8501 | Starý Streamlit frontend (souběžně, bude odstraněn) |
+
+---
+
+## 3a. HTTPS — nastavení
+
+NetPulse používá **Traefik v3** jako HTTPS reverse proxy s certifikátem generovaným přes **mkcert** (lokální CA). Vše běží v Dockeru, není potřeba veřejná doména ani certifikační autorita třetí strany.
+
+### Proč Traefik na portech 8080/8443
+
+Na serveru běží Apache2 na standardních portech 80/443. Traefik proto používá:
+- **8080** — HTTP (automatický redirect na HTTPS)
+- **8443** — HTTPS (hlavní přístupový bod)
+
+### Architektura a routing
+
+```
+Prohlížeč / CRM server
+    ↓ HTTPS :8443
+Traefik (Docker kontejner)
+    ├── priorita 10: API endpointy → backend :8000 (host network)
+    └── priorita 1:  vše ostatní  → frontend-react :3000 (Docker)
+
+Backend (FastAPI) běží v host network — Traefik k němu přistupuje
+přes Docker host gateway IP (172.17.0.1:8000).
+```
+
+**Routing pravidla:**
+
+| URL | Cíl | Priorita |
+|---|---|---|
+| `https://<IP>:8443/` | frontend-react (Next.js) | 1 |
+| `https://<IP>:8443/docs` | FastAPI Swagger UI | 10 |
+| `https://<IP>:8443/redoc` | FastAPI ReDoc | 10 |
+| `https://<IP>:8443/openapi.json` | OpenAPI schema | 10 |
+| `https://<IP>:8443/auth/...` | Backend API | 10 |
+| `https://<IP>:8443/devices/...` | Backend API | 10 |
+| `https://<IP>:8443/health` | Health check | 10 |
+| `https://<IP>:8443/<všechny ostatní API>` | Backend API | 10 |
+
+Přístup přes hostname i IP adresu:
+- `https://netpulse.local:8443` — po nastavení `/etc/hosts` na klientech
+- `https://10.221.0.65:8443` — přímo přes IP (prohlížeč varuje, funguje)
+
+---
+
+### Nastavení serveru (jednorázově)
+
+```bash
+cd ~/netpulse
+
+# Spustí:
+# 1. Instalaci mkcert
+# 2. Vytvoření lokální CA
+# 3. Generování certifikátu pro netpulse.local
+# 4. Auto-detekci Docker host gateway IP pro backend routing
+bash setup-https.sh
+```
+
+Po dokončení jsou vygenerovány:
+- `traefik/certs/cert.pem` — TLS certifikát
+- `traefik/certs/key.pem` — privátní klíč
+- `~/.local/share/mkcert/rootCA.pem` — CA certifikát pro distribuci klientům
+
+---
+
+### Nastavení klientského PC (Linux, každý počítač)
+
+```bash
+# 1. Zkopíruj CA certifikát ze serveru
+scp root@<IP_SERVERU>:~/.local/share/mkcert/rootCA.pem .
+
+# 2. Spusť klientský setup skript (jako root — bez sudo)
+bash setup-client.sh <IP_SERVERU>
+```
+
+Skript automaticky:
+- Přidá `<IP_SERVERU>  netpulse.local` do `/etc/hosts`
+- Nainstaluje CA certifikát do systémového certstore (`/usr/local/share/ca-certificates/`)
+- Spustí `update-ca-certificates`
+- Nainstaluje CA do Firefox NSS databáze (pokud je Firefox nainstalován)
+
+Po nastavení otevři: **https://netpulse.local:8443**
+
+---
+
+### Změna IP adresy serveru
+
+Certifikát je vystaven pro hostname `netpulse.local` — při změně IP serveru stačí aktualizovat `/etc/hosts` na každém klientovi:
+
+```bash
+# Na klientském PC — nahraď NOVA_IP skutečnou IP
+sed -i "s/.*netpulse\.local.*/<NOVA_IP>  netpulse.local/" /etc/hosts
+```
+
+Certifikát i Traefik konfigurace zůstanou beze změny.
+
+---
+
+### Integrace externího systému (CRM, monitoring)
+
+Backend API je přístupné přes HTTPS pro volání z jiných serverů ve stejné síti:
+
+```bash
+# Příklad — přihlášení a získání JWT tokenu
+curl -k https://10.221.0.65:8443/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"heslo"}'
+
+# Příklad — volání API s tokenem
+curl -k https://10.221.0.65:8443/devices \
+  -H "Authorization: Bearer <TOKEN>"
+
+# Nebo s API klíčem
+curl -k https://10.221.0.65:8443/devices \
+  -H "X-API-Key: <API_KLIC>"
+
+# Swagger dokumentace
+https://10.221.0.65:8443/docs
+```
+
+Parametr `-k` přeskočí ověření certifikátu — pro produkční integraci doporučujeme distribuovat `rootCA.pem` i na CRM server a nainstalovat ho do systémového certstore.
+
+---
+
+### Traefik konfigurace — přehled souborů
+
+```
+~/netpulse/
+├── setup-https.sh              ← spustit na serveru (jednorázově)
+├── setup-client.sh             ← spustit na každém klientském PC
+└── traefik/
+    ├── traefik.yml             ← statická konfigurace Traefik
+    │   • entrypoints: 8080 (HTTP redirect) a 8443 (HTTPS)
+    │   • providers: docker + file (dynamic.yml)
+    ├── dynamic.yml             ← dynamická konfigurace
+    │   • TLS certifikáty (cert.pem + key.pem)
+    │   • Backend router s PathPrefix pravidly
+    │   • Backend service → http://172.17.0.1:8000
+    │   • Bezpečnostní hlavičky (X-Frame-Options, XSS protection...)
+    └── certs/
+        ├── cert.pem            ← certifikát (generováno mkcert, není v GIT)
+        ├── key.pem             ← privátní klíč (generováno mkcert, není v GIT)
+        └── .gitignore          ← zabraňuje commitnutí certifikátů
+```
+
+### traefik/traefik.yml — klíčové části
+
+```yaml
+entryPoints:
+  web:
+    address: ":8080"          # HTTP → redirect na HTTPS
+  websecure:
+    address: ":8443"          # HTTPS
+
+providers:
+  docker:
+    exposedByDefault: false   # jen kontejnery s traefik.enable=true
+  file:
+    filename: /etc/traefik/dynamic.yml
+```
+
+### traefik/dynamic.yml — klíčové části
+
+```yaml
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile:  /etc/traefik/certs/key.pem
+
+http:
+  routers:
+    backend-api:
+      rule: "(Host(`netpulse.local`) || ...) && (PathPrefix(`/docs`) || PathPrefix(`/auth`) || ...)"
+      priority: 10             # vyšší než frontend (1)
+      tls: {}
+
+  services:
+    backend-api:
+      loadBalancer:
+        servers:
+          - url: "http://172.17.0.1:8000"   # Docker host gateway
+```
+
+### Certifikáty v GIT
+
+Soubory `cert.pem` a `key.pem` jsou v `.gitignore` a **nesmí být commitovány** (obsahují privátní klíč). Po klonování projektu na nový server je nutné znovu spustit `setup-https.sh`.
 
 ---
 

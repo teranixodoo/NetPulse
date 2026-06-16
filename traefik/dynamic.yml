@@ -1,0 +1,33 @@
+# Traefik dynamická konfigurace
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile:  /etc/traefik/certs/key.pem
+  options:
+    default:
+      minVersion: VersionTLS12
+
+http:
+  middlewares:
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+
+  routers:
+    backend-api:
+      rule: "(Host(`netpulse.local`) || HostRegexp(`^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$`)) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || PathPrefix(`/openapi.json`) || PathPrefix(`/auth`) || PathPrefix(`/devices`) || PathPrefix(`/ranges`) || PathPrefix(`/mac`) || PathPrefix(`/backups`) || PathPrefix(`/scan`) || PathPrefix(`/poll`) || PathPrefix(`/discovery`) || PathPrefix(`/sites`) || PathPrefix(`/hosts`) || PathPrefix(`/health`) || PathPrefix(`/users`) || PathPrefix(`/credentials`) || PathPrefix(`/config`) || PathPrefix(`/locations`) || PathPrefix(`/outages`) || PathPrefix(`/change-log`) || PathPrefix(`/logs`) || PathPrefix(`/maps`) || PathPrefix(`/scans`) || PathPrefix(`/graphs`))"
+      entryPoints:
+        - websecure
+      tls: {}
+      service: backend-api
+      priority: 10
+
+  services:
+    backend-api:
+      loadBalancer:
+        servers:
+          - url: "http://172.17.0.1:8000"

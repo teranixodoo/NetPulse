@@ -1,0 +1,4 @@
+# Certifikáty nesmí být v GIT
+*.pem
+*.crt
+*.key
