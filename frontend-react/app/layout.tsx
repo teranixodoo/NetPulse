@@ -9,6 +9,10 @@ const inter = Inter({ subsets: ["latin", "latin-ext"] });
 export const metadata: Metadata = {
   title: { default: "NetPulse", template: "%s — NetPulse" },
   description: "Síťový monitoring systém",
+  icons: {
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

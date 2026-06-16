@@ -147,7 +147,12 @@ Každý uživatel může mít API klíč (X-API-Key hlavička) pro přístup z e
 
 ---
 
-## 5. Dashboard
+## 5. Navigace a rozhraní
+
+### Levé menu
+Aplikace má levé navigační menu se všemi sekcemi. Menu lze **skrýt a zobrazit** kliknutím na malé tlačítko `◀ / ▶` přilepené k pravému okraji panelu — hlavní obsah se automaticky rozšíří na celou šířku. Stav menu se ukládá do `localStorage` a přežije refresh stránky.
+
+### Dashboard
 
 Hlavní přehledová stránka zobrazuje aktuální stav celé sítě na první pohled.
 
@@ -750,19 +755,46 @@ Každé zařízení v evidenci může mít přiřazenou lokaci. Lokace pak zobra
 
 Vizuální zobrazení lokací a zařízení na geografické mapě nebo mapě areálu.
 
-### Mapy lokací
-Interaktivní mapa (Leaflet) s markery lokací. Kliknutím na marker se zobrazí detail lokace a přiřazená zařízení.
+### Přepínač mapových podkladů
+
+Obě mapy mají v pravém horním rohu přepínač podkladové vrstvy:
+- **🗺️ Mapa** — OpenStreetMap, zoom až do 22 (dlaždice do 19, zbytek škálovaný)
+- **🛰️ Satelit** — Esri World Imagery, satelitní snímky, zoom až do 23, zdarma bez API klíče
+
+### Mapa lokací
+
+Interaktivní geografická mapa (Leaflet) s markery lokací. Kliknutím na marker se zobrazí detail lokace a přiřazená zařízení.
+
+**Levý panel** obsahuje:
+- Vyhledávání lokací (geocoding přes Nominatim/OpenStreetMap)
+- Filtr typů lokací
+- Filtr stavu zařízení (vše / s offline / bez zařízení)
+- Seskupování markerů (clustering)
+
+**Vrstvy mapy** (levý panel — sekce "Vrstvy mapy"):
+- **☑ Areál OLTEC (polygony + linie)** — výchozí zapnuto. Zobrazí polygony budov a obvod areálu z KML souboru.
+- **☐ OLTEC — markery (body zájmu)** — výchozí vypnuto. Point prvky z KML (vstupní body, zajímavá místa).
+- **☐ OLTEC — popisky** — výchozí vypnuto. Textové popisky uprostřed polygonů budov.
+
+KML se načte pouze jednou při prvním zapnutí — přepínání vrstev pak probíhá okamžitě bez opětovného stahování.
 
 ### Mapa areálu (OLTEC)
-Speciální mapa areálu Hybešova/Václavská načtená z KML souboru. Zobrazuje:
-- Polygony budov s barevným odlišením
-- LineString obvodu areálu
-- Markery jednotlivých lokací
 
-**Technicky:** KML soubor je uložen v `shared/maps/` a servírován přes API endpoint. Barvy polygonů jsou konvertovány z KML formátu (ABGR) na CSS.
+Detailní mapa areálu Hybešova/Václavská načtená z KML souboru. Zobrazuje polygony budov s barevným odlišením, obvod areálu a markery lokací ze stromové evidence.
+
+**Toolbar** (pravý horní roh):
+- Přepínač 🗺️ Mapa / 🛰️ Satelit
+- Tlačítko Popisky — zobrazí/skryje textové popisky budov
+
+**Technicky:** KML soubor je uložen v `shared/maps/oltec.kml` a servírován přes Next.js API endpoint `/api/maps/[filename]`. Barvy polygonů jsou konvertovány z KML formátu ABGR na CSS hex.
 
 ### Přidání vlastní mapy
-KML soubor umístěte do `~/netpulse/shared/maps/` a implementujte odpovídající komponentu.
+```bash
+# Zkopíruj KML soubor do shared složky
+cp novy_soubor.kml ~/netpulse/shared/maps/novy_soubor.kml
+# Soubor je ihned dostupný přes /api/maps/novy_soubor.kml
+# Restart není potřeba
+```
 
 ---
 

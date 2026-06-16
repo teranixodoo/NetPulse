@@ -152,6 +152,28 @@ const OLTEC_CENTER: [number, number] = [49.1893, 16.5975];
 const OLTEC_ZOOM = 17;
 
 // ---------------------------------------------------------------------------
+// Tile vrstvy — OSM + Esri satelit
+// ---------------------------------------------------------------------------
+const TILE_LAYERS = {
+  map: {
+    label: "🗺️ Mapa",
+    url:   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom:       22,
+    maxNativeZoom: 19,
+  },
+  satellite: {
+    label: "🛰️ Satelit",
+    url:   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: '&copy; <a href="https://www.esri.com/">Esri</a>',
+    maxZoom:       23,
+    maxNativeZoom: 23,
+  },
+} as const;
+
+type TileLayerKey = keyof typeof TILE_LAYERS;
+
+// ---------------------------------------------------------------------------
 // Hlavní komponenta
 // ---------------------------------------------------------------------------
 // Props — stejný vzor jako LocationsMapView
@@ -209,8 +231,10 @@ export default function OltecMapView({
 
   const mapDivRef   = useRef<HTMLDivElement>(null);
   const mapRef      = useRef<L.Map | null>(null);
+  const tileRef     = useRef<L.TileLayer | null>(null);
   const layersRef   = useRef<L.Layer[]>([]);
   const markersRef  = useRef<Map<number, L.Marker>>(new Map());
+  const [activeLayer, setActiveLayer] = useState<TileLayerKey>("map");
 
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState<string | null>(null);
@@ -240,15 +264,33 @@ export default function OltecMapView({
       center:      OLTEC_CENTER,
       zoom:        OLTEC_ZOOM,
       zoomControl: true,
+      maxZoom:     23,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    const cfg = TILE_LAYERS["map"];
+    const tile = L.tileLayer(cfg.url, {
+      attribution:   cfg.attribution,
+      maxZoom:       cfg.maxZoom,
+      maxNativeZoom: cfg.maxNativeZoom,
     }).addTo(map);
+    tileRef.current = tile;
 
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
   }, []);
+
+  // Přepínání tile vrstvy (Mapa / Satelit)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (tileRef.current) map.removeLayer(tileRef.current);
+    const cfg = TILE_LAYERS[activeLayer];
+    tileRef.current = L.tileLayer(cfg.url, {
+      attribution:   cfg.attribution,
+      maxZoom:       cfg.maxZoom,
+      maxNativeZoom: cfg.maxNativeZoom,
+    }).addTo(map);
+  }, [activeLayer]);
 
   // Načtení a vykreslení KML
   useEffect(() => {
@@ -432,6 +474,23 @@ export default function OltecMapView({
     <div className="relative w-full h-full">
       {/* Toolbar */}
       <div className="absolute top-3 right-4 z-[1000] flex gap-2">
+        {/* Přepínač vrstev */}
+        <div className="flex rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow overflow-hidden">
+          {(Object.keys(TILE_LAYERS) as TileLayerKey[]).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveLayer(key)}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeLayer === key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {TILE_LAYERS[key].label}
+            </button>
+          ))}
+        </div>
+        {/* Popisky */}
         <button
           onClick={() => setShowLabels(v => !v)}
           title={showLabels ? "Skrýt popisky" : "Zobrazit popisky"}

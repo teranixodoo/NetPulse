@@ -22,10 +22,138 @@ function fixLeafletIcons() {
 }
 
 // ---------------------------------------------------------------------------
+// KML parser — sdílená logika s OltecMapView
+// ---------------------------------------------------------------------------
+function kmlColorToHex(kmlColor: string): string {
+  if (!kmlColor || kmlColor.length < 8) return "#888888";
+  const r = kmlColor.slice(6, 8);
+  const g = kmlColor.slice(4, 6);
+  const b = kmlColor.slice(2, 4);
+  return `#${r}${g}${b}`;
+}
+function kmlAlpha(kmlColor: string): number {
+  if (!kmlColor || kmlColor.length < 2) return 0.5;
+  return parseInt(kmlColor.slice(0, 2), 16) / 255;
+}
+
+interface KmlFeature {
+  name:        string;
+  type:        "Polygon" | "LineString" | "Point";
+  coordinates: number[][][];
+  lineCoords:  number[][];
+  fillColor:   string;
+  fillOpacity: number;
+  strokeColor: string;
+  strokeWeight:number;
+  description: string;
+}
+
+function parseKml(kmlText: string): KmlFeature[] {
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(kmlText, "text/xml");
+
+  const styleMap: Record<string, {
+    fillColor: string; fillOpacity: number;
+    strokeColor: string; strokeWeight: number;
+  }> = {};
+
+  doc.querySelectorAll("Style").forEach(style => {
+    const id        = style.getAttribute("id") || "";
+    const polyColor = style.querySelector("PolyStyle > color")?.textContent || "4d888888";
+    const lineColor = style.querySelector("LineStyle > color")?.textContent || "ff000000";
+    const lineWidth = style.querySelector("LineStyle > width")?.textContent || "2";
+    styleMap[id] = {
+      fillColor:    kmlColorToHex(polyColor),
+      fillOpacity:  kmlAlpha(polyColor),
+      strokeColor:  kmlColorToHex(lineColor),
+      strokeWeight: parseFloat(lineWidth),
+    };
+  });
+
+  const styleMapRef: Record<string, string> = {};
+  doc.querySelectorAll("StyleMap").forEach(sm => {
+    const id = sm.getAttribute("id") || "";
+    sm.querySelectorAll("Pair").forEach(pair => {
+      const key      = pair.querySelector("key")?.textContent;
+      const styleUrl = pair.querySelector("styleUrl")?.textContent?.replace("#", "");
+      if (key === "normal" && styleUrl) styleMapRef[id] = styleUrl;
+    });
+  });
+
+  const features: KmlFeature[] = [];
+  doc.querySelectorAll("Placemark").forEach(pm => {
+    const name     = pm.querySelector("name")?.textContent?.trim() || "";
+    const desc     = pm.querySelector("description")?.textContent?.trim() || "";
+    const styleUrl = pm.querySelector("styleUrl")?.textContent?.replace("#", "") || "";
+    const resolved = styleMapRef[styleUrl] || styleUrl;
+    const style    = styleMap[resolved] || {
+      fillColor: "#888888", fillOpacity: 0.4, strokeColor: "#333333", strokeWeight: 2,
+    };
+
+    const polygon = pm.querySelector("Polygon");
+    if (polygon) {
+      const rings: number[][][] = [];
+      polygon.querySelectorAll("coordinates").forEach(el => {
+        const ring = el.textContent?.trim().split(/\s+/).map(c => {
+          const [lng, lat] = c.split(",").map(Number);
+          return [lat, lng] as number[];
+        }).filter(c => !isNaN(c[0]) && !isNaN(c[1])) || [];
+        if (ring.length > 0) rings.push(ring);
+      });
+      if (rings.length > 0)
+        features.push({ name, type: "Polygon", coordinates: rings, lineCoords: [], ...style, description: desc });
+    }
+
+    const line = pm.querySelector("LineString");
+    if (line) {
+      const lineCoords = line.querySelector("coordinates")?.textContent?.trim()
+        .split(/\s+/).map(c => {
+          const [lng, lat] = c.split(",").map(Number);
+          return [lat, lng] as number[];
+        }).filter(c => !isNaN(c[0]) && !isNaN(c[1])) || [];
+      if (lineCoords.length > 0)
+        features.push({ name, type: "LineString", coordinates: [], lineCoords, ...style, description: desc });
+    }
+
+    const point = pm.querySelector("Point");
+    if (point) {
+      const coords = point.querySelector("coordinates")?.textContent?.trim().split(",").map(Number);
+      if (coords && coords.length >= 2) {
+        features.push({ name, type: "Point", coordinates: [[[coords[1], coords[0]]]], lineCoords: [], ...style, description: desc });
+      }
+    }
+  });
+
+  return features;
+}
+
+// ---------------------------------------------------------------------------
 // Výchozí střed — Brno (přednastaven dle požadavku)
 // ---------------------------------------------------------------------------
 const DEFAULT_CENTER: [number, number] = [49.1970767, 16.6185331];
 const DEFAULT_ZOOM = 14;
+
+// ---------------------------------------------------------------------------
+// Tile vrstvy — OSM + Esri satelit
+// ---------------------------------------------------------------------------
+const TILE_LAYERS = {
+  map: {
+    label: "🗺️ Mapa",
+    url:   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom:       22,
+    maxNativeZoom: 19,
+  },
+  satellite: {
+    label: "🛰️ Satelit",
+    url:   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: '&copy; <a href="https://www.esri.com/">Esri</a>',
+    maxZoom:       23,
+    maxNativeZoom: 23,
+  },
+} as const;
+
+type TileLayerKey = keyof typeof TILE_LAYERS;
 
 // ---------------------------------------------------------------------------
 // DivIcon — barevný kroužek s emoji ikonou
@@ -138,7 +266,17 @@ export default function LocationsMapView({
   const mapRef     = useRef<L.Map | null>(null);
   const mapDivRef  = useRef<HTMLDivElement>(null);
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
+  const tileRef    = useRef<L.TileLayer | null>(null);
+  const kmlLayersRef = useRef<L.Layer[]>([]);
+  const kmlPointsRef = useRef<L.Layer[]>([]);
+  const kmlLabelsRef = useRef<L.Layer[]>([]);
   const markersRef = useRef<Map<number, L.Marker>>(new Map());
+  const [activeLayer, setActiveLayer] = useState<TileLayerKey>("map");
+  const [showKml,        setShowKml]        = useState(true);
+  const [showKmlPoints,  setShowKmlPoints]  = useState(false);
+  const [showKmlLabels,  setShowKmlLabels]  = useState(false);
+  const [kmlLoaded,      setKmlLoaded]      = useState(false);
+  const kmlFeaturesRef = useRef<KmlFeature[]>([]);
 
   // Sidebar
   const [sidebarOpen,  setSidebarOpen]  = useState(true);
@@ -230,11 +368,16 @@ export default function LocationsMapView({
       center:      DEFAULT_CENTER,
       zoom:        DEFAULT_ZOOM,
       zoomControl: true,
+      maxZoom:     23,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    const cfg = TILE_LAYERS["map"];
+    const tile = L.tileLayer(cfg.url, {
+      attribution:   cfg.attribution,
+      maxZoom:       cfg.maxZoom,
+      maxNativeZoom: cfg.maxNativeZoom,
     }).addTo(map);
+    tileRef.current = tile;
 
     const cluster = (L as any).markerClusterGroup({
       showCoverageOnHover: false,
@@ -273,9 +416,111 @@ export default function LocationsMapView({
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---------------------------------------------------------------------------
-  // Aktualizace markerů
-  // ---------------------------------------------------------------------------
+  // Přepínání tile vrstvy (Mapa / Satelit)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (tileRef.current) {
+      map.removeLayer(tileRef.current);
+    }
+    const cfg = TILE_LAYERS[activeLayer];
+    const tile = L.tileLayer(cfg.url, {
+      attribution:   cfg.attribution,
+      maxZoom:       cfg.maxZoom,
+      maxNativeZoom: cfg.maxNativeZoom,
+    }).addTo(map);
+    tileRef.current = tile;
+  }, [activeLayer]);
+
+  // KML vrstva — načtení a vykreslení/skrytí
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    kmlLayersRef.current.forEach(l => map.removeLayer(l));
+    kmlLayersRef.current = [];
+    kmlPointsRef.current.forEach(l => map.removeLayer(l));
+    kmlPointsRef.current = [];
+    kmlLabelsRef.current.forEach(l => map.removeLayer(l));
+    kmlLabelsRef.current = [];
+
+    if (!showKml) return;
+
+    const renderKml = (features: KmlFeature[]) => {
+      features.forEach(f => {
+        if (f.type === "Polygon") {
+          const latlngs = f.coordinates.map(ring => ring.map(c => L.latLng(c[0], c[1])));
+          const poly = L.polygon(latlngs, {
+            color:       f.strokeColor,
+            weight:      f.strokeWeight > 0 ? Math.min(f.strokeWeight, 4) : 2,
+            fillColor:   f.fillColor,
+            fillOpacity: f.fillOpacity > 0 ? f.fillOpacity : 0.35,
+            opacity:     0.9,
+            interactive: true,
+          });
+          if (f.name) poly.bindTooltip(f.name, { permanent: false, direction: "center" });
+          poly.addTo(map);
+          kmlLayersRef.current.push(poly);
+
+          // Popisky — samostatná vrstva
+          if (showKmlLabels && f.name && !f.name.startsWith("Čára")) {
+            const center = poly.getBounds().getCenter();
+            const label = L.marker(center, {
+              icon: L.divIcon({
+                className: "",
+                html: `<div style="background:rgba(255,255,255,0.85);border:1px solid #ccc;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;white-space:nowrap;color:#1e293b;pointer-events:none;">${f.name.replace("Budova ", "")}</div>`,
+                iconAnchor: [0, 0],
+              }),
+              interactive: false,
+              zIndexOffset: 900,
+            });
+            label.addTo(map);
+            kmlLabelsRef.current.push(label);
+          }
+
+        } else if (f.type === "LineString") {
+          const latlngs = f.lineCoords.map(c => L.latLng(c[0], c[1]));
+          const line = L.polyline(latlngs, {
+            color:   f.strokeColor || "#FF0000",
+            weight:  f.strokeWeight > 0 ? f.strokeWeight : 3,
+            opacity: 0.9,
+          });
+          if (f.name) line.bindTooltip(f.name, { sticky: true });
+          line.addTo(map);
+          kmlLayersRef.current.push(line);
+
+        } else if (f.type === "Point" && showKmlPoints) {
+          const [lat, lng] = f.coordinates[0][0];
+          const marker = L.marker([lat, lng], {
+            icon: L.divIcon({
+              className: "",
+              html: `<div style="background:#3b82f6;color:white;border:2px solid white;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;box-shadow:0 2px 4px rgba(0,0,0,0.3);">📍</div>`,
+              iconSize: [20, 20], iconAnchor: [10, 10],
+            }),
+            zIndexOffset: 800,
+          });
+          if (f.name) marker.bindTooltip(f.name, { direction: "top" });
+          marker.addTo(map);
+          kmlPointsRef.current.push(marker);
+        }
+      });
+    };
+
+    if (kmlFeaturesRef.current.length > 0) {
+      renderKml(kmlFeaturesRef.current);
+      return;
+    }
+
+    fetch("/api/maps/oltec.kml")
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      .then(text => {
+        const features = parseKml(text);
+        kmlFeaturesRef.current = features;
+        setKmlLoaded(true);
+        renderKml(features);
+      })
+      .catch(err => console.warn("KML načtení selhalo:", err.message));
+  }, [showKml, showKmlPoints, showKmlLabels]);
   useEffect(() => {
     const cluster = clusterRef.current;
     const map     = mapRef.current;
@@ -460,6 +705,32 @@ export default function LocationsMapView({
               </div>
             </div>
 
+            {/* Vrstvy mapy */}
+            <div className="border-t border-border pt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+                Vrstvy mapy
+              </p>
+              <div className="space-y-1">
+                {([
+                  ["showKml",       showKml,       setShowKml,       "Areál OLTEC (polygony + linie)"],
+                  ["showKmlPoints", showKmlPoints, setShowKmlPoints, "OLTEC — markery (body zájmu)"],
+                  ["showKmlLabels", showKmlLabels, setShowKmlLabels, "OLTEC — popisky"],
+                ] as [string, boolean, (v: (p: boolean) => boolean) => void, string][]).map(([key, val, setter, label]) => (
+                  <button key={key}
+                    onClick={() => setter(v => !v)}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors
+                      ${val ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted/50 text-muted-foreground"}`}
+                  >
+                    <span className={`inline-flex items-center justify-center w-4 h-4 rounded border text-[10px] shrink-0
+                      ${val ? "bg-primary border-primary text-primary-foreground" : "border-muted-foreground"}`}>
+                      {val ? "✓" : ""}
+                    </span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Statistika */}
             <div className="border-t border-border pt-3">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
@@ -495,6 +766,23 @@ export default function LocationsMapView({
 
       {/* ── Mapa ── */}
       <div className="flex-1 relative">
+
+        {/* Přepínač vrstev — vpravo nahoře */}
+        <div className="absolute top-3 right-3 z-[1000] flex rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-md overflow-hidden">
+          {(Object.keys(TILE_LAYERS) as TileLayerKey[]).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveLayer(key)}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                activeLayer === key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {TILE_LAYERS[key].label}
+            </button>
+          ))}
+        </div>
 
         {/* Geocoding searchbox — overlay nad mapou */}
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] w-80">
