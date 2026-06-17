@@ -2899,3 +2899,176 @@ async def backfill_mac_inventory_devices(pool) -> int:
               AND d.mac::text = mi.mac::text
         """)
     return int(result.split()[-1]) if result else 0
+
+# ===========================================================================
+# Topologie — DB funkce
+# ===========================================================================
+
+async def get_connection_types(pool):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM connection_types ORDER BY sort_order, name"
+        )
+        return [dict(r) for r in rows]
+
+async def upsert_cable(pool, cable: dict) -> dict:
+    async with pool.acquire() as conn:
+        if cable.get("id"):
+            await conn.execute("""
+                UPDATE cables SET
+                    name=$1, cable_type=$2, medium=$3, fiber_count=$4,
+                    length_m=$5, route=$6::jsonb, location_a_id=$7,
+                    location_b_id=$8, installed_at=$9, status=$10,
+                    notes=$11, external_id=$12::uuid
+                WHERE id=$13
+            """, cable["name"], cable["cable_type"], cable.get("medium"),
+                cable.get("fiber_count"), cable.get("length_m"),
+                __import__("json").dumps(cable["route"]) if cable.get("route") else None,
+                cable.get("location_a_id"), cable.get("location_b_id"),
+                cable.get("installed_at"), cable.get("status","active"),
+                cable.get("notes"), cable.get("external_id"), cable["id"])
+            return cable
+        else:
+            row = await conn.fetchrow("""
+                INSERT INTO cables
+                    (name, cable_type, medium, fiber_count, length_m, route,
+                     location_a_id, location_b_id, installed_at, status, notes, external_id)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::uuid)
+                RETURNING id, created_at, date_modified
+            """, cable["name"], cable["cable_type"], cable.get("medium"),
+                cable.get("fiber_count"), cable.get("length_m"),
+                __import__("json").dumps(cable["route"]) if cable.get("route") else None,
+                cable.get("location_a_id"), cable.get("location_b_id"),
+                cable.get("installed_at"), cable.get("status","active"),
+                cable.get("notes"), cable.get("external_id"))
+            cable["id"] = row["id"]
+            return cable
+
+async def get_cables(pool, cable_type: str = None, status: str = None) -> list:
+    async with pool.acquire() as conn:
+        where = []
+        args  = []
+        if cable_type:
+            args.append(cable_type)
+            where.append(f"c.cable_type = ${len(args)}")
+        if status:
+            args.append(status)
+            where.append(f"c.status = ${len(args)}")
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = await conn.fetch(f"""
+            SELECT c.*,
+                   la.name AS location_a_name,
+                   lb.name AS location_b_name,
+                   COUNT(f.id) AS fiber_count_actual
+            FROM cables c
+            LEFT JOIN locations la ON la.id = c.location_a_id
+            LEFT JOIN locations lb ON lb.id = c.location_b_id
+            LEFT JOIN fibers f ON f.cable_id = c.id
+            {w}
+            GROUP BY c.id, la.name, lb.name
+            ORDER BY c.name
+        """, *args)
+        return [dict(r) for r in rows]
+
+async def get_fibers(pool, cable_id: int) -> list:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT f.*,
+                   conn.name AS connection_name,
+                   conn.id   AS connection_id
+            FROM fibers f
+            LEFT JOIN connections conn ON conn.fiber_id = f.id
+            WHERE f.cable_id = $1
+            ORDER BY f.fiber_number
+        """, cable_id)
+        return [dict(r) for r in rows]
+
+async def upsert_splice(pool, splice: dict) -> dict:
+    async with pool.acquire() as conn:
+        if splice.get("id"):
+            await conn.execute("""
+                UPDATE splices SET
+                    fiber_a_id=$1, fiber_b_id=$2, splice_type=$3,
+                    location_id=$4, attenuation_db=$5, orl_db=$6,
+                    test_date=$7, otdr_notes=$8, notes=$9
+                WHERE id=$10
+            """, splice.get("fiber_a_id"), splice.get("fiber_b_id"),
+                splice.get("splice_type","fusion"), splice.get("location_id"),
+                splice.get("attenuation_db"), splice.get("orl_db"),
+                splice.get("test_date"), splice.get("otdr_notes"),
+                splice.get("notes"), splice["id"])
+        else:
+            row = await conn.fetchrow("""
+                INSERT INTO splices
+                    (fiber_a_id, fiber_b_id, splice_type, location_id,
+                     attenuation_db, orl_db, test_date, otdr_notes, notes)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                RETURNING id, created_at
+            """, splice.get("fiber_a_id"), splice.get("fiber_b_id"),
+                splice.get("splice_type","fusion"), splice.get("location_id"),
+                splice.get("attenuation_db"), splice.get("orl_db"),
+                splice.get("test_date"), splice.get("otdr_notes"),
+                splice.get("notes"))
+            splice["id"] = row["id"]
+        return splice
+
+async def get_connections(pool, status: str = None, conn_type: str = None) -> list:
+    async with pool.acquire() as conn:
+        where = []
+        args  = []
+        if status:
+            args.append(status)
+            where.append(f"c.status = ${len(args)}")
+        if conn_type:
+            args.append(conn_type)
+            where.append(f"ct.category = ${len(args)}")
+        w = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = await conn.fetch(f"""
+            SELECT c.*,
+                   ct.name AS type_name, ct.color, ct.dash_style, ct.category,
+                   da.hostname AS device_a_name, da.alias AS device_a_alias,
+                   db_.hostname AS device_b_name, db_.alias AS device_b_alias,
+                   la.name AS location_a_name,
+                   lb.name AS location_b_name,
+                   cab.name AS cable_name,
+                   f.fiber_number
+            FROM connections c
+            LEFT JOIN connection_types ct  ON ct.id  = c.connection_type_id
+            LEFT JOIN devices da           ON da.id  = c.device_a_id
+            LEFT JOIN devices db_          ON db_.id = c.device_b_id
+            LEFT JOIN locations la         ON la.id  = c.location_a_id
+            LEFT JOIN locations lb         ON lb.id  = c.location_b_id
+            LEFT JOIN cables cab           ON cab.id = c.cable_id
+            LEFT JOIN fibers f             ON f.id   = c.fiber_id
+            {w}
+            ORDER BY c.name
+        """, *args)
+        return [dict(r) for r in rows]
+
+async def upsert_connection(pool, conn_data: dict) -> dict:
+    async with pool.acquire() as conn:
+        fields = [
+            "name","connection_type_id","cable_id","fiber_id",
+            "device_a_id","interface_a","location_a_id",
+            "device_b_id","interface_b","location_b_id",
+            "frequency_ghz","technology","ssid","azimuth_a","azimuth_b",
+            "height_a_m","height_b_m","tx_power_dbm","rx_sensitivity_dbm",
+            "antenna_gain_dbi","distance_m","status","installed_at",
+            "notes","external_id"
+        ]
+        vals = [conn_data.get(f) for f in fields]
+        if conn_data.get("id"):
+            sets = ", ".join(f"{f}=${i+1}" for i, f in enumerate(fields))
+            await conn.execute(
+                f"UPDATE connections SET {sets} WHERE id=${len(fields)+1}",
+                *vals, conn_data["id"]
+            )
+        else:
+            cols = ", ".join(fields)
+            phs  = ", ".join(f"${i+1}" for i in range(len(fields)))
+            row  = await conn.fetchrow(
+                f"INSERT INTO connections ({cols}) VALUES ({phs}) RETURNING id, created_at",
+                *vals
+            )
+            conn_data["id"] = row["id"]
+        return conn_data

@@ -29,6 +29,7 @@ from models import (
     LoginRequest, TokenResponse, UserModel, CreateUserRequest, UpdateUserRequest,
     OutageEvent, Device, DeviceCreate, DeviceWithCredentials,
     CredentialCreate, Credential,
+    ConnectionTypeModel, CableModel, FiberModel, SpliceModel, ConnectionModel,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
@@ -1887,3 +1888,110 @@ async def sync_mac_inventory(
 ):
     """Manuálně spustí MAC sync pro daný MikroTik."""
     return await db.sync_mac_inventory(pool, device_id)
+
+# ===========================================================================
+# Topologie — API endpointy
+# ===========================================================================
+
+@app.get("/topology/connection-types", tags=["Topology"])
+async def list_connection_types(pool=Depends(get_db)):
+    return await db.get_connection_types(pool)
+
+# --- Kabely ---
+@app.get("/topology/cables", tags=["Topology"])
+async def list_cables(
+    cable_type: str = None,
+    status:     str = None,
+    pool=Depends(get_db),
+):
+    return await db.get_cables(pool, cable_type=cable_type, status=status)
+
+@app.post("/topology/cables", tags=["Topology"])
+async def create_cable(cable: CableModel, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_cable(pool, cable.model_dump())
+
+@app.put("/topology/cables/{cable_id}", tags=["Topology"])
+async def update_cable(cable_id: int, cable: CableModel, user=Depends(admin_only), pool=Depends(get_db)):
+    cable.id = cable_id
+    return await db.upsert_cable(pool, cable.model_dump())
+
+@app.delete("/topology/cables/{cable_id}", tags=["Topology"])
+async def delete_cable(cable_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM cables WHERE id=$1", cable_id)
+    return {"ok": True}
+
+# --- Vlákna ---
+@app.get("/topology/cables/{cable_id}/fibers", tags=["Topology"])
+async def list_fibers(cable_id: int, pool=Depends(get_db)):
+    return await db.get_fibers(pool, cable_id)
+
+@app.put("/topology/fibers/{fiber_id}", tags=["Topology"])
+async def update_fiber(fiber_id: int, fiber: FiberModel, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE fibers SET status=$1, notes=$2 WHERE id=$3",
+            fiber.status, fiber.notes, fiber_id
+        )
+    return {"ok": True}
+
+# --- Sváry ---
+@app.get("/topology/splices", tags=["Topology"])
+async def list_splices(location_id: int = None, pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        w = "WHERE s.location_id = $1" if location_id else ""
+        args = [location_id] if location_id else []
+        rows = await conn.fetch(f"""
+            SELECT s.*,
+                   fa.fiber_number AS fiber_a_number, ca.name AS cable_a_name,
+                   fb.fiber_number AS fiber_b_number, cb.name AS cable_b_name,
+                   l.name AS location_name
+            FROM splices s
+            LEFT JOIN fibers fa   ON fa.id  = s.fiber_a_id
+            LEFT JOIN cables ca   ON ca.id  = fa.cable_id
+            LEFT JOIN fibers fb   ON fb.id  = s.fiber_b_id
+            LEFT JOIN cables cb   ON cb.id  = fb.cable_id
+            LEFT JOIN locations l ON l.id   = s.location_id
+            {w}
+            ORDER BY s.id
+        """, *args)
+        return [dict(r) for r in rows]
+
+@app.post("/topology/splices", tags=["Topology"])
+async def create_splice(splice: SpliceModel, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_splice(pool, splice.model_dump())
+
+@app.put("/topology/splices/{splice_id}", tags=["Topology"])
+async def update_splice(splice_id: int, splice: SpliceModel, user=Depends(admin_only), pool=Depends(get_db)):
+    splice.id = splice_id
+    return await db.upsert_splice(pool, splice.model_dump())
+
+@app.delete("/topology/splices/{splice_id}", tags=["Topology"])
+async def delete_splice(splice_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM splices WHERE id=$1", splice_id)
+    return {"ok": True}
+
+# --- Spoje ---
+@app.get("/topology/connections", tags=["Topology"])
+async def list_connections(
+    status:    str = None,
+    conn_type: str = None,
+    pool=Depends(get_db),
+):
+    return await db.get_connections(pool, status=status, conn_type=conn_type)
+
+@app.post("/topology/connections", tags=["Topology"])
+async def create_connection(conn_data: ConnectionModel, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_connection(pool, conn_data.model_dump())
+
+@app.put("/topology/connections/{conn_id}", tags=["Topology"])
+async def update_connection(conn_id: int, conn_data: ConnectionModel, user=Depends(admin_only), pool=Depends(get_db)):
+    conn_data.id = conn_id
+    return await db.upsert_connection(pool, conn_data.model_dump())
+
+@app.delete("/topology/connections/{conn_id}", tags=["Topology"])
+async def delete_connection(conn_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM connections WHERE id=$1", conn_id)
+    return {"ok": True}
