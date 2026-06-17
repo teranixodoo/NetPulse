@@ -17,7 +17,7 @@ http:
 
   routers:
     backend-api:
-      rule: "(Host(`netpulse.local`) || HostRegexp(`^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$`)) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || PathPrefix(`/openapi.json`) || PathPrefix(`/auth`) || PathPrefix(`/health`) || PathPrefix(`/mac`) || Path(`/scan`) || PathPrefix(`/scan/`) || PathPrefix(`/poll`) || PathPrefix(`/discovery`) || PathPrefix(`/scan-exclusions`) || PathPrefix(`/topology`) || PathPrefix(`/buildings`))"
+      rule: "(Host(`netpulse.local`) || HostRegexp(`^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$`)) && (PathPrefix(`/docs`) || PathPrefix(`/redoc`) || PathPrefix(`/openapi.json`) || PathPrefix(`/auth`) || PathPrefix(`/health`) || PathPrefix(`/mac`) || Path(`/scan`) || PathPrefix(`/scan/`) || PathPrefix(`/poll`) || PathPrefix(`/discovery`) || PathPrefix(`/scan-exclusions`) || PathPrefix(`/topology/`) || PathPrefix(`/buildings`))"
       entryPoints:
         - websecure
       tls: {}
