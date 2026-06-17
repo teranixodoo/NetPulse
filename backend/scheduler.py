@@ -541,13 +541,16 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
                 log.info("Cleanup: zakázán v konfiguraci")
                 return
             retention = int(_cfg.get("cleanup_retention_days", 30))
-            log.info(f"Cleanup: spouštím mazání ping_results starších než {retention} dní")
+            log.info(f"Cleanup: spouštím mazání starších než {retention} dní")
+
+            # 1. ping_results
             result = await db.cleanup_ping_results(pool, retention)
             log.info(
                 f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
                 f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
             )
-            # Cleanup MAC inventář — stejná retence
+
+            # 2. MAC inventář
             try:
                 mac_result = await db.cleanup_mac_inventory(pool, retention)
                 if mac_result["deleted_mac"] > 0 or mac_result["deleted_events"] > 0:
@@ -557,13 +560,86 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
                     )
             except Exception as _mce:
                 log.warning(f"Cleanup MAC inventory chyba: {_mce}")
+
+            # 3. Ostatní velké tabulky
+            try:
+                async with pool.acquire() as _conn:
+                    # ip_presence_log
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM ip_presence_log "
+                        f"WHERE seen_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup ip_presence_log: smazáno {d} záznamů")
+
+                    # device_discovery_logs
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM device_discovery_logs "
+                        f"WHERE started_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup device_discovery_logs: smazáno {d} záznamů")
+
+                    # scan_jobs — ponech posledních 30 dní nebo max 10000 záznamů
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM scan_jobs "
+                        f"WHERE started_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup scan_jobs: smazáno {d} záznamů")
+
+                    # device_ip_history
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM device_ip_history "
+                        f"WHERE changed_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup device_ip_history: smazáno {d} záznamů")
+
+                    # ip_events
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM ip_events "
+                        f"WHERE occurred_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup ip_events: smazáno {d} záznamů")
+
+                    # device_events
+                    d = await _conn.fetchval(
+                        f"WITH d AS (DELETE FROM device_events "
+                        f"WHERE occurred_at < NOW() - INTERVAL '{retention} days' RETURNING 1) "
+                        f"SELECT COUNT(*) FROM d"
+                    )
+                    if d: log.info(f"Cleanup device_events: smazáno {d} záznamů")
+
+                    log.info("Cleanup vedlejších tabulek dokončen")
+
+                # VACUUM vedlejších tabulek
+                try:
+                    import os as _os, asyncpg as _apg
+                    db_url = _os.environ.get("DATABASE_URL") or _os.environ.get("NETPULSE_DB_URL", "")
+                    _vc = await _apg.connect(db_url)
+                    try:
+                        for tbl in ["ip_presence_log", "device_discovery_logs",
+                                    "scan_jobs", "device_ip_history",
+                                    "ip_events", "device_events"]:
+                            await _vc.execute(f"VACUUM ANALYZE {tbl}")
+                        log.info("VACUUM ANALYZE vedlejších tabulek dokončen")
+                    finally:
+                        await _vc.close()
+                except Exception as _ve:
+                    log.warning(f"VACUUM ANALYZE vedlejší tabulky chyba: {_ve}")
+
+            except Exception as _oe:
+                log.warning(f"Cleanup ostatní tabulky chyba: {_oe}")
+
             _syslog().write_bg(
                 "INFO", "netpulse.cleanup",
                 f"Cleanup ping_results: smazáno {result['deleted']} záznamů "
                 f"({result['total_before']} → {result['total_after']}), retence {retention} dní"
             )
         except Exception as _ce:
-            log.error(f"Cleanup ping_results CHYBA: {_ce}", exc_info=True)
+            log.error(f"Cleanup CHYBA: {_ce}", exc_info=True)
 
     _cleanup_time = config.get("cleanup_time", "02:00") if isinstance(config, dict) else getattr(config, "cleanup_time", "02:00")
     try:

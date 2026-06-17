@@ -2901,174 +2901,127 @@ async def backfill_mac_inventory_devices(pool) -> int:
     return int(result.split()[-1]) if result else 0
 
 # ===========================================================================
-# Topologie — DB funkce
+# 3D Budovy — DB funkce
 # ===========================================================================
 
-async def get_connection_types(pool):
+async def get_building_polygons(pool, location_id: int = None) -> list:
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM connection_types ORDER BY sort_order, name"
-        )
-        return [dict(r) for r in rows]
+        w = "WHERE bp.location_id = $1" if location_id else ""
+        args = [location_id] if location_id else []
+        rows = await conn.fetch(f"""
+            SELECT bp.*, l.name AS location_name
+            FROM building_polygons bp
+            LEFT JOIN locations l ON l.id = bp.location_id
+            {w}
+            ORDER BY bp.name
+        """, *args)
+        result = []
+        for r in rows:
+            d = dict(r)
+            # Deserializuj JSONB koordináty
+            if isinstance(d.get("coordinates"), str):
+                import json
+                d["coordinates"] = json.loads(d["coordinates"])
+            result.append(d)
+        return result
 
-async def upsert_cable(pool, cable: dict) -> dict:
+async def upsert_building_polygon(pool, bp: dict) -> dict:
+    import json
+    coords = bp.get("coordinates")
+    coords_json = json.dumps(coords) if coords is not None else None
+
     async with pool.acquire() as conn:
-        if cable.get("id"):
+        if bp.get("id"):
             await conn.execute("""
-                UPDATE cables SET
-                    name=$1, cable_type=$2, medium=$3, fiber_count=$4,
-                    length_m=$5, route=$6::jsonb, location_a_id=$7,
-                    location_b_id=$8, installed_at=$9, status=$10,
-                    notes=$11, external_id=$12::uuid
-                WHERE id=$13
-            """, cable["name"], cable["cable_type"], cable.get("medium"),
-                cable.get("fiber_count"), cable.get("length_m"),
-                __import__("json").dumps(cable["route"]) if cable.get("route") else None,
-                cable.get("location_a_id"), cable.get("location_b_id"),
-                cable.get("installed_at"), cable.get("status","active"),
-                cable.get("notes"), cable.get("external_id"), cable["id"])
-            return cable
+                UPDATE building_polygons SET
+                    name=$1, description=$2, location_id=$3,
+                    coordinates=$4::jsonb, color=$5, fill_opacity=$6,
+                    stroke_color=$7, stroke_width=$8, height_m=$9,
+                    base_height_m=$10, floor_count=$11,
+                    imported_from=$12, external_id=$13::uuid
+                WHERE id=$14
+            """,
+                bp["name"], bp.get("description"), bp.get("location_id"),
+                coords_json, bp.get("color","#3b82f6"),
+                bp.get("fill_opacity", 0.3),
+                bp.get("stroke_color","#1d4ed8"), bp.get("stroke_width", 2),
+                bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
+                bp.get("floor_count", 1), bp.get("imported_from"),
+                bp.get("external_id"), bp["id"]
+            )
+            return bp
         else:
             row = await conn.fetchrow("""
-                INSERT INTO cables
-                    (name, cable_type, medium, fiber_count, length_m, route,
-                     location_a_id, location_b_id, installed_at, status, notes, external_id)
-                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::uuid)
+                INSERT INTO building_polygons
+                    (name, description, location_id, coordinates,
+                     color, fill_opacity, stroke_color, stroke_width,
+                     height_m, base_height_m, floor_count,
+                     imported_from, kml_style_id, external_id)
+                VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::uuid)
                 RETURNING id, created_at, date_modified
-            """, cable["name"], cable["cable_type"], cable.get("medium"),
-                cable.get("fiber_count"), cable.get("length_m"),
-                __import__("json").dumps(cable["route"]) if cable.get("route") else None,
-                cable.get("location_a_id"), cable.get("location_b_id"),
-                cable.get("installed_at"), cable.get("status","active"),
-                cable.get("notes"), cable.get("external_id"))
-            cable["id"] = row["id"]
-            return cable
-
-async def get_cables(pool, cable_type: str = None, status: str = None) -> list:
-    async with pool.acquire() as conn:
-        where = []
-        args  = []
-        if cable_type:
-            args.append(cable_type)
-            where.append(f"c.cable_type = ${len(args)}")
-        if status:
-            args.append(status)
-            where.append(f"c.status = ${len(args)}")
-        w = ("WHERE " + " AND ".join(where)) if where else ""
-        rows = await conn.fetch(f"""
-            SELECT c.*,
-                   la.name AS location_a_name,
-                   lb.name AS location_b_name,
-                   COUNT(f.id) AS fiber_count_actual
-            FROM cables c
-            LEFT JOIN locations la ON la.id = c.location_a_id
-            LEFT JOIN locations lb ON lb.id = c.location_b_id
-            LEFT JOIN fibers f ON f.cable_id = c.id
-            {w}
-            GROUP BY c.id, la.name, lb.name
-            ORDER BY c.name
-        """, *args)
-        return [dict(r) for r in rows]
-
-async def get_fibers(pool, cable_id: int) -> list:
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT f.*,
-                   conn.name AS connection_name,
-                   conn.id   AS connection_id
-            FROM fibers f
-            LEFT JOIN connections conn ON conn.fiber_id = f.id
-            WHERE f.cable_id = $1
-            ORDER BY f.fiber_number
-        """, cable_id)
-        return [dict(r) for r in rows]
-
-async def upsert_splice(pool, splice: dict) -> dict:
-    async with pool.acquire() as conn:
-        if splice.get("id"):
-            await conn.execute("""
-                UPDATE splices SET
-                    fiber_a_id=$1, fiber_b_id=$2, splice_type=$3,
-                    location_id=$4, attenuation_db=$5, orl_db=$6,
-                    test_date=$7, otdr_notes=$8, notes=$9
-                WHERE id=$10
-            """, splice.get("fiber_a_id"), splice.get("fiber_b_id"),
-                splice.get("splice_type","fusion"), splice.get("location_id"),
-                splice.get("attenuation_db"), splice.get("orl_db"),
-                splice.get("test_date"), splice.get("otdr_notes"),
-                splice.get("notes"), splice["id"])
-        else:
-            row = await conn.fetchrow("""
-                INSERT INTO splices
-                    (fiber_a_id, fiber_b_id, splice_type, location_id,
-                     attenuation_db, orl_db, test_date, otdr_notes, notes)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                RETURNING id, created_at
-            """, splice.get("fiber_a_id"), splice.get("fiber_b_id"),
-                splice.get("splice_type","fusion"), splice.get("location_id"),
-                splice.get("attenuation_db"), splice.get("orl_db"),
-                splice.get("test_date"), splice.get("otdr_notes"),
-                splice.get("notes"))
-            splice["id"] = row["id"]
-        return splice
-
-async def get_connections(pool, status: str = None, conn_type: str = None) -> list:
-    async with pool.acquire() as conn:
-        where = []
-        args  = []
-        if status:
-            args.append(status)
-            where.append(f"c.status = ${len(args)}")
-        if conn_type:
-            args.append(conn_type)
-            where.append(f"ct.category = ${len(args)}")
-        w = ("WHERE " + " AND ".join(where)) if where else ""
-        rows = await conn.fetch(f"""
-            SELECT c.*,
-                   ct.name AS type_name, ct.color, ct.dash_style, ct.category,
-                   da.hostname AS device_a_name, da.alias AS device_a_alias,
-                   db_.hostname AS device_b_name, db_.alias AS device_b_alias,
-                   la.name AS location_a_name,
-                   lb.name AS location_b_name,
-                   cab.name AS cable_name,
-                   f.fiber_number
-            FROM connections c
-            LEFT JOIN connection_types ct  ON ct.id  = c.connection_type_id
-            LEFT JOIN devices da           ON da.id  = c.device_a_id
-            LEFT JOIN devices db_          ON db_.id = c.device_b_id
-            LEFT JOIN locations la         ON la.id  = c.location_a_id
-            LEFT JOIN locations lb         ON lb.id  = c.location_b_id
-            LEFT JOIN cables cab           ON cab.id = c.cable_id
-            LEFT JOIN fibers f             ON f.id   = c.fiber_id
-            {w}
-            ORDER BY c.name
-        """, *args)
-        return [dict(r) for r in rows]
-
-async def upsert_connection(pool, conn_data: dict) -> dict:
-    async with pool.acquire() as conn:
-        fields = [
-            "name","connection_type_id","cable_id","fiber_id",
-            "device_a_id","interface_a","location_a_id",
-            "device_b_id","interface_b","location_b_id",
-            "frequency_ghz","technology","ssid","azimuth_a","azimuth_b",
-            "height_a_m","height_b_m","tx_power_dbm","rx_sensitivity_dbm",
-            "antenna_gain_dbi","distance_m","status","installed_at",
-            "notes","external_id"
-        ]
-        vals = [conn_data.get(f) for f in fields]
-        if conn_data.get("id"):
-            sets = ", ".join(f"{f}=${i+1}" for i, f in enumerate(fields))
-            await conn.execute(
-                f"UPDATE connections SET {sets} WHERE id=${len(fields)+1}",
-                *vals, conn_data["id"]
+            """,
+                bp["name"], bp.get("description"), bp.get("location_id"),
+                coords_json, bp.get("color","#3b82f6"),
+                bp.get("fill_opacity", 0.3),
+                bp.get("stroke_color","#1d4ed8"), bp.get("stroke_width", 2),
+                bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
+                bp.get("floor_count", 1), bp.get("imported_from"),
+                bp.get("kml_style_id"), bp.get("external_id")
             )
-        else:
-            cols = ", ".join(fields)
-            phs  = ", ".join(f"${i+1}" for i in range(len(fields)))
-            row  = await conn.fetchrow(
-                f"INSERT INTO connections ({cols}) VALUES ({phs}) RETURNING id, created_at",
-                *vals
-            )
-            conn_data["id"] = row["id"]
-        return conn_data
+            bp["id"] = row["id"]
+            return bp
+
+async def get_building_3d(pool, polygon_id: int) -> dict:
+    """Vrátí vše potřebné pro 3D zobrazení budovy."""
+    async with pool.acquire() as conn:
+        # Polygon budovy
+        poly = await conn.fetchrow(
+            "SELECT bp.*, l.name AS location_name FROM building_polygons bp "
+            "LEFT JOIN locations l ON l.id = bp.location_id WHERE bp.id = $1",
+            polygon_id
+        )
+        if not poly:
+            return None
+
+        # Podřízené lokace (patra, místnosti)
+        loc_id = poly["location_id"]
+        floors = []
+        if loc_id:
+            rows = await conn.fetch("""
+                WITH RECURSIVE sub(id, name, type, parent_id, floor_level, height_m, lat, lng) AS (
+                    SELECT id, name, type, parent_id, floor_level, height_m, lat, lng
+                    FROM locations WHERE id = $1
+                    UNION ALL
+                    SELECT l.id, l.name, l.type, l.parent_id, l.floor_level, l.height_m, l.lat, l.lng
+                    FROM locations l JOIN sub s ON l.parent_id = s.id
+                )
+                SELECT * FROM sub ORDER BY floor_level NULLS LAST, name
+            """, loc_id)
+            floors = [dict(r) for r in rows]
+
+        # Zařízení v těchto lokacích
+        loc_ids = [f["id"] for f in floors]
+        devices = []
+        if loc_ids:
+            rows = await conn.fetch("""
+                SELECT d.id, d.hostname, d.alias, d.device_type,
+                       d.ip::text, d.mac::text,
+                       l.id AS location_id, l.name AS location_name,
+                       l.floor_level, l.height_m
+                FROM devices d
+                JOIN locations l ON l.id = d.location_id
+                WHERE d.location_id = ANY($1::int[])
+                ORDER BY l.floor_level NULLS LAST, d.hostname
+            """, loc_ids)
+            devices = [dict(r) for r in rows]
+
+        import json
+        poly_dict = dict(poly)
+        if isinstance(poly_dict.get("coordinates"), str):
+            poly_dict["coordinates"] = json.loads(poly_dict["coordinates"])
+
+        return {
+            "polygon":  poly_dict,
+            "floors":   floors,
+            "devices":  devices,
+        }

@@ -29,7 +29,6 @@ from models import (
     LoginRequest, TokenResponse, UserModel, CreateUserRequest, UpdateUserRequest,
     OutageEvent, Device, DeviceCreate, DeviceWithCredentials,
     CredentialCreate, Credential,
-    ConnectionTypeModel, CableModel, FiberModel, SpliceModel, ConnectionModel,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
@@ -1890,108 +1889,174 @@ async def sync_mac_inventory(
     return await db.sync_mac_inventory(pool, device_id)
 
 # ===========================================================================
-# Topologie — API endpointy
+# 3D Budovy — API endpointy
 # ===========================================================================
 
-@app.get("/topology/connection-types", tags=["Topology"])
-async def list_connection_types(pool=Depends(get_db)):
-    return await db.get_connection_types(pool)
-
-# --- Kabely ---
-@app.get("/topology/cables", tags=["Topology"])
-async def list_cables(
-    cable_type: str = None,
-    status:     str = None,
+@app.get("/buildings", tags=["Buildings"])
+async def list_buildings(
+    location_id: int = None,
     pool=Depends(get_db),
 ):
-    return await db.get_cables(pool, cable_type=cable_type, status=status)
+    """Seznam všech polygonů budov."""
+    return await db.get_building_polygons(pool, location_id=location_id)
 
-@app.post("/topology/cables", tags=["Topology"])
-async def create_cable(cable: CableModel, user=Depends(admin_only), pool=Depends(get_db)):
-    return await db.upsert_cable(pool, cable.model_dump())
-
-@app.put("/topology/cables/{cable_id}", tags=["Topology"])
-async def update_cable(cable_id: int, cable: CableModel, user=Depends(admin_only), pool=Depends(get_db)):
-    cable.id = cable_id
-    return await db.upsert_cable(pool, cable.model_dump())
-
-@app.delete("/topology/cables/{cable_id}", tags=["Topology"])
-async def delete_cable(cable_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+@app.get("/buildings/{polygon_id}", tags=["Buildings"])
+async def get_building(polygon_id: int, pool=Depends(get_db)):
+    """Detail polygonu budovy."""
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM cables WHERE id=$1", cable_id)
-    return {"ok": True}
+        rows = await db.get_building_polygons(pool)
+        bp = next((r for r in rows if r["id"] == polygon_id), None)
+        if not bp:
+            raise HTTPException(status_code=404, detail="Polygon nenalezen")
+        return bp
 
-# --- Vlákna ---
-@app.get("/topology/cables/{cable_id}/fibers", tags=["Topology"])
-async def list_fibers(cable_id: int, pool=Depends(get_db)):
-    return await db.get_fibers(pool, cable_id)
+@app.get("/buildings/{polygon_id}/3d", tags=["Buildings"])
+async def get_building_3d(polygon_id: int, pool=Depends(get_db)):
+    """Vrátí vše pro 3D zobrazení — polygon + patra + zařízení."""
+    data = await db.get_building_3d(pool, polygon_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Polygon nenalezen")
+    return data
 
-@app.put("/topology/fibers/{fiber_id}", tags=["Topology"])
-async def update_fiber(fiber_id: int, fiber: FiberModel, user=Depends(admin_only), pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE fibers SET status=$1, notes=$2 WHERE id=$3",
-            fiber.status, fiber.notes, fiber_id
-        )
-    return {"ok": True}
-
-# --- Sváry ---
-@app.get("/topology/splices", tags=["Topology"])
-async def list_splices(location_id: int = None, pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        w = "WHERE s.location_id = $1" if location_id else ""
-        args = [location_id] if location_id else []
-        rows = await conn.fetch(f"""
-            SELECT s.*,
-                   fa.fiber_number AS fiber_a_number, ca.name AS cable_a_name,
-                   fb.fiber_number AS fiber_b_number, cb.name AS cable_b_name,
-                   l.name AS location_name
-            FROM splices s
-            LEFT JOIN fibers fa   ON fa.id  = s.fiber_a_id
-            LEFT JOIN cables ca   ON ca.id  = fa.cable_id
-            LEFT JOIN fibers fb   ON fb.id  = s.fiber_b_id
-            LEFT JOIN cables cb   ON cb.id  = fb.cable_id
-            LEFT JOIN locations l ON l.id   = s.location_id
-            {w}
-            ORDER BY s.id
-        """, *args)
-        return [dict(r) for r in rows]
-
-@app.post("/topology/splices", tags=["Topology"])
-async def create_splice(splice: SpliceModel, user=Depends(admin_only), pool=Depends(get_db)):
-    return await db.upsert_splice(pool, splice.model_dump())
-
-@app.put("/topology/splices/{splice_id}", tags=["Topology"])
-async def update_splice(splice_id: int, splice: SpliceModel, user=Depends(admin_only), pool=Depends(get_db)):
-    splice.id = splice_id
-    return await db.upsert_splice(pool, splice.model_dump())
-
-@app.delete("/topology/splices/{splice_id}", tags=["Topology"])
-async def delete_splice(splice_id: int, user=Depends(admin_only), pool=Depends(get_db)):
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM splices WHERE id=$1", splice_id)
-    return {"ok": True}
-
-# --- Spoje ---
-@app.get("/topology/connections", tags=["Topology"])
-async def list_connections(
-    status:    str = None,
-    conn_type: str = None,
+@app.post("/buildings", tags=["Buildings"])
+async def create_building(
+    bp: BuildingPolygonModel,
+    user=Depends(admin_only),
     pool=Depends(get_db),
 ):
-    return await db.get_connections(pool, status=status, conn_type=conn_type)
+    return await db.upsert_building_polygon(pool, bp.model_dump())
 
-@app.post("/topology/connections", tags=["Topology"])
-async def create_connection(conn_data: ConnectionModel, user=Depends(admin_only), pool=Depends(get_db)):
-    return await db.upsert_connection(pool, conn_data.model_dump())
+@app.put("/buildings/{polygon_id}", tags=["Buildings"])
+async def update_building(
+    polygon_id: int,
+    bp: BuildingPolygonModel,
+    user=Depends(admin_only),
+    pool=Depends(get_db),
+):
+    bp.id = polygon_id
+    return await db.upsert_building_polygon(pool, bp.model_dump())
 
-@app.put("/topology/connections/{conn_id}", tags=["Topology"])
-async def update_connection(conn_id: int, conn_data: ConnectionModel, user=Depends(admin_only), pool=Depends(get_db)):
-    conn_data.id = conn_id
-    return await db.upsert_connection(pool, conn_data.model_dump())
-
-@app.delete("/topology/connections/{conn_id}", tags=["Topology"])
-async def delete_connection(conn_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+@app.delete("/buildings/{polygon_id}", tags=["Buildings"])
+async def delete_building(
+    polygon_id: int,
+    user=Depends(admin_only),
+    pool=Depends(get_db),
+):
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM connections WHERE id=$1", conn_id)
+        await conn.execute("DELETE FROM building_polygons WHERE id=$1", polygon_id)
     return {"ok": True}
+
+@app.post("/buildings/import-kml", tags=["Buildings"])
+async def import_buildings_from_kml(
+    user=Depends(admin_only),
+    pool=Depends(get_db),
+):
+    """Importuje polygony budov z oltec.kml do building_polygons tabulky."""
+    import os, json
+
+    # Najdi KML soubor
+    kml_paths = ["/shared/maps/oltec.kml", "../../shared/maps/oltec.kml"]
+    kml_text = None
+    for path in kml_paths:
+        if os.path.exists(path):
+            with open(path) as f:
+                kml_text = f.read()
+            break
+
+    if not kml_text:
+        raise HTTPException(status_code=404, detail="KML soubor nenalezen")
+
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(kml_text)
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
+
+    # Parse stylů (barvy)
+    styles: dict = {}
+    for style in root.iter("{http://www.opengis.net/kml/2.2}Style"):
+        sid = style.get("id", "")
+        poly_el = style.find("{http://www.opengis.net/kml/2.2}PolyStyle")
+        line_el = style.find("{http://www.opengis.net/kml/2.2}LineStyle")
+        if poly_el is not None or line_el is not None:
+            fill_color = poly_el.find("{http://www.opengis.net/kml/2.2}color") if poly_el is not None else None
+            line_color = line_el.find("{http://www.opengis.net/kml/2.2}color") if line_el is not None else None
+            styles[sid] = {
+                "fill":   fill_color.text if fill_color is not None else "4d888888",
+                "stroke": line_color.text if line_color is not None else "ff000000",
+            }
+
+    def kml_color_to_hex(c: str) -> str:
+        if not c or len(c) < 8: return "#888888"
+        return f"#{c[6:8]}{c[4:6]}{c[2:4]}"
+
+    def kml_alpha(c: str) -> float:
+        if not c or len(c) < 2: return 0.5
+        return int(c[:2], 16) / 255
+
+    imported = []
+    skipped  = []
+
+    async with pool.acquire() as conn:
+        for pm in root.iter("{http://www.opengis.net/kml/2.2}Placemark"):
+            name_el = pm.find("{http://www.opengis.net/kml/2.2}name")
+            name    = name_el.text.strip() if name_el is not None else "Budova"
+            desc_el = pm.find("{http://www.opengis.net/kml/2.2}description")
+            desc    = desc_el.text.strip() if desc_el is not None else None
+
+            poly_el = pm.find("{http://www.opengis.net/kml/2.2}Polygon")
+            if poly_el is None:
+                skipped.append(name)
+                continue
+
+            coords_el = poly_el.find(".//{http://www.opengis.net/kml/2.2}coordinates")
+            if coords_el is None:
+                skipped.append(name)
+                continue
+
+            coords = []
+            for part in coords_el.text.strip().split():
+                parts = part.split(",")
+                if len(parts) >= 2:
+                    try:
+                        coords.append([float(parts[0]), float(parts[1])])
+                    except ValueError:
+                        pass
+
+            if len(coords) < 3:
+                skipped.append(name)
+                continue
+
+            # Styl
+            style_url_el = pm.find("{http://www.opengis.net/kml/2.2}styleUrl")
+            style_id     = style_url_el.text.lstrip("#") if style_url_el is not None else ""
+            style        = styles.get(style_id, {})
+            color        = kml_color_to_hex(style.get("fill", "4d888888"))
+            opacity      = kml_alpha(style.get("fill", "4d888888"))
+            stroke       = kml_color_to_hex(style.get("stroke", "ff000000"))
+
+            # Ulož (přeskoč duplicity dle jména)
+            existing = await conn.fetchval(
+                "SELECT id FROM building_polygons WHERE name=$1 AND imported_from='kml'",
+                name
+            )
+            if existing:
+                skipped.append(f"{name} (již existuje)")
+                continue
+
+            row = await conn.fetchrow("""
+                INSERT INTO building_polygons
+                    (name, description, coordinates, color, fill_opacity,
+                     stroke_color, stroke_width, imported_from, kml_style_id)
+                VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,'kml',$8)
+                RETURNING id
+            """,
+                name, desc, json.dumps(coords),
+                color, opacity, stroke, 2, style_id
+            )
+            imported.append({"id": row["id"], "name": name})
+
+    return {
+        "imported": len(imported),
+        "skipped":  len(skipped),
+        "polygons": imported,
+        "skipped_names": skipped,
+    }

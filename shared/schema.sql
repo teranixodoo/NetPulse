@@ -683,16 +683,66 @@ ALTER TABLE app_config ADD COLUMN IF NOT EXISTS dummy_placeholder TEXT;  -- plac
 ALTER TABLE devices ALTER COLUMN ip DROP NOT NULL;
 
 -- ===========================================================================
+-- 3D Budovy — polygony, patra, výšky lokací
+-- ===========================================================================
+
+-- Rozšíření tabulky locations o 3D atributy
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS floor_level INT     DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS height_m    FLOAT   DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS footprint   JSONB   DEFAULT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_locations_floor ON locations (floor_level)
+    WHERE floor_level IS NOT NULL;
+
+-- Samostatná tabulka polygonů budov
+-- (oddělena od locations — jedna budova může mít více polygonů,
+--  polygon může existovat bez lokace a naopak)
+CREATE TABLE IF NOT EXISTS building_polygons (
+    id            SERIAL PRIMARY KEY,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    -- GeoJSON polygon [[lng,lat],...] — vnější hranice
+    coordinates   JSONB NOT NULL,
+    -- Vizuální styl
+    color         TEXT NOT NULL DEFAULT '#3b82f6',
+    fill_opacity  FLOAT NOT NULL DEFAULT 0.3,
+    stroke_color  TEXT NOT NULL DEFAULT '#1d4ed8',
+    stroke_width  INT  NOT NULL DEFAULT 2,
+    -- 3D atributy
+    height_m      FLOAT DEFAULT 12.0,   -- celková výška budovy
+    base_height_m FLOAT DEFAULT 0.0,    -- výška základny (terén)
+    floor_count   INT   DEFAULT 1,      -- počet pater
+    -- Import metadata
+    imported_from TEXT,                  -- 'kml', 'manual', 'geojson'
+    kml_style_id  TEXT,                  -- původní style id z KML
+    -- CRM integrace
+    external_id   UUID DEFAULT NULL,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    date_modified TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_building_polygons_external_id
+    ON building_polygons (external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_building_polygons_location
+    ON building_polygons (location_id);
+
+DROP TRIGGER IF EXISTS trg_building_polygons_date_modified ON building_polygons;
+CREATE TRIGGER trg_building_polygons_date_modified
+    BEFORE UPDATE ON building_polygons
+    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ===========================================================================
 -- Topologie sítě — kabely, vlákna, sváry, spoje
 -- ===========================================================================
 
--- Číselník typů spojů (barvy, ikony, styly čar)
 CREATE TABLE IF NOT EXISTS connection_types (
     id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,   -- "UTP", "Optika SM", "WiFi PtP"
-    category    TEXT NOT NULL,          -- cable | wireless
+    name        TEXT NOT NULL UNIQUE,
+    category    TEXT NOT NULL,
     color       TEXT NOT NULL DEFAULT '#3b82f6',
-    dash_style  TEXT NOT NULL DEFAULT 'solid',  -- solid | dashed | dotted
+    dash_style  TEXT NOT NULL DEFAULT 'solid',
     icon        TEXT DEFAULT '📡',
     sort_order  INT  DEFAULT 0,
     active      BOOLEAN DEFAULT TRUE
@@ -711,17 +761,14 @@ INSERT INTO connection_types (name, category, color, dash_style, icon, sort_orde
     ('LTE',             'wireless', '#ec4899', 'dashed', '📱', 60)
 ON CONFLICT (name) DO NOTHING;
 
--- ---------------------------------------------------------------------------
--- Kabely — fyzické kabelové trasy
--- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS cables (
     id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL,          -- K-001, "Optika H46-V3"
-    cable_type      TEXT NOT NULL,          -- fiber | utp | coax
-    medium          TEXT,                   -- G652D | G657 | Cat6 | Cat6A
-    fiber_count     INT,                    -- počet vláken (jen pro optiku)
-    length_m        FLOAT,                  -- délka v metrech
-    route           JSONB,                  -- GPS trasa [[lng,lat],...]
+    name            TEXT NOT NULL,
+    cable_type      TEXT NOT NULL,
+    medium          TEXT,
+    fiber_count     INT,
+    length_m        FLOAT,
+    route           JSONB,
     location_a_id   INT REFERENCES locations(id) ON DELETE SET NULL,
     location_b_id   INT REFERENCES locations(id) ON DELETE SET NULL,
     installed_at    DATE,
@@ -732,56 +779,22 @@ CREATE TABLE IF NOT EXISTS cables (
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     date_modified   TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cables_external_id
-    ON cables (external_id) WHERE external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cables_external_id ON cables (external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_cables_location_a ON cables (location_a_id);
 CREATE INDEX IF NOT EXISTS idx_cables_location_b ON cables (location_b_id);
-CREATE INDEX IF NOT EXISTS idx_cables_type       ON cables (cable_type);
 CREATE INDEX IF NOT EXISTS idx_cables_status     ON cables (status);
-
 DROP TRIGGER IF EXISTS trg_cables_date_modified ON cables;
-CREATE TRIGGER trg_cables_date_modified
-    BEFORE UPDATE ON cables
-    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+CREATE TRIGGER trg_cables_date_modified BEFORE UPDATE ON cables FOR EACH ROW EXECUTE FUNCTION set_date_modified();
 
--- ---------------------------------------------------------------------------
--- Vlákna — jednotlivá optická vlákna kabelu
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS fibers (
-    id              SERIAL PRIMARY KEY,
-    cable_id        INT NOT NULL REFERENCES cables(id) ON DELETE CASCADE,
-    fiber_number    INT NOT NULL,           -- číslo vlákna (1-48)
-    color           TEXT,                   -- barva dle standardu IEC 60304
-    status          TEXT NOT NULL DEFAULT 'free'
-                    CHECK (status IN ('free','active','reserved','damaged')),
-    notes           TEXT,
-    UNIQUE (cable_id, fiber_number)
-);
-
-CREATE INDEX IF NOT EXISTS idx_fibers_cable  ON fibers (cable_id);
-CREATE INDEX IF NOT EXISTS idx_fibers_status ON fibers (status);
-
--- Automatické generování vláken při vložení kabelu
-CREATE OR REPLACE FUNCTION generate_fibers()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION generate_fibers() RETURNS TRIGGER AS $$
 DECLARE
-    -- Standardní barvy vláken dle IEC 60304
-    fiber_colors TEXT[] := ARRAY[
-        'modrá','oranžová','zelená','hnědá','šedá',
-        'bílá','červená','černá','žlutá','fialová',
-        'růžová','tyrkysová'
-    ];
+    fiber_colors TEXT[] := ARRAY['modrá','oranžová','zelená','hnědá','šedá','bílá','červená','černá','žlutá','fialová','růžová','tyrkysová'];
     i INT;
 BEGIN
     IF NEW.cable_type = 'fiber' AND NEW.fiber_count IS NOT NULL THEN
         FOR i IN 1..NEW.fiber_count LOOP
             INSERT INTO fibers (cable_id, fiber_number, color)
-            VALUES (
-                NEW.id,
-                i,
-                fiber_colors[((i - 1) % 12) + 1]
-            )
+            VALUES (NEW.id, i, fiber_colors[((i-1) % 12) + 1])
             ON CONFLICT (cable_id, fiber_number) DO NOTHING;
         END LOOP;
     END IF;
@@ -789,14 +802,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_generate_fibers ON cables;
-CREATE TRIGGER trg_generate_fibers
-    AFTER INSERT ON cables
-    FOR EACH ROW EXECUTE FUNCTION generate_fibers();
+CREATE TABLE IF NOT EXISTS fibers (
+    id              SERIAL PRIMARY KEY,
+    cable_id        INT NOT NULL REFERENCES cables(id) ON DELETE CASCADE,
+    fiber_number    INT NOT NULL,
+    color           TEXT,
+    status          TEXT NOT NULL DEFAULT 'free'
+                    CHECK (status IN ('free','active','reserved','damaged')),
+    notes           TEXT,
+    UNIQUE (cable_id, fiber_number)
+);
+CREATE INDEX IF NOT EXISTS idx_fibers_cable  ON fibers (cable_id);
+CREATE INDEX IF NOT EXISTS idx_fibers_status ON fibers (status);
 
--- ---------------------------------------------------------------------------
--- Sváry / spojky — propojení vláken mezi kabely
--- ---------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_generate_fibers ON cables;
+CREATE TRIGGER trg_generate_fibers AFTER INSERT ON cables FOR EACH ROW EXECUTE FUNCTION generate_fibers();
+
 CREATE TABLE IF NOT EXISTS splices (
     id              SERIAL PRIMARY KEY,
     fiber_a_id      INT REFERENCES fibers(id) ON DELETE SET NULL,
@@ -804,64 +825,46 @@ CREATE TABLE IF NOT EXISTS splices (
     splice_type     TEXT NOT NULL DEFAULT 'fusion'
                     CHECK (splice_type IN ('fusion','mechanical','connector')),
     location_id     INT REFERENCES locations(id) ON DELETE SET NULL,
-    attenuation_db  FLOAT,                  -- útlum svaru v dB
-    orl_db          FLOAT,                  -- optická odrazivost (dB)
-    test_date       DATE,                   -- datum měření OTDR
-    otdr_notes      TEXT,                   -- poznámky z OTDR měření
+    attenuation_db  FLOAT,
+    orl_db          FLOAT,
+    test_date       DATE,
+    otdr_notes      TEXT,
     notes           TEXT,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     date_modified   TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS idx_splices_fiber_a   ON splices (fiber_a_id);
-CREATE INDEX IF NOT EXISTS idx_splices_fiber_b   ON splices (fiber_b_id);
-CREATE INDEX IF NOT EXISTS idx_splices_location  ON splices (location_id);
-
+CREATE INDEX IF NOT EXISTS idx_splices_fiber_a  ON splices (fiber_a_id);
+CREATE INDEX IF NOT EXISTS idx_splices_fiber_b  ON splices (fiber_b_id);
+CREATE INDEX IF NOT EXISTS idx_splices_location ON splices (location_id);
 DROP TRIGGER IF EXISTS trg_splices_date_modified ON splices;
-CREATE TRIGGER trg_splices_date_modified
-    BEFORE UPDATE ON splices
-    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+CREATE TRIGGER trg_splices_date_modified BEFORE UPDATE ON splices FOR EACH ROW EXECUTE FUNCTION set_date_modified();
 
--- ---------------------------------------------------------------------------
--- Spoje — logické aktivní propoje (kabelové i bezdrátové)
--- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS connections (
     id                  SERIAL PRIMARY KEY,
     name                TEXT,
     connection_type_id  INT REFERENCES connection_types(id) ON DELETE SET NULL,
-
-    -- Fyzická vazba (kabelové spoje)
     cable_id            INT REFERENCES cables(id) ON DELETE SET NULL,
     fiber_id            INT REFERENCES fibers(id) ON DELETE SET NULL,
-
-    -- Koncové body
     device_a_id         INT REFERENCES devices(id) ON DELETE SET NULL,
-    interface_a         TEXT,               -- eth0, SFP1, ether1...
+    interface_a         TEXT,
     location_a_id       INT REFERENCES locations(id) ON DELETE SET NULL,
-
     device_b_id         INT REFERENCES devices(id) ON DELETE SET NULL,
     interface_b         TEXT,
     location_b_id       INT REFERENCES locations(id) ON DELETE SET NULL,
-
-    -- Bezdrátové parametry (NULL pro kabelové)
-    frequency_ghz       FLOAT,             -- 2.4 | 5.0 | 60.0 | 0.9
-    technology          TEXT,              -- wifi | ptp | ptmp | lte | microwave
+    frequency_ghz       FLOAT,
+    technology          TEXT,
     ssid                TEXT,
-    azimuth_a           FLOAT,             -- směr antény A (0-360°)
-    azimuth_b           FLOAT,             -- směr antény B (0-360°)
-    height_a_m          FLOAT,             -- výška antény A nad zemí
-    height_b_m          FLOAT,             -- výška antény B nad zemí
+    azimuth_a           FLOAT,
+    azimuth_b           FLOAT,
+    height_a_m          FLOAT,
+    height_b_m          FLOAT,
     tx_power_dbm        FLOAT,
     rx_sensitivity_dbm  FLOAT,
     antenna_gain_dbi    FLOAT,
     distance_m          FLOAT,
-
-    -- Live data z pollingu
     current_signal_dbm  FLOAT,
     current_snr_db      FLOAT,
     last_polled_at      TIMESTAMPTZ,
-
-    -- Metadata
     status              TEXT NOT NULL DEFAULT 'active'
                         CHECK (status IN ('active','inactive','planned','damaged')),
     installed_at        DATE,
@@ -870,19 +873,46 @@ CREATE TABLE IF NOT EXISTS connections (
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     date_modified       TIMESTAMPTZ DEFAULT NOW()
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_external_id
-    ON connections (external_id) WHERE external_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_connections_cable      ON connections (cable_id);
-CREATE INDEX IF NOT EXISTS idx_connections_fiber      ON connections (fiber_id);
-CREATE INDEX IF NOT EXISTS idx_connections_device_a   ON connections (device_a_id);
-CREATE INDEX IF NOT EXISTS idx_connections_device_b   ON connections (device_b_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_external_id ON connections (external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_connections_cable     ON connections (cable_id);
+CREATE INDEX IF NOT EXISTS idx_connections_device_a  ON connections (device_a_id);
+CREATE INDEX IF NOT EXISTS idx_connections_device_b  ON connections (device_b_id);
 CREATE INDEX IF NOT EXISTS idx_connections_location_a ON connections (location_a_id);
 CREATE INDEX IF NOT EXISTS idx_connections_location_b ON connections (location_b_id);
-CREATE INDEX IF NOT EXISTS idx_connections_type       ON connections (connection_type_id);
-CREATE INDEX IF NOT EXISTS idx_connections_status     ON connections (status);
-
+CREATE INDEX IF NOT EXISTS idx_connections_status    ON connections (status);
 DROP TRIGGER IF EXISTS trg_connections_date_modified ON connections;
-CREATE TRIGGER trg_connections_date_modified
-    BEFORE UPDATE ON connections
-    FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+CREATE TRIGGER trg_connections_date_modified BEFORE UPDATE ON connections FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ===========================================================================
+-- 3D Budovy — polygony, patra, výšky lokací
+-- ===========================================================================
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS floor_level INT   DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS height_m    FLOAT DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS footprint   JSONB DEFAULT NULL;
+
+CREATE TABLE IF NOT EXISTS building_polygons (
+    id            SERIAL PRIMARY KEY,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+    coordinates   JSONB NOT NULL,
+    color         TEXT NOT NULL DEFAULT '#3b82f6',
+    fill_opacity  FLOAT NOT NULL DEFAULT 0.3,
+    stroke_color  TEXT NOT NULL DEFAULT '#1d4ed8',
+    stroke_width  INT  NOT NULL DEFAULT 2,
+    height_m      FLOAT DEFAULT 12.0,
+    base_height_m FLOAT DEFAULT 0.0,
+    floor_count   INT   DEFAULT 1,
+    imported_from TEXT,
+    kml_style_id  TEXT,
+    external_id   UUID DEFAULT NULL,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    date_modified TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_building_polygons_external_id
+    ON building_polygons (external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_building_polygons_location ON building_polygons (location_id);
+DROP TRIGGER IF EXISTS trg_building_polygons_date_modified ON building_polygons;
+CREATE TRIGGER trg_building_polygons_date_modified
+    BEFORE UPDATE ON building_polygons FOR EACH ROW EXECUTE FUNCTION set_date_modified();

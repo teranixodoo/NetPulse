@@ -239,90 +239,26 @@ class DeviceWithCredentials(BaseModel):
         from_attributes = True
 
 # ===========================================================================
-# Topologie — kabely, vlákna, sváry, spoje
+# 3D Budovy — polygony
 # ===========================================================================
 
-class ConnectionTypeModel(BaseModel):
-    id:         Optional[int]  = None
-    name:       str
-    category:   str            = "cable"   # cable | wireless
-    color:      str            = "#3b82f6"
-    dash_style: str            = "solid"
-    icon:       Optional[str]  = None
-    sort_order: int            = 0
-    active:     bool           = True
-
-class CableModel(BaseModel):
+class BuildingPolygonModel(BaseModel):
     id:             Optional[int]   = None
     name:           str
-    cable_type:     str             # fiber | utp | coax
-    medium:         Optional[str]   = None
-    fiber_count:    Optional[int]   = None
-    length_m:       Optional[float] = None
-    route:          Optional[Any]   = None  # JSONB [[lng,lat],...]
-    location_a_id:  Optional[int]   = None
-    location_b_id:  Optional[int]   = None
-    installed_at:   Optional[str]   = None
-    status:         str             = "active"
-    notes:          Optional[str]   = None
+    description:    Optional[str]   = None
+    location_id:    Optional[int]   = None
+    coordinates:    Any             # [[lng,lat],...]
+    color:          str             = "#3b82f6"
+    fill_opacity:   float           = 0.3
+    stroke_color:   str             = "#1d4ed8"
+    stroke_width:   int             = 2
+    height_m:       float           = 12.0
+    base_height_m:  float           = 0.0
+    floor_count:    int             = 1
+    imported_from:  Optional[str]   = None
+    kml_style_id:   Optional[str]   = None
     external_id:    Optional[str]   = None
     created_at:     Optional[datetime] = None
     date_modified:  Optional[datetime] = None
-
-class FiberModel(BaseModel):
-    id:           Optional[int]  = None
-    cable_id:     int
-    fiber_number: int
-    color:        Optional[str]  = None
-    status:       str            = "free"
-    notes:        Optional[str]  = None
-
-class SpliceModel(BaseModel):
-    id:             Optional[int]   = None
-    fiber_a_id:     Optional[int]   = None
-    fiber_b_id:     Optional[int]   = None
-    splice_type:    str             = "fusion"
-    location_id:    Optional[int]   = None
-    attenuation_db: Optional[float] = None
-    orl_db:         Optional[float] = None
-    test_date:      Optional[str]   = None
-    otdr_notes:     Optional[str]   = None
-    notes:          Optional[str]   = None
-    created_at:     Optional[datetime] = None
-    date_modified:  Optional[datetime] = None
-
-class ConnectionModel(BaseModel):
-    id:                 Optional[int]   = None
-    name:               Optional[str]   = None
-    connection_type_id: Optional[int]   = None
-    cable_id:           Optional[int]   = None
-    fiber_id:           Optional[int]   = None
-    device_a_id:        Optional[int]   = None
-    interface_a:        Optional[str]   = None
-    location_a_id:      Optional[int]   = None
-    device_b_id:        Optional[int]   = None
-    interface_b:        Optional[str]   = None
-    location_b_id:      Optional[int]   = None
-    # Wireless
-    frequency_ghz:      Optional[float] = None
-    technology:         Optional[str]   = None
-    ssid:               Optional[str]   = None
-    azimuth_a:          Optional[float] = None
-    azimuth_b:          Optional[float] = None
-    height_a_m:         Optional[float] = None
-    height_b_m:         Optional[float] = None
-    tx_power_dbm:       Optional[float] = None
-    rx_sensitivity_dbm: Optional[float] = None
-    antenna_gain_dbi:   Optional[float] = None
-    distance_m:         Optional[float] = None
-    # Live
-    current_signal_dbm: Optional[float] = None
-    current_snr_db:     Optional[float] = None
-    last_polled_at:     Optional[datetime] = None
-    # Meta
-    status:             str             = "active"
-    installed_at:       Optional[str]   = None
-    notes:              Optional[str]   = None
-    external_id:        Optional[str]   = None
-    created_at:         Optional[datetime] = None
-    date_modified:      Optional[datetime] = None
+    # Computed fields
+    location_name:  Optional[str]   = None

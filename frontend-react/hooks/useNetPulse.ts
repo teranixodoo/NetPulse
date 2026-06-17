@@ -6,6 +6,7 @@ import { outagesApi, changeLogApi, scanExclusionsApi, deviceDataApi, deviceIpsAp
 import api, {
   scanApi, dataApi, rangesApi, credentialsApi,
   devicesApi, configApi, healthApi, backupApi, getErrorMessage, macApi,
+  topologyApi,
 } from "@/lib/api";
 import type { DeviceCreate, CredentialCreate, IpRange, ScanJob, ScanJobStats,
 } from "@/lib/types";
@@ -793,5 +794,109 @@ export function useSyncMacDevice() {
       qc.invalidateQueries({ queryKey: ["mac-events"] });
       qc.invalidateQueries({ queryKey: ["mac-stats"] });
     },
+  });
+}
+
+// ===========================================================================
+// Topology hooks
+// ===========================================================================
+export function useConnectionTypes() {
+  return useQuery({
+    queryKey: ["topology", "connection-types"],
+    queryFn: () => topologyApi.getConnectionTypes(),
+    staleTime: 60_000,
+  });
+}
+
+export function useCables(params?: { cable_type?: string; status?: string }) {
+  return useQuery({
+    queryKey: ["topology", "cables", params],
+    queryFn: () => topologyApi.getCables(params),
+  });
+}
+
+export function useFibers(cableId: number | null) {
+  return useQuery({
+    queryKey: ["topology", "fibers", cableId],
+    queryFn: () => topologyApi.getFibers(cableId!),
+    enabled: cableId != null,
+  });
+}
+
+export function useSplices(locationId?: number) {
+  return useQuery({
+    queryKey: ["topology", "splices", locationId],
+    queryFn: () => topologyApi.getSplices(locationId),
+  });
+}
+
+export function useTopologyConnections(params?: { status?: string; conn_type?: string }) {
+  return useQuery({
+    queryKey: ["topology", "connections", params],
+    queryFn: () => topologyApi.getConnections(params),
+  });
+}
+
+export function useCreateCable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cable: any) => topologyApi.createCable(cable),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "cables"] }),
+  });
+}
+
+export function useUpdateCable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: any) => topologyApi.updateCable(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "cables"] }),
+  });
+}
+
+export function useDeleteCable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => topologyApi.deleteCable(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "cables"] }),
+  });
+}
+
+export function useCreateConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (conn: any) => topologyApi.createConnection(conn),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "connections"] }),
+  });
+}
+
+export function useUpdateConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: any) => topologyApi.updateConnection(id, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "connections"] }),
+  });
+}
+
+export function useDeleteConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => topologyApi.deleteConnection(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "connections"] }),
+  });
+}
+
+export function useCreateSplice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (splice: any) => topologyApi.createSplice(splice),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "splices"] }),
+  });
+}
+
+export function useDeleteSplice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => topologyApi.deleteSplice(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["topology", "splices"] }),
   });
 }

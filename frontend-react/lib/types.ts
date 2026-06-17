@@ -627,3 +627,105 @@ export interface MacStats {
   unknown:  number;
   new_7d:   number;
 }
+
+// ===========================================================================
+// Topologie
+// ===========================================================================
+export interface ConnectionType {
+  id:         number;
+  name:       string;
+  category:   "cable" | "wireless";
+  color:      string;
+  dash_style: "solid" | "dashed" | "dotted";
+  icon:       string | null;
+  sort_order: number;
+  active:     boolean;
+}
+
+export interface Cable {
+  id:               number;
+  name:             string;
+  cable_type:       "fiber" | "utp" | "coax";
+  medium:           string | null;
+  fiber_count:      number | null;
+  fiber_count_actual?: number;
+  length_m:         number | null;
+  route:            [number, number][] | null;  // [[lng,lat],...]
+  location_a_id:    number | null;
+  location_a_name:  string | null;
+  location_b_id:    number | null;
+  location_b_name:  string | null;
+  installed_at:     string | null;
+  status:           "active" | "inactive" | "planned" | "damaged";
+  notes:            string | null;
+  external_id:      string | null;
+  created_at:       string | null;
+  date_modified:    string | null;
+}
+
+export interface Fiber {
+  id:              number;
+  cable_id:        number;
+  fiber_number:    number;
+  color:           string | null;
+  status:          "free" | "active" | "reserved" | "damaged";
+  notes:           string | null;
+  connection_id:   number | null;
+  connection_name: string | null;
+}
+
+export interface Splice {
+  id:             number;
+  fiber_a_id:     number | null;
+  fiber_b_id:     number | null;
+  fiber_a_number: number | null;
+  cable_a_name:   string | null;
+  fiber_b_number: number | null;
+  cable_b_name:   string | null;
+  splice_type:    "fusion" | "mechanical" | "connector";
+  location_id:    number | null;
+  location_name:  string | null;
+  attenuation_db: number | null;
+  orl_db:         number | null;
+  test_date:      string | null;
+  otdr_notes:     string | null;
+  notes:          string | null;
+  created_at:     string | null;
+}
+
+export interface TopologyConnection {
+  id:                  number;
+  name:                string | null;
+  connection_type_id:  number | null;
+  type_name:           string | null;
+  color:               string | null;
+  dash_style:          string | null;
+  category:            string | null;
+  cable_id:            number | null;
+  cable_name:          string | null;
+  fiber_id:            number | null;
+  fiber_number:        number | null;
+  device_a_id:         number | null;
+  device_a_name:       string | null;
+  device_a_alias:      string | null;
+  interface_a:         string | null;
+  location_a_id:       number | null;
+  location_a_name:     string | null;
+  device_b_id:         number | null;
+  device_b_name:       string | null;
+  device_b_alias:      string | null;
+  interface_b:         string | null;
+  location_b_id:       number | null;
+  location_b_name:     string | null;
+  frequency_ghz:       number | null;
+  technology:          string | null;
+  ssid:                string | null;
+  azimuth_a:           number | null;
+  azimuth_b:           number | null;
+  distance_m:          number | null;
+  current_signal_dbm:  number | null;
+  current_snr_db:      number | null;
+  status:              string;
+  installed_at:        string | null;
+  notes:               string | null;
+}

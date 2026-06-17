@@ -624,3 +624,112 @@ export const macApi = {
     return data;
   },
 };
+
+// ===========================================================================
+// Topology API
+// ===========================================================================
+export const topologyApi = {
+  // Typy spojů
+  async getConnectionTypes(): Promise<any[]> {
+    const { data } = await api.get("/topology/connection-types");
+    return data;
+  },
+
+  // Kabely
+  async getCables(params?: { cable_type?: string; status?: string }): Promise<any[]> {
+    const { data } = await api.get("/topology/cables", { params });
+    return data;
+  },
+  async createCable(cable: any): Promise<any> {
+    const { data } = await api.post("/topology/cables", cable);
+    return data;
+  },
+  async updateCable(id: number, cable: any): Promise<any> {
+    const { data } = await api.put(`/topology/cables/${id}`, cable);
+    return data;
+  },
+  async deleteCable(id: number): Promise<void> {
+    await api.delete(`/topology/cables/${id}`);
+  },
+
+  // Vlákna
+  async getFibers(cableId: number): Promise<any[]> {
+    const { data } = await api.get(`/topology/cables/${cableId}/fibers`);
+    return data;
+  },
+  async updateFiber(id: number, fiber: any): Promise<any> {
+    const { data } = await api.put(`/topology/fibers/${id}`, fiber);
+    return data;
+  },
+
+  // Sváry
+  async getSplices(locationId?: number): Promise<any[]> {
+    const { data } = await api.get("/topology/splices", {
+      params: locationId ? { location_id: locationId } : undefined,
+    });
+    return data;
+  },
+  async createSplice(splice: any): Promise<any> {
+    const { data } = await api.post("/topology/splices", splice);
+    return data;
+  },
+  async updateSplice(id: number, splice: any): Promise<any> {
+    const { data } = await api.put(`/topology/splices/${id}`, splice);
+    return data;
+  },
+  async deleteSplice(id: number): Promise<void> {
+    await api.delete(`/topology/splices/${id}`);
+  },
+
+  // Spoje
+  async getConnections(params?: { status?: string; conn_type?: string }): Promise<any[]> {
+    const { data } = await api.get("/topology/connections", { params });
+    return data;
+  },
+  async createConnection(conn: any): Promise<any> {
+    const { data } = await api.post("/topology/connections", conn);
+    return data;
+  },
+  async updateConnection(id: number, conn: any): Promise<any> {
+    const { data } = await api.put(`/topology/connections/${id}`, conn);
+    return data;
+  },
+  async deleteConnection(id: number): Promise<void> {
+    await api.delete(`/topology/connections/${id}`);
+  },
+};
+
+// ===========================================================================
+// Buildings API
+// ===========================================================================
+export const buildingsApi = {
+  async list(locationId?: number): Promise<any[]> {
+    const { data } = await api.get("/buildings", {
+      params: locationId ? { location_id: locationId } : undefined,
+    });
+    return data;
+  },
+  async get(id: number): Promise<any> {
+    const { data } = await api.get(`/buildings/${id}`);
+    return data;
+  },
+  async get3d(id: number): Promise<any> {
+    const { data } = await api.get(`/buildings/${id}/3d`);
+    return data;
+  },
+  async create(bp: any): Promise<any> {
+    const { data } = await api.post("/buildings", bp);
+    return data;
+  },
+  async update(id: number, bp: any): Promise<any> {
+    const { data } = await api.put(`/buildings/${id}`, bp);
+    return data;
+  },
+  async delete(id: number): Promise<void> {
+    await api.delete(`/buildings/${id}`);
+  },
+  async importKml(): Promise<any> {
+    const { data } = await api.post("/buildings/import-kml");
+    return data;
+  },
+};

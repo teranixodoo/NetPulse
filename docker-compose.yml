@@ -6,6 +6,11 @@ services:
   traefik:
     image: traefik:v3.0
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "8080:8080"    # HTTP → redirect na HTTPS
       - "8443:8443"    # HTTPS
@@ -22,6 +27,11 @@ services:
   # ---------------------------------------------------------------------------
   db:
     image: postgres:16-alpine
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     restart: unless-stopped
     environment:
       POSTGRES_DB:       netpulse
@@ -47,6 +57,11 @@ services:
     env_file:
       - .env
     build:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
       context: .
       dockerfile: Dockerfile.backend
     restart: unless-stopped
@@ -78,6 +93,11 @@ services:
   # ---------------------------------------------------------------------------
   frontend:
     build:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
       context: .
       dockerfile: Dockerfile.frontend
     restart: unless-stopped
@@ -96,6 +116,11 @@ services:
   # ---------------------------------------------------------------------------
   frontend-react:
     build:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
       context: .
       dockerfile: Dockerfile.frontend-react
     restart: unless-stopped

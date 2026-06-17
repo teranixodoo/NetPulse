@@ -194,9 +194,18 @@ function makeDivIcon(emoji: string, color: string, selected: boolean): L.DivIcon
 // ---------------------------------------------------------------------------
 // Popup HTML (jen pro hover — bez tlačítka Detail)
 // ---------------------------------------------------------------------------
-function buildPopupHtml(loc: LocationMapPoint, typeLabel: string): string {
+function buildPopupHtml(loc: LocationMapPoint, typeLabel: string, isBuilding: boolean): string {
   const addr = [loc.street, loc.city].filter(Boolean).join(", ") || loc.country || "";
   const statusColor = getStatusColor(loc);
+  const buildingBtn = isBuilding ? `
+    <div style="margin-top:6px;padding-top:6px;border-top:1px solid #e2e8f0;">
+      <button
+        onclick="window._drawBuildingPolygon && window._drawBuildingPolygon(${loc.id})"
+        style="width:100%;background:#3b82f6;color:white;border:none;border-radius:4px;
+               padding:4px 8px;font-size:11px;cursor:pointer;font-weight:500;">
+        🏢 Nakreslit polygon budovy
+      </button>
+    </div>` : "";
   return `
     <div style="min-width:190px;font-family:system-ui,sans-serif;">
       <div style="font-weight:600;font-size:13px;margin-bottom:3px;">${loc.name}</div>
@@ -224,8 +233,9 @@ function buildPopupHtml(loc: LocationMapPoint, typeLabel: string): string {
               : loc.online_count === 0  ? "Vše offline"
               : `${loc.online_count}/${loc.total_devices} online`}
           </span>
-          <span style="margin-left:auto;font-size:10px;color:#94a3b8;">klik = detail</span>
+          <span style="margin-left:auto;font-size:10px;color:#94a3b8;">${isBuilding ? "klik = menu" : "klik = detail"}</span>
         </div>
+        ${buildingBtn}
       </div>
     </div>
   `;
@@ -249,6 +259,7 @@ export interface LocationsMapViewProps {
   isLoading:        boolean;
   onSelectLocation: (loc: LocationMapPoint | null) => void;
   selectedId:       number | null;
+  onBuildingPolygonDrawn?: (loc: LocationMapPoint, coords: [number,number][]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,23 +271,37 @@ export default function LocationsMapView({
   isLoading,
   onSelectLocation,
   selectedId,
+  onBuildingPolygonDrawn,
 }: LocationsMapViewProps) {
   fixLeafletIcons();
 
-  const mapRef     = useRef<L.Map | null>(null);
-  const mapDivRef  = useRef<HTMLDivElement>(null);
-  const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
-  const tileRef    = useRef<L.TileLayer | null>(null);
-  const kmlLayersRef = useRef<L.Layer[]>([]);
-  const kmlPointsRef = useRef<L.Layer[]>([]);
-  const kmlLabelsRef = useRef<L.Layer[]>([]);
-  const markersRef = useRef<Map<number, L.Marker>>(new Map());
-  const [activeLayer, setActiveLayer] = useState<TileLayerKey>("map");
+  const mapRef      = useRef<L.Map | null>(null);
+  const mapDivRef   = useRef<HTMLDivElement>(null);
+  const clusterRef  = useRef<L.MarkerClusterGroup | null>(null);
+  const tileRef     = useRef<L.TileLayer | null>(null);
+  const kmlLayersRef  = useRef<L.Layer[]>([]);
+  const kmlPointsRef  = useRef<L.Layer[]>([]);
+  const kmlLabelsRef  = useRef<L.Layer[]>([]);
+  const markersRef  = useRef<Map<number, L.Marker>>(new Map());
+  // Polygon drawing
+  const polyDrawRef = useRef<{
+    loc:     LocationMapPoint | null;
+    points:  [number,number][];
+    markers: L.CircleMarker[];
+    line:    L.Polyline | null;
+    preview: L.Polyline | null;
+    polygon: L.Polygon | null;
+  }>({ loc: null, points: [], markers: [], line: null, preview: null, polygon: null });
+
+  const [activeLayer,    setActiveLayer]    = useState<TileLayerKey>("map");
   const [showKml,        setShowKml]        = useState(true);
   const [showKmlPoints,  setShowKmlPoints]  = useState(false);
   const [showKmlLabels,  setShowKmlLabels]  = useState(false);
   const [kmlLoaded,      setKmlLoaded]      = useState(false);
-  const kmlFeaturesRef = useRef<KmlFeature[]>([]);
+  const [polyDrawMode,   setPolyDrawMode]   = useState(false);
+  const [polyDrawLoc,    setPolyDrawLoc]    = useState<LocationMapPoint | null>(null);
+  const [polyPoints,     setPolyPoints]     = useState<[number,number][]>([]);
+  const kmlFeaturesRef  = useRef<KmlFeature[]>([]);
 
   // Sidebar
   const [sidebarOpen,  setSidebarOpen]  = useState(true);
@@ -432,7 +457,118 @@ export default function LocationsMapView({
     tileRef.current = tile;
   }, [activeLayer]);
 
-  // KML vrstva — načtení a vykreslení/skrytí
+  // ---------------------------------------------------------------------------
+  // Polygon drawing — globální handler pro tlačítko v popup
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Globální funkce volaná z popup HTML onclick
+    (window as any)._drawBuildingPolygon = (locId: number) => {
+      const loc = locations.find(l => l.id === locId);
+      if (!loc) return;
+      // Zavři popup
+      map.closePopup();
+      // Nastav draw mód
+      setPolyDrawLoc(loc);
+      setPolyDrawMode(true);
+    };
+
+    return () => {
+      delete (window as any)._drawBuildingPolygon;
+    };
+  }, [locations]);
+
+  // Polygon draw interakce na mapě
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const dr = polyDrawRef.current;
+
+    if (!polyDrawMode) {
+      // Vyčisti draw vrstvy
+      dr.markers.forEach(m => map.removeLayer(m));
+      dr.markers = [];
+      if (dr.line)    { map.removeLayer(dr.line);    dr.line    = null; }
+      if (dr.preview) { map.removeLayer(dr.preview); dr.preview = null; }
+      if (dr.polygon) { map.removeLayer(dr.polygon); dr.polygon = null; }
+      dr.points = []; dr.loc = null;
+      setPolyPoints([]);
+      map.off("click.polydraw");
+      map.off("dblclick.polydraw");
+      map.off("mousemove.polydraw");
+      map.getContainer().style.cursor = "";
+      return;
+    }
+
+    map.getContainer().style.cursor = "crosshair";
+    dr.loc = polyDrawLoc;
+
+    const onClick = (e: L.LeafletMouseEvent) => {
+      const pt: [number, number] = [e.latlng.lat, e.latlng.lng];
+      dr.points.push(pt);
+      setPolyPoints([...dr.points]);
+
+      const m = L.circleMarker(pt, {
+        radius: 5, color: "#f97316", fillColor: "#f97316",
+        fillOpacity: 1, weight: 2, interactive: false,
+      }).addTo(map);
+      dr.markers.push(m);
+
+      // Aktualizuj polygon preview
+      if (dr.polygon) map.removeLayer(dr.polygon);
+      if (dr.line)    map.removeLayer(dr.line);
+      if (dr.points.length >= 3) {
+        dr.polygon = L.polygon(dr.points, {
+          color: "#f97316", fillColor: "#f97316",
+          fillOpacity: 0.2, weight: 2, dashArray: "6 4", interactive: false,
+        }).addTo(map);
+      } else if (dr.points.length >= 2) {
+        dr.line = L.polyline(dr.points, {
+          color: "#f97316", weight: 2, dashArray: "6 4", interactive: false,
+        }).addTo(map);
+      }
+    };
+
+    const onDblClick = (e: L.LeafletMouseEvent) => {
+      e.originalEvent.preventDefault();
+      if (dr.points.length < 3) {
+        alert("Polygon musí mít alespoň 3 body.");
+        return;
+      }
+      // Uzavři polygon — skoč na callback
+      const closedPoints = [...dr.points];
+      setPolyDrawMode(false);
+      if (dr.loc && onBuildingPolygonDrawn) {
+        onBuildingPolygonDrawn(dr.loc, closedPoints);
+      }
+    };
+
+    const onMouseMove = (e: L.LeafletMouseEvent) => {
+      if (dr.points.length === 0) return;
+      const last = dr.points[dr.points.length - 1];
+      const cur: [number, number] = [e.latlng.lat, e.latlng.lng];
+      if (dr.preview) map.removeLayer(dr.preview);
+      dr.preview = L.polyline([last, cur], {
+        color: "#f97316", weight: 1.5, opacity: 0.6,
+        dashArray: "4 4", interactive: false,
+      }).addTo(map);
+    };
+
+    // Použij event namespace aby se daly snadno odebrat
+    map.on("click", onClick);
+    map.on("dblclick", onDblClick);
+    map.on("mousemove", onMouseMove);
+
+    return () => {
+      map.off("click", onClick);
+      map.off("dblclick", onDblClick);
+      map.off("mousemove", onMouseMove);
+      map.getContainer().style.cursor = "";
+    };
+  }, [polyDrawMode, polyDrawLoc]);
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -541,23 +677,39 @@ export default function LocationsMapView({
       const divIcon  = makeDivIcon(emoji, color, selected);
 
       const marker = L.marker([loc.lat, loc.lng], { icon: divIcon });
-      const popupContent = buildPopupHtml(loc, getTypeLabel(loc.type));
+      const popupContent = buildPopupHtml(loc, getTypeLabel(loc.type), loc.type === "building");
+      const isBuilding = loc.type === "building";
 
-      // Popup na HOVER
-      marker.bindPopup(popupContent, {
-        maxWidth:    260,
-        closeButton: false,
-        autoClose:   true,
-        // Malé zpoždění aby se nezavřel při přejíždění přes okraj markeru
-      });
-      marker.on("mouseover", () => { marker.openPopup(); });
-      marker.on("mouseout",  () => { marker.closePopup(); });
-
-      // Click = otevři detail panel (popup se zavře automaticky díky autoClose)
-      marker.on("click", () => {
-        marker.closePopup();
-        onSelectLocation(loc);
-      });
+      if (isBuilding) {
+        // Budova: popup na KLIK (aby bylo možné kliknout na tlačítko uvnitř)
+        marker.bindPopup(popupContent, {
+          maxWidth:    260,
+          closeButton: true,
+          autoClose:   false,
+          closeOnClick: false,
+        });
+        marker.on("click", () => {
+          if (marker.isPopupOpen()) {
+            marker.closePopup();
+            onSelectLocation(loc);
+          } else {
+            marker.openPopup();
+          }
+        });
+      } else {
+        // Ostatní: popup na HOVER, klik = detail panel
+        marker.bindPopup(popupContent, {
+          maxWidth:    260,
+          closeButton: false,
+          autoClose:   true,
+        });
+        marker.on("mouseover", () => { marker.openPopup(); });
+        marker.on("mouseout",  () => { marker.closePopup(); });
+        marker.on("click", () => {
+          marker.closePopup();
+          onSelectLocation(loc);
+        });
+      }
 
       cluster.addLayer(marker);
       markersRef.current.set(loc.id, marker);
@@ -784,7 +936,79 @@ export default function LocationsMapView({
           ))}
         </div>
 
-        {/* Geocoding searchbox — overlay nad mapou */}
+        {/* Polygon draw toolbar */}
+        {polyDrawMode && polyDrawLoc && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1001]
+                          flex items-center gap-2 bg-background/95 backdrop-blur-sm
+                          border border-amber-400 rounded-lg shadow-lg px-3 py-2">
+            <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+              🏢 Kreslím polygon: <strong>{polyDrawLoc.name}</strong>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {polyPoints.length} {polyPoints.length === 1 ? "bod" : polyPoints.length < 5 ? "body" : "bodů"}
+            </span>
+            {polyPoints.length > 0 && (
+              <button
+                onClick={() => {
+                  const dr = polyDrawRef.current;
+                  const map = mapRef.current;
+                  if (!map || dr.points.length === 0) return;
+                  // Odeber poslední bod
+                  const last = dr.markers.pop();
+                  if (last) map.removeLayer(last);
+                  dr.points.pop();
+                  setPolyPoints([...dr.points]);
+                  if (dr.polygon) { map.removeLayer(dr.polygon); dr.polygon = null; }
+                  if (dr.line)    { map.removeLayer(dr.line);    dr.line    = null; }
+                  if (dr.points.length >= 3) {
+                    dr.polygon = L.polygon(dr.points, {
+                      color: "#f97316", fillColor: "#f97316",
+                      fillOpacity: 0.2, weight: 2, dashArray: "6 4", interactive: false,
+                    }).addTo(map);
+                  } else if (dr.points.length >= 2) {
+                    dr.line = L.polyline(dr.points, {
+                      color: "#f97316", weight: 2, dashArray: "6 4", interactive: false,
+                    }).addTo(map);
+                  }
+                }}
+                className="px-2 py-1 text-xs rounded border border-border hover:bg-muted"
+                title="Vrátit poslední bod">
+                ↩ Zpět
+              </button>
+            )}
+            {polyPoints.length >= 3 && (
+              <button
+                onClick={() => {
+                  const dr = polyDrawRef.current;
+                  setPolyDrawMode(false);
+                  if (dr.loc && onBuildingPolygonDrawn) {
+                    onBuildingPolygonDrawn(dr.loc, [...dr.points]);
+                  }
+                }}
+                className="px-2 py-1 text-xs rounded bg-green-600 text-white font-medium hover:bg-green-700">
+                ✓ Dokončit
+              </button>
+            )}
+            <button
+              onClick={() => setPolyDrawMode(false)}
+              className="px-2 py-1 text-xs rounded text-muted-foreground hover:text-destructive"
+              title="Zrušit">
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Hint při kreslení */}
+        {polyDrawMode && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-[1000]
+                          bg-background/90 border border-border rounded-lg shadow px-4 py-2
+                          text-xs text-center text-foreground">
+            Klikejte na mapu pro přidání rohů polygonu
+            <span className="block text-muted-foreground mt-0.5">
+              Dvojklik nebo tlačítko Dokončit = uzavřít polygon
+            </span>
+          </div>
+        )}
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] w-80">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
