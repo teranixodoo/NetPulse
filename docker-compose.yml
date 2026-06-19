@@ -57,13 +57,13 @@ services:
     env_file:
       - .env
     build:
+      context: .
+      dockerfile: Dockerfile.backend
     logging:
       driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
-      context: .
-      dockerfile: Dockerfile.backend
     restart: unless-stopped
     depends_on:
       db:
@@ -93,13 +93,13 @@ services:
   # ---------------------------------------------------------------------------
   frontend:
     build:
+      context: .
+      dockerfile: Dockerfile.frontend
     logging:
       driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
-      context: .
-      dockerfile: Dockerfile.frontend
     restart: unless-stopped
     depends_on:
       - backend
@@ -116,13 +116,13 @@ services:
   # ---------------------------------------------------------------------------
   frontend-react:
     build:
+      context: .
+      dockerfile: Dockerfile.frontend-react
     logging:
       driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
-      context: .
-      dockerfile: Dockerfile.frontend-react
     restart: unless-stopped
     depends_on:
       backend:

@@ -2947,7 +2947,7 @@ async def upsert_building_polygon(pool, bp: dict) -> dict:
                 bp.get("stroke_color","#1d4ed8"), bp.get("stroke_width", 2),
                 bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
                 bp.get("floor_count", 1), bp.get("imported_from"),
-                bp.get("external_id"), bp["id"]
+                str(bp["external_id"]) if bp.get("external_id") else None, bp["id"]
             )
             return bp
         else:
@@ -2966,7 +2966,8 @@ async def upsert_building_polygon(pool, bp: dict) -> dict:
                 bp.get("stroke_color","#1d4ed8"), bp.get("stroke_width", 2),
                 bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
                 bp.get("floor_count", 1), bp.get("imported_from"),
-                bp.get("kml_style_id"), bp.get("external_id")
+                bp.get("kml_style_id"),
+                str(bp["external_id"]) if bp.get("external_id") else None
             )
             bp["id"] = row["id"]
             return bp

@@ -247,7 +247,7 @@ class BuildingPolygonModel(BaseModel):
     name:           str
     description:    Optional[str]   = None
     location_id:    Optional[int]   = None
-    coordinates:    Any             # [[lng,lat],...]
+    coordinates:    List[List[float]]
     color:          str             = "#3b82f6"
     fill_opacity:   float           = 0.3
     stroke_color:   str             = "#1d4ed8"
@@ -260,5 +260,4 @@ class BuildingPolygonModel(BaseModel):
     external_id:    Optional[str]   = None
     created_at:     Optional[datetime] = None
     date_modified:  Optional[datetime] = None
-    # Computed fields
     location_name:  Optional[str]   = None

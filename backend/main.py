@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import List, Optional
 
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, Depends, HTTPException, Query, Body, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Body, status, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -1920,21 +1920,23 @@ async def get_building_3d(polygon_id: int, pool=Depends(get_db)):
 
 @app.post("/buildings", tags=["Buildings"])
 async def create_building(
-    bp: BuildingPolygonModel,
+    request: Request,
     user=Depends(admin_only),
     pool=Depends(get_db),
 ):
-    return await db.upsert_building_polygon(pool, bp.model_dump())
+    bp = await request.json()
+    return await db.upsert_building_polygon(pool, bp)
 
 @app.put("/buildings/{polygon_id}", tags=["Buildings"])
 async def update_building(
     polygon_id: int,
-    bp: BuildingPolygonModel,
+    request: Request,
     user=Depends(admin_only),
     pool=Depends(get_db),
 ):
-    bp.id = polygon_id
-    return await db.upsert_building_polygon(pool, bp.model_dump())
+    bp = await request.json()
+    bp["id"] = polygon_id
+    return await db.upsert_building_polygon(pool, bp)
 
 @app.delete("/buildings/{polygon_id}", tags=["Buildings"])
 async def delete_building(

@@ -172,19 +172,28 @@ function getStatusColor(loc: LocationMapPoint): string {
   return STATUS_COLORS.partial;
 }
 
-function makeDivIcon(emoji: string, color: string, selected: boolean): L.DivIcon {
+function makeDivIcon(emoji: string, color: string, selected: boolean, isBuilding = false): L.DivIcon {
   const size   = selected ? 44 : 36;
   const border = selected ? "3px solid #3b82f6" : "2px solid white";
+  const badge  = isBuilding
+    ? `<div style="position:absolute;top:-4px;right:-4px;width:14px;height:14px;
+        border-radius:50%;background:#f97316;border:1.5px solid white;
+        display:flex;align-items:center;justify-content:center;
+        font-size:8px;color:white;font-weight:700;" title="Klikněte pro možnosti">✎</div>`
+    : "";
   return L.divIcon({
     className: "",
-    html: `<div style="
-      width:${size}px;height:${size}px;border-radius:50%;
-      background:${color};border:${border};
-      box-shadow:0 2px 6px rgba(0,0,0,0.35);
-      display:flex;align-items:center;justify-content:center;
-      font-size:${selected ? 20 : 16}px;cursor:pointer;
-      transition:all 0.15s;
-    ">${emoji}</div>`,
+    html: `<div style="position:relative;width:${size}px;height:${size}px;">
+      <div style="
+        width:${size}px;height:${size}px;border-radius:50%;
+        background:${color};border:${border};
+        box-shadow:0 2px 6px rgba(0,0,0,0.35);
+        display:flex;align-items:center;justify-content:center;
+        font-size:${selected ? 20 : 16}px;cursor:pointer;
+        transition:all 0.15s;
+      ">${emoji}</div>
+      ${badge}
+    </div>`,
     iconSize:    [size, size],
     iconAnchor:  [size / 2, size / 2],
     popupAnchor: [0, -(size / 2 + 4)],
@@ -233,7 +242,7 @@ function buildPopupHtml(loc: LocationMapPoint, typeLabel: string, isBuilding: bo
               : loc.online_count === 0  ? "Vše offline"
               : `${loc.online_count}/${loc.total_devices} online`}
           </span>
-          <span style="margin-left:auto;font-size:10px;color:#94a3b8;">${isBuilding ? "klik = menu" : "klik = detail"}</span>
+          <span style="margin-left:auto;font-size:10px;color:#94a3b8;">klik = detail</span>
         </div>
         ${buildingBtn}
       </div>
@@ -674,21 +683,24 @@ export default function LocationsMapView({
       const emoji    = getIcon(loc.type);
       const color    = getStatusColor(loc);
       const selected = loc.id === selectedId;
-      const divIcon  = makeDivIcon(emoji, color, selected);
+      const divIcon  = makeDivIcon(emoji, color, selected, loc.type === "building");
 
       const marker = L.marker([loc.lat, loc.lng], { icon: divIcon });
       const popupContent = buildPopupHtml(loc, getTypeLabel(loc.type), loc.type === "building");
       const isBuilding = loc.type === "building";
 
+      // Popup — pro budovy na klik, pro ostatní na hover
+      marker.bindPopup(popupContent, {
+        maxWidth:     280,
+        closeButton:  isBuilding,
+        autoClose:    !isBuilding,
+        closeOnClick: !isBuilding,
+      });
+
       if (isBuilding) {
-        // Budova: popup na KLIK (aby bylo možné kliknout na tlačítko uvnitř)
-        marker.bindPopup(popupContent, {
-          maxWidth:    260,
-          closeButton: true,
-          autoClose:   false,
-          closeOnClick: false,
-        });
-        marker.on("click", () => {
+        // Budova: první klik = popup, druhý klik = detail panel
+        marker.on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
           if (marker.isPopupOpen()) {
             marker.closePopup();
             onSelectLocation(loc);
@@ -697,14 +709,9 @@ export default function LocationsMapView({
           }
         });
       } else {
-        // Ostatní: popup na HOVER, klik = detail panel
-        marker.bindPopup(popupContent, {
-          maxWidth:    260,
-          closeButton: false,
-          autoClose:   true,
-        });
-        marker.on("mouseover", () => { marker.openPopup(); });
-        marker.on("mouseout",  () => { marker.closePopup(); });
+        // Ostatní: hover = popup, klik = detail panel
+        marker.on("mouseover", () => marker.openPopup());
+        marker.on("mouseout",  () => marker.closePopup());
         marker.on("click", () => {
           marker.closePopup();
           onSelectLocation(loc);
