@@ -28,6 +28,7 @@
 24. [Konfigurace (číselníky)](#24-konfigurace-číselníky)
 25. [System Logs](#25-system-logs)
 26. [API a přístup pro externí systémy](#26-api-a-přístup-pro-externí-systémy)
+27. [Topologie sítě](#27-topologie-sítě)
 
 ---
 
@@ -1243,3 +1244,306 @@ http://<IP_SERVERU>:8000/docs
 9. **Sleduj Network Awareness** → Po prvním poll cyklu se naplní MAC inventář → zkontroluj neevidovaná zařízení
 
 10. **Pravidelně kontroluj** → Dashboard (přehled), Log výpadků (co bylo offline), Zálohy (úspěšnost)
+
+---
+
+## 27. Topologie sítě
+
+Modul **Topologie sítě** (stránka `/topology`) umožňuje vizuální dokumentaci fyzické a logické infrastruktury — kabelové trasy, logické spoje a polygony budov vše zobrazené na mapě. Součástí je 3D zobrazení budov včetně vazby pater na lokace.
+
+### Přístup
+
+Levý panel navigace → **Topologie sítě** (ikona sítě) nebo přímo URL `/topology`.
+
+### Zobrazení — přepínání
+
+Stránka má dva režimy:
+- **Mapa** — interaktivní Leaflet mapa se všemi prvky
+- **Tabulka** — přehledné tabulky kabelů, spojů a polygonů
+
+---
+
+### 27.1 Vrstvy mapy
+
+V levém panelu sekce **Vrstvy** lze zapínat/vypínat:
+
+| Vrstva | Popis |
+|---|---|
+| Lokace | Markery lokací z hierarchie (budovy, regiony, místnosti) |
+| Polygony budov | Barevné obrysy budov a bloků |
+| Kabelové trasy | Fyzické trasy kabelů |
+| Logické spoje | Logická spojení mezi lokacemi/zařízeními |
+
+Sekce **Typy spojů** umožňuje filtrovat logické spoje dle kategorií (optika, wireless, metalika, ...).
+
+---
+
+### 27.2 Lokace v Topologii
+
+Lokace se zobrazují jako barevné kruhy dle hloubky hierarchie:
+- **Modrá** — budova / region (hloubka 0)
+- **Oranžová** — sub-budova / blok (hloubka 1)
+- **Fialová** — další úrovně
+
+**Plný kruh** = lokace má vlastní GPS souřadnice.
+**Přerušovaný kruh** = GPS je zděděno z nadřazené lokace.
+
+#### Rozbalení podřízených lokací
+
+Lokace s potomky mají **badge s číslem** (počet podřízených). Kliknutím na badge se zobrazí/skryjí podřízené lokace. Lokace typu **region** jsou automaticky rozbaleny.
+
+#### Klik na lokaci — panel
+
+Po kliknutí na marker lokace se zobrazí detail panel:
+- Název, typ, stav GPS
+- Počet zařízení (online/celkem)
+- Tlačítko Zobrazit/Skrýt potomky
+- Pro budovy: **Nakreslit polygon** (přejde do draw módu)
+
+---
+
+### 27.3 Kabelové trasy
+
+Fyzické trasy kabelů vedené skutečnou cestou (po fasádách, v zemi, ve žlabech).
+
+#### Přidání kabelu
+
+1. Klikni **Kreslit trasu kabelu** v toolbaru
+2. Klikej na body trasy na mapě
+3. Dvojklik nebo tlačítko **Potvrdit** = uzavřít trasu
+4. Vyplň formulář: Název, Typ (UTP/Fiber/Coax), Medium, Délka, Stav
+
+#### Formulář kabelu
+
+| Pole | Popis |
+|---|---|
+| Název | Unikátní označení kabelu (např. V1-H46-opt1) |
+| Typ | UTP / Fiber / Coax |
+| Medium | SM, MM, Cat6, ... |
+| Vlákna | Počet vláken (u optiky) |
+| Délka (m) | Délka trasy |
+| Bod A / Bod B | Volitelně lokace koncových bodů |
+| Stav | active / planned / inactive |
+
+Kabely jsou zobrazeny v tabulce (záložka **Kabely**) kde je lze smazat.
+
+---
+
+### 27.4 Logické spoje
+
+Logické propojení dvou lokací nebo zařízení (bez fyzické trasy).
+
+#### Přidání spoje
+
+1. Klikni **Přidat spoj** v toolbaru
+2. Klikni na lokaci A (zelený kruh)
+3. Klikni na lokaci B (červený kruh)
+4. Vyplň formulář
+
+#### Formulář spoje
+
+| Pole | Popis |
+|---|---|
+| Název | Označení spoje |
+| Typ spoje | Z číselníku (optika, wireless, metalika, ...) |
+| Kabel | Volitelně provázat s fyzickým kabelem |
+| Zařízení A / B | Konkrétní zařízení na každém konci |
+| Interface A / B | Rozhraní (Ether1, SFP1, ...) |
+| Frekvence / Azimut | Pro bezdrátové spoje |
+| Stav | active / planned / inactive |
+
+Na mapě jsou spoje zobrazeny barevnou čárou dle typu. Bezdrátové spoje jsou zobrazeny přerušovaně.
+
+---
+
+### 27.5 Polygony budov
+
+Polygony umožňují zakreslit obrysy budov a bloků přímo na mapě. Každý polygon je vázán na lokaci a obsahuje definici pater s vazbou na podřízené lokace.
+
+#### Nakreslení polygonu
+
+1. Klikni **Nakreslit polygon** v toolbaru
+2. Klikni na marker budovy nebo bloku (toolbar ukáže vybranou lokaci)
+3. Klikej na body obrysu budovy na mapě (existující polygony jsou v draw módu neinteraktivní)
+4. Dvojklik nebo tlačítko **Dokončit** = uzavřít polygon
+5. Vyplň formulář
+
+#### Formulář nového polygonu
+
+| Pole | Popis |
+|---|---|
+| Název | Název polygonu (předvyplněn z lokace) |
+| Popis | Volitelný popis |
+| Počet pater | Počet pater budovy |
+| Výška/patro (m) | Výška jednoho patra (výchozí 3,5 m) |
+| Barva výplně | Barva polygonu na mapě |
+| Průhlednost | Průhlednost výplně (10–90 %) |
+
+#### Menu polygonu — klik na polygon
+
+Po kliknutí na existující polygon se zobrazí akční panel:
+- **🏗️ Zobrazit ve 3D** — otevře 3D pohled budovy
+- **⚙️ Vlastnosti** — editace názvu, pater, barev a vazby pater na lokace
+- **✏️ Upravit tvar** — (připraveno pro budoucí verzi)
+- **🗑️ Smazat polygon**
+
+---
+
+### 27.6 Vlastnosti polygonu — vazba pater na lokace
+
+V menu ⚙️ **Vlastnosti** lze každé patro provázat s podřízenou lokací typu `floor`.
+
+#### Postup
+
+1. Klikni na polygon → **⚙️ Vlastnosti**
+2. V sekci **Patra — vazba na lokace** vidíš každé patro s rozsahem výšky
+3. Z dropdown vyber existující lokaci patra (podřízené lokace budovy typu `floor`)
+4. Nebo vytvoř novou lokaci přímo z formuláře: vyplň název do pole a klikni **+ Vytvořit**
+   - Nová lokace zdědí GPS z nadřazené budovy
+   - Automaticky dostane `type=floor` a `floor_level` dle indexu patra
+5. Klikni **Uložit**
+
+#### Doporučená hierarchie lokací
+
+```
+Budova V1 (type: building)
+  └── Suterén (type: floor, floor_level=0)
+  └── 1. NP   (type: floor, floor_level=1)
+  └── 2. NP   (type: floor, floor_level=2)
+      └── Serverovna (type: rack)
+      └── Kancelář A (type: office)
+```
+
+---
+
+### 27.7 3D zobrazení budovy
+
+3D pohled je dostupný přes **🏗️ Zobrazit ve 3D** v menu polygonu.
+
+#### Rozhraní
+
+- **Levá část** — interaktivní 3D mapa (MapLibre GL)
+  - Každé patro = barevný blok s jinou výškou
+  - Tažení myší = rotace pohledu
+  - Kolečko = zoom
+  - Ctrl + tažení = náklon
+- **Pravý panel** — seznam pater a zařízení
+  - Klik na patro = zvýrazní jen toto patro (ostatní ztmavnou)
+  - Filtrování zařízení dle patra
+
+#### Barvy pater
+
+| Index | Barva |
+|---|---|
+| 0 (Přízemí) | Modrá |
+| 1 (1. NP) | Zelená |
+| 2 (2. NP) | Žlutá |
+| 3 (3. NP) | Červená |
+| 4+ | Fialová, Cyan, ... |
+
+#### Název patra
+
+Pokud je patro provázáno s lokací (viz 27.6), zobrazí se název lokace (např. "Suterén", "Serverovna"). Bez vazby se zobrazuje generický název (Přízemí, 1. NP, ...).
+
+---
+
+### 27.8 Varianta B — Budova s více bloky
+
+Pro budovy rozdělené na části s různým počtem pater se používá hierarchie sub-budov.
+
+#### Příklad — Budova V1 se dvěma bloky
+
+```
+V1 - Budova (type: building)        ← kontejner, bez polygonu
+  ├── V1.1 Levý blok (type: building)
+  │     polygon: obrys levého bloku
+  │     patra: Přízemí, 1. NP, 2. NP
+  └── V1.2 Pravý blok (type: building)
+        polygon: obrys pravého bloku
+        patra: Přízemí, 1. NP
+```
+
+#### Postup nastavení
+
+1. V **Evidenci lokací** vytvoř sub-budovy:
+   - `V1.1 Levý blok` (type: building, parent: V1, GPS = střed bloku)
+   - `V1.2 Pravý blok` (type: building, parent: V1, GPS = střed bloku)
+
+2. V **Topologii** klikni na marker V1 → **▼ Zobrazit podřízené**
+
+3. Nakresli polygon pro V1.1:
+   - Klikni **Nakreslit polygon**
+   - Klikni na marker V1.1 (toolbar ukáže `V1 → V1.1`)
+   - Nakresli obrys levého bloku
+
+4. Opakuj pro V1.2
+
+5. Ve **Vlastnostech** každého polygonu přiřaď patra k lokacím
+
+#### Pravidla
+
+- Patra se nastavují jen pro **bloky** (V1.1, V1.2), ne pro nadřazenou budovu V1
+- Nadřazená budova (V1) slouží jako evidenční kontejner bez polygonu a pater
+- 3D zobrazení je vždy per-blok (klik na polygon V1.1 → 3D jen pro V1.1)
+- Zařízení se přiřazují ke konkrétnímu patru konkrétního bloku
+
+---
+
+### 27.9 Úprava GPS souřadnic
+
+Nástroj **Upravit GPS** umožňuje přemístit lokaci přetažením markeru.
+
+1. Klikni **Upravit GPS** v toolbaru (marker změní vzhled na ⊕)
+2. Přetáhni marker na správnou pozici
+3. GPS se automaticky uloží při puštění
+4. Klikni **×** pro ukončení režimu
+
+**Legenda:**
+- Plný kruh = lokace má vlastní GPS souřadnice
+- Přerušovaný kruh = GPS je zděděno z nadřazené lokace
+
+---
+
+### 27.10 Typy spojů — konfigurace
+
+Číselník typů spojů je spravován v **Konfigurace → Typy spojů** (`/config`).
+
+| Pole | Popis |
+|---|---|
+| Název | Zobrazovaný název (např. "Optický spoj") |
+| Kategorie | fiber / wireless / copper / virtual |
+| Barva | Barva čáry na mapě |
+| Ikona | Emoji ikona pro legendu |
+| Styl čáry | solid / dashed / dotted |
+
+---
+
+### 27.11 Tabulkový přehled
+
+Záložka **Tabulka** zobrazuje všechny topologické objekty:
+
+- **Kabely** — název, typ, medium, vlákna, délka, koncové body, stav
+- **Spoje** — název, typ, body A/B, přiřazený kabel, stav
+- **Polygony** — název, vázaná lokace, počet pater, výška, barva, zdroj
+
+Z tabulky lze objekty mazat tlačítkem 🗑️.
+
+---
+
+### 27.12 Dostupné API endpointy
+
+| Endpoint | Metoda | Popis |
+|---|---|---|
+| `/topology/cables` | GET | Seznam kabelů |
+| `/topology/cables` | POST | Přidání kabelu |
+| `/topology/cables/{id}` | DELETE | Smazání kabelu |
+| `/topology/connections` | GET | Seznam logických spojů |
+| `/topology/connections` | POST | Přidání spoje |
+| `/topology/connections/{id}` | DELETE | Smazání spoje |
+| `/topology/connection-types` | GET | Číselník typů spojů |
+| `/buildings` | GET | Seznam polygonů budov |
+| `/buildings` | POST | Přidání polygonu |
+| `/buildings/{id}` | PUT | Aktualizace polygonu |
+| `/buildings/{id}` | DELETE | Smazání polygonu |
+| `/buildings/{id}/3d` | GET | 3D data budovy (patra, zařízení) |
+| `/locations/{id}/gps` | PATCH | Aktualizace GPS lokace |

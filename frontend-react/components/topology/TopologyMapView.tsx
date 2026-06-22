@@ -293,16 +293,22 @@ export default function TopologyMapView({
       buildingPolygons.forEach(bp => {
         if (!bp.coordinates || bp.coordinates.length < 3) return;
         const latlngs = bp.coordinates.map(c => [c[1],c[0]] as [number,number]);
+        // V draw módu zakážeme interakci polygonů aby nekryli klikání na mapu
+        const isDrawMode = editMode === "draw_polygon" || editMode === "draw_cable" || editMode === "draw_connection";
         const poly = L.polygon(latlngs, {
           color:bp.stroke_color, weight:bp.stroke_width,
           fillColor:bp.color, fillOpacity:bp.fill_opacity, opacity:0.9,
+          interactive: !isDrawMode,  // ← zakázat interakci při kreslení
+          bubblingMouseEvents: true,
         }).addTo(map);
-        poly.bindTooltip(
-          `<b>🏢 ${bp.name}</b>${bp.description?`<br>${bp.description}`:""}` +
-          (bp.location_name?`<br>📍 ${bp.location_name}`:"") +
-          `<br>${bp.floor_count} patra · ${bp.height_m}m`, {sticky:true}
-        );
-        poly.on("click", () => setSelected({type:"polygon", data:bp}));
+        if (!isDrawMode) {
+          poly.bindTooltip(
+            `<b>🏢 ${bp.name}</b>${bp.description?`<br>${bp.description}`:""}` +
+            (bp.location_name?`<br>📍 ${bp.location_name}`:"") +
+            `<br>${bp.floor_count} patra · ${bp.height_m}m`, {sticky:true}
+          );
+          poly.on("click", () => setSelected({type:"polygon", data:bp}));
+        }
         layersRef.current.push(poly);
       });
     }
