@@ -8,7 +8,7 @@ import {
   useCreateCable, useCreateConnection, useDevices,
   getErrorMessage,
 } from "@/hooks/useNetPulse";
-import { buildingsApi } from "@/lib/api";
+import { buildingsApi, locationsCreateApi } from "@/lib/api";
 import type { Cable, TopologyConnection, ConnectionType, LocationMapPoint } from "@/lib/types";
 import type { EditMode } from "@/components/topology/TopologyMapView";
 import { Trash2, X, Loader2, Cable as CableIcon, Network, Map, Table2, Building2 } from "lucide-react";
@@ -18,11 +18,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 const TopologyMapView = dynamic(
   () => import("@/components/topology/TopologyMapView"),
   { ssr: false, loading: () => (
-    <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-      Načítám mapu…
-    </div>
+    <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">Načítám mapu…</div>
   )}
 );
+const Building3DView = dynamic(
+  () => import("@/components/topology/Building3DView"),
+  { ssr: false }
+);
+
 
 const STATUS_COLORS: Record<string, string> = {
   active:   "bg-green-500/15 text-green-700 dark:text-green-400",
@@ -403,6 +406,273 @@ function ConnectionForm({ locA, locB, onSave, onCancel, isPending }: {
 // ---------------------------------------------------------------------------
 // Hlavní stránka
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Formulář vlastností polygonu — s vazbou pater na lokace
+// ---------------------------------------------------------------------------
+function PolygonPropertiesForm({
+  polygon, locations, onSave, onCancel,
+}: {
+  polygon: any;
+  locations: LocationMapPoint[];
+  onSave: (data: any) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name,        setName]        = useState(polygon.name);
+  const [description, setDescription] = useState(polygon.description || "");
+  const [floorCount,  setFloorCount]  = useState(polygon.floor_count || 1);
+  const [floorHeight, setFloorHeight] = useState(
+    polygon.floor_count > 0 ? +(polygon.height_m / polygon.floor_count).toFixed(2) : 3.5
+  );
+  const [color,       setColor]       = useState(polygon.color || "#3b82f6");
+  const [fillOpacity, setFillOpacity] = useState(polygon.fill_opacity || 0.3);
+  // floor_location_ids: { "0": locId | null, "1": locId | null, ... }
+  const [floorLocIds, setFloorLocIds] = useState<Record<string, number | null>>(() => {
+    const existing = polygon.floor_location_ids || {};
+    const result: Record<string, number | null> = {};
+    for (let i = 0; i < (polygon.floor_count || 1); i++) {
+      result[String(i)] = existing[String(i)] ?? null;
+    }
+    return result;
+  });
+  const [creating,   setCreating]    = useState<number | null>(null);
+  const [newLocNames, setNewLocNames] = useState<Record<string, string>>({});
+  const [saving,     setSaving]      = useState(false);
+
+  const totalHeight = +(floorCount * floorHeight).toFixed(1);
+  const floorHeight_ = floorHeight; // alias pro closure
+
+  // Podřízené lokace buildingu (typ floor) pro výběr
+  const buildingLocId = polygon.location_id;
+  const floorLocs = useMemo(() =>
+    locations.filter(l =>
+      l.parent_id === buildingLocId && l.type === "floor"
+    ).sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0)),
+    [locations, buildingLocId]
+  );
+
+  // Synchronizace počtu pater s floorLocIds
+  function updateFloorCount(n: number) {
+    const count = Math.max(1, n);
+    setFloorCount(count);
+    setFloorLocIds(prev => {
+      const next: Record<string, number | null> = {};
+      for (let i = 0; i < count; i++) {
+        next[String(i)] = prev[String(i)] ?? null;
+      }
+      return next;
+    });
+  }
+
+  async function handleCreateFloorLoc(floorIndex: number) {
+    const name = newLocNames[String(floorIndex)]?.trim();
+    if (!name) return;
+    setCreating(floorIndex);
+    try {
+      const parentLoc = locations.find(l => l.id === buildingLocId);
+      const newLoc = await locationsCreateApi.create({
+        name,
+        type:        "floor",
+        parent_id:   buildingLocId ?? null,
+        floor_level: floorIndex,
+        lat:         parentLoc?.lat ?? parentLoc?.inherited_lat ?? null,
+        lng:         parentLoc?.lng ?? parentLoc?.inherited_lng ?? null,
+        description: `Patro ${floorIndex === 0 ? "Přízemí" : `${floorIndex}. NP`}`,
+      });
+      setFloorLocIds(prev => ({ ...prev, [String(floorIndex)]: newLoc.id }));
+      setNewLocNames(prev => ({ ...prev, [String(floorIndex)]: "" }));
+    } catch(e: any) {
+      alert("Chyba vytvoření lokace: " + (e?.response?.data?.detail || e.message));
+    }
+    setCreating(null);
+  }
+
+  function floorLabel(i: number) {
+    if (i === 0) return "Přízemí";
+    if (i < 0)  return `Suterén ${Math.abs(i)}`;
+    return `${i}. NP`;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40">
+      <div className="bg-background rounded-xl shadow-2xl border border-border w-full max-w-lg p-6
+                      max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold">⚙️ Vlastnosti polygonu</h2>
+          <button onClick={onCancel}><X className="h-5 w-5 text-muted-foreground" /></button>
+        </div>
+
+        <div className="space-y-4">
+          {/* Základní info */}
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Název</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-border bg-background px-3 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-primary/50" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Popis</label>
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+              className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm
+                         focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none" />
+          </div>
+
+          {/* Výška */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Počet pater</label>
+              <input type="number" min={1} max={50} value={floorCount}
+                onChange={e => updateFloorCount(Number(e.target.value))}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-background px-3 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-primary/50" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Výška/patro (m)</label>
+              <input type="number" min={2} max={10} step={0.5} value={floorHeight}
+                onChange={e => setFloorHeight(Number(e.target.value))}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-background px-3 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-primary/50" />
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs bg-primary/5 rounded p-2.5">
+            <span className="text-muted-foreground">Celková výška:</span>
+            <strong className="text-primary">{totalHeight} m</strong>
+          </div>
+
+          {/* Barva */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Barva výplně</label>
+              <div className="mt-1 flex items-center gap-2">
+                <input type="color" value={color} onChange={e => setColor(e.target.value)}
+                  className="h-9 w-12 rounded border border-border cursor-pointer p-0.5" />
+                <span className="text-xs font-mono text-muted-foreground">{color}</span>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">
+                Průhlednost ({Math.round(fillOpacity * 100)}%)
+              </label>
+              <input type="range" min={0.1} max={0.9} step={0.1} value={fillOpacity}
+                onChange={e => setFillOpacity(Number(e.target.value))}
+                className="mt-2 w-full" />
+            </div>
+          </div>
+
+          {/* Vazba pater na lokace */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-foreground">Patra — vazba na lokace</label>
+              {!buildingLocId && (
+                <span className="text-[10px] text-amber-600">
+                  ⚠️ Polygon nemá vazbu na budovu
+                </span>
+              )}
+            </div>
+            <div className="space-y-2">
+              {Array.from({ length: floorCount }, (_, i) => {
+                const base = +(i * floorHeight_).toFixed(1);
+                const top  = +(base + floorHeight_).toFixed(1);
+                const selectedLocId = floorLocIds[String(i)];
+
+                return (
+                  <div key={i} className="border border-border rounded-md p-2.5 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-sm shrink-0 text-[10px] flex items-center
+                                      justify-center font-bold text-white"
+                        style={{ background: ["#3b82f6","#22c55e","#f59e0b","#ef4444","#8b5cf6","#06b6d4"][i % 6] }}>
+                        {i}
+                      </span>
+                      <span className="text-xs font-medium">{floorLabel(i)}</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto">
+                        {base}m – {top}m
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <select
+                        value={selectedLocId ?? ""}
+                        onChange={e => setFloorLocIds(prev => ({
+                          ...prev, [String(i)]: e.target.value ? Number(e.target.value) : null
+                        }))}
+                        className="flex-1 h-8 rounded-md border border-border bg-background px-2 text-xs
+                                   focus:outline-none focus:ring-2 focus:ring-primary/50">
+                        <option value="">— bez vazby —</option>
+                        {floorLocs.map(l => (
+                          <option key={l.id} value={l.id}>
+                            {l.name}{l.floor_level != null ? ` (úroveň ${l.floor_level})` : ""}
+                          </option>
+                        ))}
+                        {/* Lokace vybraná ale není v listu floor typů */}
+                        {selectedLocId && !floorLocs.find(l => l.id === selectedLocId) && (
+                          <option value={selectedLocId}>
+                            ID {selectedLocId} (jiný typ)
+                          </option>
+                        )}
+                      </select>
+                    </div>
+
+                    {buildingLocId && !selectedLocId && (
+                      <div className="flex gap-1.5">
+                        <input
+                          placeholder={`Název patra (např. "${floorLabel(i)}")`}
+                          value={newLocNames[String(i)] ?? ""}
+                          onChange={e => setNewLocNames(prev => ({
+                            ...prev, [String(i)]: e.target.value
+                          }))}
+                          onKeyDown={e => e.key === "Enter" && handleCreateFloorLoc(i)}
+                          className="flex-1 h-7 rounded border border-dashed border-primary/40
+                                     bg-primary/5 px-2 text-xs focus:outline-none
+                                     focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/60"
+                        />
+                        <button
+                          onClick={() => handleCreateFloorLoc(i)}
+                          disabled={creating === i || !newLocNames[String(i)]?.trim()}
+                          className="h-7 px-2 rounded bg-primary/10 text-primary text-xs
+                                     hover:bg-primary hover:text-primary-foreground transition-colors
+                                     disabled:opacity-50 whitespace-nowrap">
+                          {creating === i ? <Loader2 className="h-3 w-3 animate-spin inline" /> : "+ Vytvořit"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-2 mt-5">
+          <button
+            disabled={saving || !name.trim()}
+            onClick={async () => {
+              setSaving(true);
+              await onSave({
+                ...polygon,
+                name, description: description || null,
+                floor_count: floorCount,
+                height_m:    totalHeight,
+                color, fill_opacity: fillOpacity,
+                stroke_color: color,
+                floor_location_ids: floorLocIds,
+              });
+              setSaving(false);
+            }}
+            className="flex-1 flex items-center justify-center gap-2 h-9 rounded-md
+                       bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50">
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            Uložit
+          </button>
+          <button onClick={onCancel}
+            className="h-9 px-4 rounded-md border border-border text-sm hover:bg-muted">
+            Zrušit
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TopologyPage() {
   const qc = useQueryClient();
   const { data: cables      = [] } = useCables();
@@ -438,6 +708,8 @@ export default function TopologyPage() {
   const [pendingRoute,   setPendingRoute]   = useState<[number,number][]|null>(null);
   const [pendingConn,    setPendingConn]    = useState<{a:LocationMapPoint;b:LocationMapPoint}|null>(null);
   const [pendingPolygon, setPendingPolygon] = useState<{loc:LocationMapPoint;coords:[number,number][]}|null>(null);
+  const [view3d,         setView3d]         = useState<{id:number;name:string}|null>(null);
+  const [editPolygon,    setEditPolygon]     = useState<any|null>(null);
   const [savingPolygon,  setSavingPolygon]  = useState(false);
 
   function toggleType(cat: string) {
@@ -452,6 +724,16 @@ export default function TopologyPage() {
     try { await createConn.mutateAsync(data); setPendingConn(null); }
     catch (e) { alert(getErrorMessage(e)); }
   }
+  function handlePolygonAction(action: "view3d" | "properties" | "edit_shape", polygon: any) {
+    if (action === "view3d") {
+      setView3d({ id: polygon.id, name: polygon.name });
+    } else if (action === "properties") {
+      setEditPolygon(polygon);
+    } else if (action === "edit_shape") {
+      alert("Editace tvaru polygonu bude implementována v další verzi.");
+    }
+  }
+
   async function handlePolygonSave(data: any) {
     setSavingPolygon(true);
     try {
@@ -557,6 +839,11 @@ export default function TopologyPage() {
             onConnectionDrawn={(a,b) => { setPendingConn({a,b}); setEditMode("none"); }}
             onBuildingPolygonDrawn={(loc,coords) => { setPendingPolygon({loc,coords}); setEditMode("none"); }}
             onBuildingDelete={id => deleteBuildingMutation.mutate(id)}
+            onPolygonAction={handlePolygonAction}
+            onLocationMoved={(loc, lat, lng) => {
+              // Invaliduj cache lokací po přesunutí
+              qc.invalidateQueries({ queryKey: ["locations-map"] });
+            }}
           />
         ) : (
           <div className="flex-1 overflow-auto p-4">
@@ -711,6 +998,40 @@ export default function TopologyPage() {
       {pendingPolygon && (
         <BuildingPolygonForm loc={pendingPolygon.loc} coords={pendingPolygon.coords}
           onSave={handlePolygonSave} onCancel={() => setPendingPolygon(null)} isPending={savingPolygon} />
+      )}
+
+      {/* 3D zobrazení budovy */}
+      {view3d && (
+        <Building3DView
+          polygonId={view3d.id}
+          polygonName={view3d.name}
+          onClose={() => setView3d(null)}
+        />
+      )}
+
+      {/* Editace vlastností polygonu */}
+      {editPolygon && (
+        <PolygonPropertiesForm
+          polygon={editPolygon}
+          locations={locations}
+          onSave={async (updated) => {
+            try {
+              await buildingsApi.update(editPolygon.id, updated);
+              qc.invalidateQueries({ queryKey: ["buildings"] });
+              qc.invalidateQueries({ queryKey: ["locations-map"] });
+              setEditPolygon(null);
+            } catch(e: any) {
+              const detail = e?.response?.data?.detail;
+              const msg = typeof detail === "string" ? detail
+                        : Array.isArray(detail) ? detail.map((d:any) => d.msg || JSON.stringify(d)).join(", ")
+                        : typeof detail === "object" && detail ? JSON.stringify(detail)
+                        : e?.message || String(e);
+              alert("Chyba uložení: " + msg);
+            }
+          }}
+          }}
+          onCancel={() => setEditPolygon(null)}
+        />
       )}
     </div>
   );

@@ -38,7 +38,8 @@
     "@types/leaflet.markercluster": "^1.5.4",
     "recharts": "^2.13.0",
     "date-fns": "^4.1.0",
-    "js-cookie": "^3.0.5"
+    "js-cookie": "^3.0.5",
+    "maplibre-gl": "^4.7.1"
   },
   "devDependencies": {
     "typescript": "^5.6.2",

@@ -680,6 +680,7 @@ export default function LocationsMapView({
     };
 
     filtered.forEach(loc => {
+      if (!loc.lat || !loc.lng) return;  // přeskočí lokace bez GPS
       const emoji    = getIcon(loc.type);
       const color    = getStatusColor(loc);
       const selected = loc.id === selectedId;
@@ -724,7 +725,7 @@ export default function LocationsMapView({
 
     if (filtered.length > 0 && filtered.length < locations.length) {
       try {
-        const group = L.featureGroup(filtered.map(l => L.marker([l.lat, l.lng])));
+        const group = L.featureGroup(filtered.filter(l => l.lat && l.lng).map(l => L.marker([l.lat!, l.lng!])));
         map.fitBounds(group.getBounds().pad(0.1));
       } catch {}
     }
@@ -734,7 +735,7 @@ export default function LocationsMapView({
   useEffect(() => {
     if (!selectedId || !mapRef.current) return;
     const loc = locations.find(l => l.id === selectedId);
-    if (loc) {
+    if (loc && loc.lat && loc.lng) {
       mapRef.current.flyTo([loc.lat, loc.lng], Math.max(mapRef.current.getZoom(), 15), { duration: 0.6 });
     }
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -802,7 +803,7 @@ export default function LocationsMapView({
                     <button key={loc.id}
                       onClick={() => {
                         onSelectLocation(loc);
-                        if (mapRef.current) mapRef.current.flyTo([loc.lat, loc.lng], 17, { duration: 0.6 });
+                        if (mapRef.current && loc.lat && loc.lng) mapRef.current.flyTo([loc.lat, loc.lng], 17, { duration: 0.6 });
                         setSearchQuery("");
                       }}
                       className="w-full text-left px-3 py-2 text-xs hover:bg-muted/50 border-b border-border last:border-0">

@@ -916,3 +916,20 @@ CREATE INDEX IF NOT EXISTS idx_building_polygons_location ON building_polygons (
 DROP TRIGGER IF EXISTS trg_building_polygons_date_modified ON building_polygons;
 CREATE TRIGGER trg_building_polygons_date_modified
     BEFORE UPDATE ON building_polygons FOR EACH ROW EXECUTE FUNCTION set_date_modified();
+
+-- ===========================================================================
+-- Building polygons — vazba pater na lokace
+-- ===========================================================================
+ALTER TABLE building_polygons
+    ADD COLUMN IF NOT EXISTS floor_location_ids JSONB DEFAULT NULL;
+-- Formát: {"0": 42, "1": 43, "2": 44}
+-- Kde klíč = index patra (string), hodnota = location.id
+
+-- Lokace — floor_level (číslo patra pro seřazení)
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS floor_level INT DEFAULT NULL;
+
+COMMENT ON COLUMN building_polygons.floor_location_ids IS
+    'JSON objekt mapující index patra na location.id: {"0": 42, "1": 43}';
+COMMENT ON COLUMN locations.floor_level IS
+    'Číslo patra: -1=suterén, 0=přízemí, 1=1.NP, atd.';

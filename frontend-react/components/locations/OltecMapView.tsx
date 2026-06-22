@@ -398,6 +398,7 @@ export default function OltecMapView({
     markersRef.current.clear();
 
     locations.forEach(loc => {
+      if (!loc.lat || !loc.lng) return;
       const emoji    = getIcon(loc.type);
       const color    = getStatusColor(loc);
       const selected = loc.id === selectedId;
@@ -457,7 +458,7 @@ export default function OltecMapView({
   useEffect(() => {
     if (!selectedId || !mapRef.current) return;
     const loc = locations.find(l => l.id === selectedId);
-    if (loc) mapRef.current.flyTo([loc.lat, loc.lng], Math.max(mapRef.current.getZoom(), 18), { duration: 0.5 });
+    if (loc && loc.lat && loc.lng) mapRef.current.flyTo([loc.lat, loc.lng], Math.max(mapRef.current.getZoom(), 18), { duration: 0.5 });
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!mapRef.current) return;

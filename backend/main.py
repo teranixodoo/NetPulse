@@ -1920,12 +1920,11 @@ async def get_building_3d(polygon_id: int, pool=Depends(get_db)):
 
 @app.post("/buildings", tags=["Buildings"])
 async def create_building(
-    request: Request,
+    bp: BuildingPolygonModel,
     user=Depends(admin_only),
     pool=Depends(get_db),
 ):
-    bp = await request.json()
-    return await db.upsert_building_polygon(pool, bp)
+    return await db.upsert_building_polygon(pool, bp.model_dump())
 
 @app.put("/buildings/{polygon_id}", tags=["Buildings"])
 async def update_building(

@@ -515,8 +515,15 @@ export interface LocationMapPoint {
   city:           string | null;
   zip:            string | null;
   country:        string | null;
-  lat:            number;
-  lng:            number;
+  lat:            number | null;
+  lng:            number | null;
+  inherited_lat:  number | null;
+  inherited_lng:  number | null;
+  has_own_gps:    boolean;
+  is_top_level:   boolean;
+  gps_source_id:  number | null;
+  depth:          number;
+  floor_level:    number | null;
   active:         boolean;
   total_devices:  number;
   online_count:   number;

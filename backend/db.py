@@ -2189,15 +2189,16 @@ async def create_location(pool, data: dict) -> dict:
         row = await conn.fetchrow("""
             INSERT INTO locations
                 (name, type, parent_id, street, city, zip, country,
-                 ruian_id, lat, lng, description, active)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                 ruian_id, lat, lng, description, active, floor_level)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             RETURNING *
         """,
         data["name"], data.get("type", "other"), data.get("parent_id"),
         data.get("street"), data.get("city"), data.get("zip"),
         data.get("country", "CZ"), data.get("ruian_id"),
         data.get("lat"), data.get("lng"),
-        data.get("description"), data.get("active", True))
+        data.get("description"), data.get("active", True),
+        data.get("floor_level"))
     d = _loc_row(row)
     d["device_count"] = 0
     d["breadcrumb"] = [d["name"]]
@@ -2927,10 +2928,16 @@ async def get_building_polygons(pool, location_id: int = None) -> list:
 
 async def upsert_building_polygon(pool, bp: dict) -> dict:
     import json
+    import json as _json
     coords = bp.get("coordinates")
     coords_json = json.dumps(coords) if coords is not None else None
 
     async with pool.acquire() as conn:
+        import json as _j
+        floor_loc_json = _j.dumps(bp.get("floor_location_ids")) \
+            if bp.get("floor_location_ids") is not None else None
+        ext_id = str(bp["external_id"]) if bp.get("external_id") else None
+
         if bp.get("id"):
             await conn.execute("""
                 UPDATE building_polygons SET
@@ -2938,26 +2945,32 @@ async def upsert_building_polygon(pool, bp: dict) -> dict:
                     coordinates=$4::jsonb, color=$5, fill_opacity=$6,
                     stroke_color=$7, stroke_width=$8, height_m=$9,
                     base_height_m=$10, floor_count=$11,
-                    imported_from=$12, external_id=$13::uuid
+                    imported_from=$12,
+                    floor_location_ids=$13::jsonb
                 WHERE id=$14
             """,
                 bp["name"], bp.get("description"), bp.get("location_id"),
                 coords_json, bp.get("color","#3b82f6"),
-                bp.get("fill_opacity", 0.3),
-                bp.get("stroke_color","#1d4ed8"), bp.get("stroke_width", 2),
-                bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
-                bp.get("floor_count", 1), bp.get("imported_from"),
-                str(bp["external_id"]) if bp.get("external_id") else None, bp["id"]
+                float(bp.get("fill_opacity", 0.3)),
+                bp.get("stroke_color","#1d4ed8"), int(bp.get("stroke_width", 2)),
+                float(bp.get("height_m", 12.0)), float(bp.get("base_height_m", 0.0)),
+                int(bp.get("floor_count", 1)), bp.get("imported_from"),
+                floor_loc_json,
+                int(bp["id"])
             )
             return bp
         else:
+            import json as _json2
+            floor_loc_json = _json2.dumps(bp.get("floor_location_ids")) \
+                if bp.get("floor_location_ids") is not None else None
             row = await conn.fetchrow("""
                 INSERT INTO building_polygons
                     (name, description, location_id, coordinates,
                      color, fill_opacity, stroke_color, stroke_width,
                      height_m, base_height_m, floor_count,
-                     imported_from, kml_style_id, external_id)
-                VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::uuid)
+                     imported_from, kml_style_id, external_id,
+                     floor_location_ids)
+                VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::uuid,$15::jsonb)
                 RETURNING id, created_at, date_modified
             """,
                 bp["name"], bp.get("description"), bp.get("location_id"),
@@ -2967,15 +2980,16 @@ async def upsert_building_polygon(pool, bp: dict) -> dict:
                 bp.get("height_m", 12.0), bp.get("base_height_m", 0.0),
                 bp.get("floor_count", 1), bp.get("imported_from"),
                 bp.get("kml_style_id"),
-                str(bp["external_id"]) if bp.get("external_id") else None
+                str(bp["external_id"]) if bp.get("external_id") else None,
+                floor_loc_json
             )
             bp["id"] = row["id"]
             return bp
 
 async def get_building_3d(pool, polygon_id: int) -> dict:
-    """Vrátí vše potřebné pro 3D zobrazení budovy."""
+    """Vrátí vše potřebné pro 3D zobrazení budovy včetně vazby pater na lokace."""
+    import json as _json
     async with pool.acquire() as conn:
-        # Polygon budovy
         poly = await conn.fetchrow(
             "SELECT bp.*, l.name AS location_name FROM building_polygons bp "
             "LEFT JOIN locations l ON l.id = bp.location_id WHERE bp.id = $1",
@@ -2984,45 +2998,76 @@ async def get_building_3d(pool, polygon_id: int) -> dict:
         if not poly:
             return None
 
-        # Podřízené lokace (patra, místnosti)
-        loc_id = poly["location_id"]
-        floors = []
+        poly_dict = dict(poly)
+        if isinstance(poly_dict.get("coordinates"), str):
+            poly_dict["coordinates"] = _json.loads(poly_dict["coordinates"])
+        if isinstance(poly_dict.get("floor_location_ids"), str):
+            poly_dict["floor_location_ids"] = _json.loads(poly_dict["floor_location_ids"])
+
+        # floor_location_ids: {"0": loc_id, "1": loc_id, ...}
+        floor_loc_ids_map = poly_dict.get("floor_location_ids") or {}
+        floor_loc_ids = [v for v in floor_loc_ids_map.values() if v]
+
+        # Načti lokace pater dle vazby
+        floor_locs = {}
+        if floor_loc_ids:
+            rows = await conn.fetch("""
+                SELECT id, name, type, floor_level, height_m, lat, lng,
+                       (SELECT COUNT(*) FROM devices d WHERE d.location_id = l.id) AS direct_devices
+                FROM locations l
+                WHERE id = ANY($1::int[])
+                ORDER BY floor_level NULLS LAST, name
+            """, floor_loc_ids)
+            for r in rows:
+                floor_locs[r["id"]] = dict(r)
+
+        # Podřízené lokace budovy (pro device lookup)
+        loc_id = poly_dict.get("location_id")
+        child_loc_ids = []
         if loc_id:
             rows = await conn.fetch("""
-                WITH RECURSIVE sub(id, name, type, parent_id, floor_level, height_m, lat, lng) AS (
-                    SELECT id, name, type, parent_id, floor_level, height_m, lat, lng
-                    FROM locations WHERE id = $1
+                WITH RECURSIVE sub AS (
+                    SELECT id FROM locations WHERE id = $1
                     UNION ALL
-                    SELECT l.id, l.name, l.type, l.parent_id, l.floor_level, l.height_m, l.lat, l.lng
-                    FROM locations l JOIN sub s ON l.parent_id = s.id
+                    SELECT l.id FROM locations l JOIN sub s ON l.parent_id = s.id
                 )
-                SELECT * FROM sub ORDER BY floor_level NULLS LAST, name
+                SELECT id FROM sub
             """, loc_id)
-            floors = [dict(r) for r in rows]
+            child_loc_ids = [r["id"] for r in rows]
 
-        # Zařízení v těchto lokacích
-        loc_ids = [f["id"] for f in floors]
+        # Zařízení
         devices = []
-        if loc_ids:
+        all_loc_ids = list(set(child_loc_ids + floor_loc_ids))
+        if all_loc_ids:
             rows = await conn.fetch("""
                 SELECT d.id, d.hostname, d.alias, d.device_type,
-                       d.ip::text, d.mac::text,
                        l.id AS location_id, l.name AS location_name,
-                       l.floor_level, l.height_m
+                       l.floor_level
                 FROM devices d
                 JOIN locations l ON l.id = d.location_id
                 WHERE d.location_id = ANY($1::int[])
                 ORDER BY l.floor_level NULLS LAST, d.hostname
-            """, loc_ids)
+            """, all_loc_ids)
             devices = [dict(r) for r in rows]
 
-        import json
-        poly_dict = dict(poly)
-        if isinstance(poly_dict.get("coordinates"), str):
-            poly_dict["coordinates"] = json.loads(poly_dict["coordinates"])
+        # Sestav patra s názvem z lokace
+        floors_out = []
+        for i in range(poly_dict.get("floor_count", 1)):
+            loc_id_for_floor = floor_loc_ids_map.get(str(i))
+            loc_data = floor_locs.get(loc_id_for_floor) if loc_id_for_floor else None
+            floors_out.append({
+                "floor_index":  i,
+                "location_id":  loc_id_for_floor,
+                "name":         loc_data["name"] if loc_data else (
+                    "Přízemí" if i == 0 else f"{i}. NP"
+                ),
+                "floor_level":  loc_data["floor_level"] if loc_data else i,
+                "device_count": loc_data["direct_devices"] if loc_data else 0,
+            })
 
         return {
-            "polygon":  poly_dict,
-            "floors":   floors,
-            "devices":  devices,
+            "polygon": poly_dict,
+            "floors":  floors_out,
+            "devices": devices,
+            "floor_location_ids": floor_loc_ids_map,
         }

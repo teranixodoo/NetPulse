@@ -733,3 +733,31 @@ export const buildingsApi = {
     return data;
   },
 };
+
+// ===========================================================================
+// Locations GPS update
+// ===========================================================================
+export const locationsGpsApi = {
+  async updateGps(locationId: number, lat: number, lng: number): Promise<any> {
+    const { data } = await api.patch(`/locations/${locationId}/gps`, { lat, lng });
+    return data;
+  },
+};
+
+// ===========================================================================
+// Locations CRUD (pro vytváření lokací pater z formuláře polygonu)
+// ===========================================================================
+export const locationsCreateApi = {
+  async create(data: {
+    name: string;
+    type: string;
+    parent_id?: number | null;
+    floor_level?: number | null;
+    lat?: number | null;
+    lng?: number | null;
+    description?: string | null;
+  }): Promise<any> {
+    const { data: result } = await api.post("/locations", data);
+    return result;
+  },
+};
