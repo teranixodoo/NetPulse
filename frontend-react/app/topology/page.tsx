@@ -1029,7 +1029,6 @@ export default function TopologyPage() {
               alert("Chyba uložení: " + msg);
             }
           }}
-          }}
           onCancel={() => setEditPolygon(null)}
         />
       )}
