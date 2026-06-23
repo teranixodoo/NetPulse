@@ -2062,3 +2062,63 @@ async def import_buildings_from_kml(
         "polygons": imported,
         "skipped_names": skipped,
     }
+
+# ===========================================================================
+# Topology — Connection types
+# ===========================================================================
+
+@app.get("/topology/connection-types", tags=["Topology"])
+async def list_connection_types(pool=Depends(get_db)):
+    return await db.get_connection_types(pool)
+
+@app.post("/topology/connection-types", tags=["Topology"])
+async def create_connection_type(request: Request, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_connection_type(pool, await request.json())
+
+@app.put("/topology/connection-types/{ct_id}", tags=["Topology"])
+async def update_connection_type(ct_id: int, request: Request, user=Depends(admin_only), pool=Depends(get_db)):
+    data = await request.json(); data["id"] = ct_id
+    return await db.upsert_connection_type(pool, data)
+
+@app.delete("/topology/connection-types/{ct_id}", tags=["Topology"])
+async def delete_connection_type(ct_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    await db.delete_connection_type(pool, ct_id)
+
+# ===========================================================================
+# Topology — Cables
+# ===========================================================================
+
+@app.get("/topology/cables", tags=["Topology"])
+async def list_cables(pool=Depends(get_db)):
+    return await db.get_cables(pool)
+
+@app.post("/topology/cables", tags=["Topology"])
+async def create_cable(request: Request, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_cable(pool, await request.json())
+
+@app.put("/topology/cables/{cable_id}", tags=["Topology"])
+async def update_cable(cable_id: int, request: Request, user=Depends(admin_only), pool=Depends(get_db)):
+    data = await request.json(); data["id"] = cable_id
+    return await db.upsert_cable(pool, data)
+
+@app.delete("/topology/cables/{cable_id}", tags=["Topology"])
+async def delete_cable(cable_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM cables WHERE id=$1", cable_id)
+
+# ===========================================================================
+# Topology — Connections (logical)
+# ===========================================================================
+
+@app.get("/topology/connections", tags=["Topology"])
+async def list_connections(pool=Depends(get_db)):
+    return await db.get_topology_connections(pool)
+
+@app.post("/topology/connections", tags=["Topology"])
+async def create_connection(request: Request, user=Depends(admin_only), pool=Depends(get_db)):
+    return await db.upsert_topology_connection(pool, await request.json())
+
+@app.delete("/topology/connections/{conn_id}", tags=["Topology"])
+async def delete_connection(conn_id: int, user=Depends(admin_only), pool=Depends(get_db)):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM connections WHERE id=$1", conn_id)

@@ -524,6 +524,8 @@ export interface LocationMapPoint {
   gps_source_id:  number | null;
   depth:          number;
   floor_level:    number | null;
+  waypoint_type:  string | null;
+  height_m:       number | null;
   active:         boolean;
   total_devices:  number;
   online_count:   number;
@@ -533,22 +535,25 @@ export interface LocationMapPoint {
 }
 
 export interface Location {
-  id:           number;
-  name:         string;
-  type:         string;
-  parent_id:    number | null;
-  street:       string | null;
-  city:         string | null;
-  zip:          string | null;
-  country:      string;
-  ruian_id:     number | null;
-  lat:          number | null;
-  lng:          number | null;
-  description:  string | null;
-  active:       boolean;
-  created_at:   string;
-  breadcrumb:   string[];
-  device_count: number;
+  id:            number;
+  name:          string;
+  type:          string;
+  parent_id:     number | null;
+  street:        string | null;
+  city:          string | null;
+  zip:           string | null;
+  country:       string;
+  ruian_id:      number | null;
+  lat:           number | null;
+  lng:           number | null;
+  description:   string | null;
+  active:        boolean;
+  created_at:    string;
+  breadcrumb:    string[];
+  device_count:  number;
+  floor_level:   number | null;
+  waypoint_type: string | null;
+  height_m:      number | null;
 }
 
 export interface Outage {
@@ -652,12 +657,13 @@ export interface ConnectionType {
 export interface Cable {
   id:               number;
   name:             string;
-  cable_type:       "fiber" | "utp" | "coax";
+  cable_type:       "fiber" | "utp" | "coax" | "other";
   medium:           string | null;
   fiber_count:      number | null;
   fiber_count_actual?: number;
   length_m:         number | null;
-  route:            [number, number][] | null;  // [[lng,lat],...]
+  route:            [number, number][] | null;   // [[lat,lng],...]
+  route_3d:         Array<{lng:number;lat:number;height_m:number;label?:string;waypoint_type?:string|null}> | null;
   location_a_id:    number | null;
   location_a_name:  string | null;
   location_b_id:    number | null;

@@ -658,7 +658,16 @@ def start_scheduler(pool, config: dict) -> AsyncIOScheduler:
         replace_existing = True,
         max_instances    = 1,
     )
-    log.info(f"Cleanup scheduler: každý den v {_cleanup_time}, retence {_cleanup_retention} dní")
+    # Intra-day cleanup každé 4 hodiny
+    _scheduler.add_job(
+        _ping_cleanup,
+        IntervalTrigger(hours=4),
+        id               = "ping_cleanup_intraday",
+        name             = "Ping results cleanup (intra-day)",
+        replace_existing = True,
+        max_instances    = 1,
+    )
+    log.info(f"Cleanup scheduler: každý den v {_cleanup_time} + každé 4h, retence {_cleanup_retention} dní")
 
     # Watchdog — čistí zombie joby každé 3 minuty
     async def _watchdog_task():

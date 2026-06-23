@@ -1935,19 +1935,20 @@ async def get_scan_exclusions(pool) -> list[dict]:
 # ===========================================================================
 
 def _loc_row(r: dict) -> dict:
-    """Normalizuje časová razítka a numerické typy v lokaci.
-    PostgreSQL vrací NUMERIC jako Decimal — převedeme na float/int
-    aby JSON serializace nevracítka stringy nebo způsobovala type mismatch.
-    """
+    """Normalizuje časová razítka a numerické typy v lokaci."""
     d = dict(r)
     if d.get("created_at"):
         d["created_at"] = d["created_at"].isoformat()
-    # lat/lng: PostgreSQL NUMERIC -> Python Decimal -> musi byt float nebo None
     d["lat"] = float(d["lat"]) if d.get("lat") is not None else None
     d["lng"] = float(d["lng"]) if d.get("lng") is not None else None
-    # ruian_id: muze prijit jako Decimal
     if d.get("ruian_id") is not None:
         d["ruian_id"] = int(d["ruian_id"])
+    if d.get("height_m") is not None:
+        d["height_m"] = float(d["height_m"])
+    # waypoint_type — předat jako string nebo None
+    d.setdefault("waypoint_type", None)
+    d.setdefault("floor_level", None)
+    d.setdefault("height_m", None)
     return d
 
 
@@ -1990,13 +1991,63 @@ async def get_locations(pool, active_only: bool = False) -> list[dict]:
 
 async def get_locations_map(pool) -> list[dict]:
     """
-    Vrátí lokace pro mapové zobrazení — pouze lokace s GPS souřadnicemi.
-    Obsahuje online/offline stats (rekurzivně přes podřízené).
+    Vrátí lokace pro mapové zobrazení.
+    Vrací i lokace bez vlastní GPS (dědí souřadnice od nejbližšího předka).
+    Obsahuje: is_top_level, depth, inherited_lat/lng, has_own_gps,
+              parent_name, floor_level, waypoint_type, height_m, children_count,
+              online/offline stats.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             WITH RECURSIVE
-            -- Rekurzivní strom pro agregaci zařízení
+            -- Hierarchie s hloubkou a GPS děděním
+            loc_tree AS (
+                -- Kořenové lokace (bez rodiče)
+                SELECT
+                    l.id, l.name, l.type, l.parent_id,
+                    l.lat, l.lng, l.active,
+                    l.street, l.city, l.zip, l.country,
+                    l.floor_level, l.waypoint_type, l.height_m,
+                    0                  AS depth,
+                    TRUE               AS is_top_level,
+                    l.lat              AS inherited_lat,
+                    l.lng              AS inherited_lng,
+                    l.id               AS gps_source_id,
+                    (l.lat IS NOT NULL) AS has_own_gps,
+                    NULL::text         AS parent_name,
+                    ARRAY[l.id]        AS path
+                FROM locations l
+                WHERE l.parent_id IS NULL AND l.active = TRUE
+
+                UNION ALL
+
+                -- Potomci
+                SELECT
+                    l.id, l.name, l.type, l.parent_id,
+                    l.lat, l.lng, l.active,
+                    l.street, l.city, l.zip, l.country,
+                    l.floor_level, l.waypoint_type, l.height_m,
+                    t.depth + 1        AS depth,
+                    FALSE              AS is_top_level,
+                    COALESCE(l.lat, t.inherited_lat)  AS inherited_lat,
+                    COALESCE(l.lng, t.inherited_lng)  AS inherited_lng,
+                    CASE WHEN l.lat IS NOT NULL THEN l.id ELSE t.gps_source_id END AS gps_source_id,
+                    (l.lat IS NOT NULL) AS has_own_gps,
+                    t.name             AS parent_name,
+                    t.path || l.id     AS path
+                FROM locations l
+                JOIN loc_tree t ON l.parent_id = t.id
+                WHERE l.active = TRUE
+                  AND NOT l.id = ANY(t.path)  -- zabrání cyklům
+            ),
+            -- Počty podřízených
+            children_count AS (
+                SELECT parent_id, COUNT(*) AS cnt
+                FROM locations
+                WHERE parent_id IS NOT NULL AND active = TRUE
+                GROUP BY parent_id
+            ),
+            -- Rekurzivní strom pro device stats
             subtree AS (
                 SELECT id, id AS root_id FROM locations
                 UNION ALL
@@ -2018,52 +2069,52 @@ async def get_locations_map(pool) -> list[dict]:
                 SELECT location_id, COUNT(*) AS direct_count
                 FROM devices
                 GROUP BY location_id
-            ),
-            children_count AS (
-                SELECT parent_id, COUNT(*) AS cnt
-                FROM locations
-                WHERE parent_id IS NOT NULL
-                GROUP BY parent_id
             )
             SELECT
-                l.id, l.name, l.type, l.parent_id,
-                l.street, l.city, l.zip, l.country,
-                l.lat, l.lng, l.active,
-                pl.name                                         AS parent_name,
-                COALESCE(ds.total_devices,  0)                  AS total_devices,
-                COALESCE(ds.online_count,   0)                  AS online_count,
-                COALESCE(ds.offline_count,  0)                  AS offline_count,
-                COALESCE(dd.direct_count,   0)                  AS direct_devices,
-                COALESCE(cc.cnt,            0)                  AS children_count
-            FROM locations l
-            LEFT JOIN locations pl ON pl.id = l.parent_id
-            LEFT JOIN device_stats   ds ON ds.location_id = l.id
-            LEFT JOIN direct_devices dd ON dd.location_id = l.id
-            LEFT JOIN children_count cc ON cc.parent_id   = l.id
-            WHERE l.lat IS NOT NULL AND l.lng IS NOT NULL
-              AND l.active = TRUE
-            ORDER BY l.name
+                t.*,
+                COALESCE(cc.cnt,           0) AS children_count,
+                COALESCE(ds.total_devices, 0) AS total_devices,
+                COALESCE(ds.online_count,  0) AS online_count,
+                COALESCE(ds.offline_count, 0) AS offline_count,
+                COALESCE(dd.direct_count,  0) AS direct_devices
+            FROM loc_tree t
+            LEFT JOIN children_count cc ON cc.parent_id   = t.id
+            LEFT JOIN device_stats   ds ON ds.location_id = t.id
+            LEFT JOIN direct_devices dd ON dd.location_id = t.id
+            WHERE t.inherited_lat IS NOT NULL
+              AND t.inherited_lng IS NOT NULL
+            ORDER BY t.depth, t.name
         """)
+
     result = []
     for r in rows:
         result.append({
-            "id":             r["id"],
-            "name":           r["name"],
-            "type":           r["type"],
-            "parent_id":      r["parent_id"],
-            "parent_name":    r["parent_name"],
-            "street":         r["street"],
-            "city":           r["city"],
-            "zip":            r["zip"],
-            "country":        r["country"],
-            "lat":            float(r["lat"]),
-            "lng":            float(r["lng"]),
-            "active":         r["active"],
-            "total_devices":  int(r["total_devices"]),
-            "online_count":   int(r["online_count"]),
-            "offline_count":  int(r["offline_count"]),
-            "direct_devices": int(r["direct_devices"]),
+            "id":            r["id"],
+            "name":          r["name"],
+            "type":          r["type"],
+            "parent_id":     r["parent_id"],
+            "parent_name":   r["parent_name"],
+            "street":        r["street"],
+            "city":          r["city"],
+            "zip":           r["zip"],
+            "country":       r["country"],
+            "lat":           float(r["lat"])           if r["lat"]           is not None else None,
+            "lng":           float(r["lng"])           if r["lng"]           is not None else None,
+            "inherited_lat": float(r["inherited_lat"]) if r["inherited_lat"] is not None else None,
+            "inherited_lng": float(r["inherited_lng"]) if r["inherited_lng"] is not None else None,
+            "has_own_gps":   bool(r["has_own_gps"]),
+            "is_top_level":  bool(r["is_top_level"]),
+            "gps_source_id": r["gps_source_id"],
+            "depth":         int(r["depth"]),
+            "active":        r["active"],
+            "floor_level":   r["floor_level"],
+            "waypoint_type": r["waypoint_type"],
+            "height_m":      float(r["height_m"]) if r["height_m"] is not None else None,
             "children_count": int(r["children_count"]),
+            "total_devices": int(r["total_devices"]),
+            "online_count":  int(r["online_count"]),
+            "offline_count": int(r["offline_count"]),
+            "direct_devices":int(r["direct_devices"]),
         })
     return result
 
@@ -2189,8 +2240,9 @@ async def create_location(pool, data: dict) -> dict:
         row = await conn.fetchrow("""
             INSERT INTO locations
                 (name, type, parent_id, street, city, zip, country,
-                 ruian_id, lat, lng, description, active, floor_level)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 ruian_id, lat, lng, description, active,
+                 floor_level, waypoint_type, height_m)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             RETURNING *
         """,
         data["name"], data.get("type", "other"), data.get("parent_id"),
@@ -2198,7 +2250,8 @@ async def create_location(pool, data: dict) -> dict:
         data.get("country", "CZ"), data.get("ruian_id"),
         data.get("lat"), data.get("lng"),
         data.get("description"), data.get("active", True),
-        data.get("floor_level"))
+        data.get("floor_level"),
+        data.get("waypoint_type"), data.get("height_m"))
     d = _loc_row(row)
     d["device_count"] = 0
     d["breadcrumb"] = [d["name"]]
@@ -2209,18 +2262,21 @@ async def update_location(pool, location_id: int, data: dict) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("""
             UPDATE locations SET
-                name        = $2,
-                type        = $3,
-                parent_id   = $4,
-                street      = $5,
-                city        = $6,
-                zip         = $7,
-                country     = $8,
-                ruian_id    = $9,
-                lat         = $10,
-                lng         = $11,
-                description = $12,
-                active      = $13
+                name         = $2,
+                type         = $3,
+                parent_id    = $4,
+                street       = $5,
+                city         = $6,
+                zip          = $7,
+                country      = $8,
+                ruian_id     = $9,
+                lat          = $10,
+                lng          = $11,
+                description  = $12,
+                active       = $13,
+                floor_level  = $14,
+                waypoint_type= $15,
+                height_m     = $16
             WHERE id = $1
             RETURNING *
         """,
@@ -2229,7 +2285,9 @@ async def update_location(pool, location_id: int, data: dict) -> dict:
         data.get("street"), data.get("city"), data.get("zip"),
         data.get("country", "CZ"), data.get("ruian_id"),
         data.get("lat"), data.get("lng"),
-        data.get("description"), data.get("active", True))
+        data.get("description"), data.get("active", True),
+        data.get("floor_level"),
+        data.get("waypoint_type"), data.get("height_m"))
     d = _loc_row(row)
     d["device_count"] = 0
     d["breadcrumb"] = [d["name"]]
@@ -3071,3 +3129,146 @@ async def get_building_3d(pool, polygon_id: int) -> dict:
             "devices": devices,
             "floor_location_ids": floor_loc_ids_map,
         }
+
+# ===========================================================================
+# Topology — Connection types
+# ===========================================================================
+
+async def get_connection_types(pool) -> list:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, name, category, color, icon, dash_style, description
+            FROM connection_types ORDER BY category, name
+        """)
+        return [dict(r) for r in rows]
+
+async def upsert_connection_type(pool, ct: dict) -> dict:
+    async with pool.acquire() as conn:
+        if ct.get("id"):
+            await conn.execute("""
+                UPDATE connection_types SET name=$1, category=$2, color=$3,
+                    icon=$4, dash_style=$5, description=$6
+                WHERE id=$7
+            """, ct["name"], ct.get("category","fiber"), ct.get("color","#6366f1"),
+                ct.get("icon",""), ct.get("dash_style","solid"), ct.get("description"), ct["id"])
+            return ct
+        else:
+            row = await conn.fetchrow("""
+                INSERT INTO connection_types (name, category, color, icon, dash_style, description)
+                VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+            """, ct["name"], ct.get("category","fiber"), ct.get("color","#6366f1"),
+                ct.get("icon",""), ct.get("dash_style","solid"), ct.get("description"))
+            ct["id"] = row["id"]; return ct
+
+async def delete_connection_type(pool, ct_id: int):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM connection_types WHERE id=$1", ct_id)
+
+# ===========================================================================
+# Topology — Cables
+# ===========================================================================
+
+async def get_cables(pool) -> list:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT c.id, c.name, c.cable_type, c.medium, c.fiber_count,
+                   c.length_m, c.status, c.notes,
+                   c.route, c.route_3d,
+                   c.location_a_id, c.location_b_id,
+                   la.name AS location_a_name, lb.name AS location_b_name
+            FROM cables c
+            LEFT JOIN locations la ON la.id = c.location_a_id
+            LEFT JOIN locations lb ON lb.id = c.location_b_id
+            ORDER BY c.name
+        """)
+        import json as _j
+        result = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("route"), str):
+                d["route"] = _j.loads(d["route"])
+            if isinstance(d.get("route_3d"), str):
+                d["route_3d"] = _j.loads(d["route_3d"])
+            result.append(d)
+        return result
+
+async def upsert_cable(pool, c: dict) -> dict:
+    import json as _j
+    route_json   = _j.dumps(c.get("route"))    if c.get("route")    else None
+    route_3d_json= _j.dumps(c.get("route_3d")) if c.get("route_3d") else None
+    async with pool.acquire() as conn:
+        if c.get("id"):
+            await conn.execute("""
+                UPDATE cables SET name=$1, cable_type=$2, medium=$3, fiber_count=$4,
+                    length_m=$5, status=$6, notes=$7, route=$8::jsonb,
+                    location_a_id=$9, location_b_id=$10, route_3d=$11::jsonb
+                WHERE id=$12
+            """, c["name"], c.get("cable_type","utp"), c.get("medium"),
+                c.get("fiber_count"), c.get("length_m"), c.get("status","active"),
+                c.get("notes"), route_json,
+                c.get("location_a_id"), c.get("location_b_id"),
+                route_3d_json, c["id"])
+            return c
+        else:
+            row = await conn.fetchrow("""
+                INSERT INTO cables (name, cable_type, medium, fiber_count,
+                    length_m, status, notes, route, location_a_id, location_b_id,
+                    route_3d)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11::jsonb)
+                RETURNING id
+            """, c["name"], c.get("cable_type","utp"), c.get("medium"),
+                c.get("fiber_count"), c.get("length_m"), c.get("status","active"),
+                c.get("notes"), route_json,
+                c.get("location_a_id"), c.get("location_b_id"),
+                route_3d_json)
+            c["id"] = row["id"]; return c
+
+# ===========================================================================
+# Topology — Connections (logical)
+# ===========================================================================
+
+async def get_topology_connections(pool) -> list:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT cn.id, cn.name, cn.connection_type_id,
+                   ct.name AS type_name, ct.category, ct.color, ct.dash_style,
+                   cn.cable_id, cab.name AS cable_name,
+                   cn.location_a_id, cn.location_b_id,
+                   la.name AS location_a_name, lb.name AS location_b_name,
+                   cn.device_a_id, cn.device_b_id,
+                   da.hostname AS device_a_name, da.alias AS device_a_alias,
+                   db2.hostname AS device_b_name, db2.alias AS device_b_alias,
+                   cn.interface_a, cn.interface_b,
+                   cn.frequency_ghz, cn.azimuth_a, cn.azimuth_b,
+                   cn.distance_m, cn.status, cn.notes,
+                   cn.current_snr_db
+            FROM connections cn
+            LEFT JOIN connection_types ct ON ct.id = cn.connection_type_id
+            LEFT JOIN cables cab ON cab.id = cn.cable_id
+            LEFT JOIN locations la ON la.id = cn.location_a_id
+            LEFT JOIN locations lb ON lb.id = cn.location_b_id
+            LEFT JOIN devices da ON da.id = cn.device_a_id
+            LEFT JOIN devices db2 ON db2.id = cn.device_b_id
+            ORDER BY cn.id DESC
+        """)
+        return [dict(r) for r in rows]
+
+async def upsert_topology_connection(pool, c: dict) -> dict:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO connections (
+                name, connection_type_id, cable_id,
+                location_a_id, location_b_id,
+                device_a_id, device_b_id,
+                interface_a, interface_b,
+                frequency_ghz, azimuth_a, azimuth_b,
+                distance_m, status, notes
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            RETURNING id
+        """, c.get("name"), c.get("connection_type_id"), c.get("cable_id"),
+            c.get("location_a_id"), c.get("location_b_id"),
+            c.get("device_a_id"), c.get("device_b_id"),
+            c.get("interface_a"), c.get("interface_b"),
+            c.get("frequency_ghz"), c.get("azimuth_a"), c.get("azimuth_b"),
+            c.get("distance_m"), c.get("status","active"), c.get("notes"))
+        c["id"] = row["id"]; return c

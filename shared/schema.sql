@@ -518,7 +518,8 @@ INSERT INTO config_lists (category, value, label, sort_order) VALUES
   ('location_type', 'apartment', 'Byt',              5),
   ('location_type', 'office',    'Kancelář',         6),
   ('location_type', 'rack',      'Rack',             7),
-  ('location_type', 'outdoor',   'Venkovní umístění',8),
+  ('location_type', 'waypoint',  'Průchozí bod',     8),
+  ('location_type', 'outdoor',   'Venkovní umístění',9),
   ('location_type', 'other',     'Ostatní',          99)
 ON CONFLICT (category, value) DO NOTHING;
 
@@ -933,3 +934,23 @@ COMMENT ON COLUMN building_polygons.floor_location_ids IS
     'JSON objekt mapující index patra na location.id: {"0": 42, "1": 43}';
 COMMENT ON COLUMN locations.floor_level IS
     'Číslo patra: -1=suterén, 0=přízemí, 1=1.NP, atd.';
+
+-- ===========================================================================
+-- Fáze C1 — Waypoints & 3D trasování
+-- ===========================================================================
+
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS waypoint_type TEXT DEFAULT NULL;
+-- junction_box | patch_panel | conduit | wall_penetration | floor_penetration | outlet
+
+ALTER TABLE locations
+    ADD COLUMN IF NOT EXISTS height_m FLOAT DEFAULT NULL;
+-- výška nad podlahou patra (0.0 = podlaha)
+
+ALTER TABLE cables
+    ADD COLUMN IF NOT EXISTS route_3d JSONB DEFAULT NULL;
+-- [{"lng":16.59,"lat":49.18,"height_m":0.5,"location_id":42,"label":"Rack A"},...]
+
+COMMENT ON COLUMN locations.waypoint_type IS 'Typ průchozího bodu: junction_box|patch_panel|conduit|wall_penetration|floor_penetration|outlet';
+COMMENT ON COLUMN locations.height_m IS 'Výška nad podlahou patra v metrech';
+COMMENT ON COLUMN cables.route_3d IS 'JSON pole bodů 3D trasy kabelu s výškami';

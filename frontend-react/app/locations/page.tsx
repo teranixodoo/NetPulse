@@ -33,6 +33,8 @@ function LocationForm({
   const [lng,         setLng]         = useState<string>(initial?.lng?.toString() ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [active,      setActive]      = useState(initial?.active ?? true);
+  const [waypointType,setWaypointType]= useState<string>(initial?.waypoint_type ?? "");
+  const [heightM,     setHeightM]     = useState<string>(initial?.height_m?.toString() ?? "");
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState<string | null>(null);
   const [geocoding,   setGeocoding]   = useState(false);
@@ -86,6 +88,8 @@ function LocationForm({
         lat: lat ? parseFloat(lat) : null,
         lng: lng ? parseFloat(lng) : null,
         description: description || null, active,
+        waypoint_type: (type === "waypoint" && waypointType) ? waypointType : null,
+        height_m: heightM ? parseFloat(heightM) : null,
       });
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? e?.message ?? "Chyba");
@@ -197,6 +201,48 @@ function LocationForm({
           <label htmlFor="loc-active" className="text-sm">Aktivní</label>
         </div>
       </div>
+
+      {/* Waypoint — specifická pole */}
+      {type === "waypoint" && (
+        <div className="grid grid-cols-2 gap-3 rounded-md border border-primary/20 bg-primary/5 p-3">
+          <div className="col-span-2">
+            <p className="text-xs font-semibold text-primary mb-2">📍 Průchozí bod</p>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Typ průchozího bodu</label>
+            <select value={waypointType} onChange={e => setWaypointType(e.target.value)}
+              className="mt-1 h-8 w-full rounded border border-input bg-background px-2 text-sm">
+              <option value="">— vyberte —</option>
+              <option value="junction_box">🟫 Montážní/rozbočovací krabice</option>
+              <option value="patch_panel">🔲 Patch panel</option>
+              <option value="conduit">⬜ Kabelový žlab / trubka</option>
+              <option value="wall_penetration">🔵 Průchod stěnou</option>
+              <option value="floor_penetration">🔴 Průchod stropem/podlahou</option>
+              <option value="outlet">🔌 Zásuvka / vývodka</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Výška nad podlahou (m)</label>
+            <input type="number" min={0} max={50} step={0.1}
+              value={heightM} onChange={e => setHeightM(e.target.value)}
+              placeholder="např. 2.5"
+              className="mt-1 h-8 w-full rounded border border-input bg-background px-2 text-sm font-mono" />
+          </div>
+        </div>
+      )}
+
+      {/* floor — výška */}
+      {type === "floor" && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-muted-foreground">Výška nad podlahou (m) — volitelně</label>
+            <input type="number" min={0} max={50} step={0.1}
+              value={heightM} onChange={e => setHeightM(e.target.value)}
+              placeholder="např. 0.0"
+              className="mt-1 h-8 w-full rounded border border-input bg-background px-2 text-sm font-mono" />
+          </div>
+        </div>
+      )}
 
       {error && <p className="text-xs text-red-500">{error}</p>}
 
